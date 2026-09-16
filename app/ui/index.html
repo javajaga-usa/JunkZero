@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DiskPurge - Intelligent Disk Garbage Detector & Cleaner</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <!-- Google Fonts & Lucide Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-badge">
+          <i data-lucide="shield-alert" class="logo-icon"></i>
+        </div>
+        <div>
+          <h1 class="app-title">DiskPurge</h1>
+          <p class="app-subtitle">Intelligent Storage Optimization & Garbage Removal</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="status-pill" id="engineStatus">
+          <span class="status-dot"></span>
+          <span id="statusText">Engine Ready</span>
+        </div>
+        <button id="themeToggle" class="icon-btn" title="Toggle Theme">
+          <i data-lucide="sun" id="themeIcon"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Scan Configuration Bar -->
+    <section class="config-panel card">
+      <div class="panel-row">
+        <div class="drive-selector-group">
+          <label class="section-label"><i data-lucide="hard-drive"></i> Fast Drive Select:</label>
+          <div id="driveButtons" class="drive-buttons">
+            <!-- Dynamic Drive Buttons -->
+            <button class="drive-pill active" data-path="C:\">C: (Scanning...)</button>
+          </div>
+        </div>
+
+        <div class="custom-path-group">
+          <label class="section-label"><i data-lucide="folder-search"></i> Target Directory or Drive:</label>
+          <div class="input-with-button">
+            <input type="text" id="targetPathInput" value="C:\" placeholder="e.g. C:\ or C:\Users\YourName\Downloads" />
+            <button id="btnBrowse" class="btn btn-secondary" title="Open native folder browser">
+              <i data-lucide="folder-open"></i> Browse...
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detection Options Toggles -->
+      <div class="options-row">
+        <span class="section-label"><i data-lucide="sliders"></i> Scan For:</span>
+        <label class="checkbox-tag">
+          <input type="checkbox" id="optInstallers" checked />
+          <i data-lucide="package"></i> Setups, Archives & ISOs (.exe, .iso, .zip, .apk)
+        </label>
+        <label class="checkbox-tag">
+          <input type="checkbox" id="optJavaBuilds" checked />
+          <i data-lucide="coffee"></i> Old Java & Builds (.class, .jar, node_modules)
+        </label>
+        <label class="checkbox-tag">
+          <input type="checkbox" id="optTemp" checked />
+          <i data-lucide="trash-2"></i> Temp & Cache (.tmp, .log, .dmp)
+        </label>
+        <label class="checkbox-tag">
+          <input type="checkbox" id="optDownloads" checked />
+          <i data-lucide="download"></i> Broken Downloads (.crdownload, .part)
+        </label>
+        <label class="checkbox-tag">
+          <input type="checkbox" id="optStaleLarge" checked />
+          <i data-lucide="file-warning"></i> Stale Large (>100MB, >180d)
+        </label>
+
+        <div class="action-buttons-group">
+          <button id="btnStartScan" class="btn btn-primary">
+            <i data-lucide="scan"></i> Start Deep Scan
+          </button>
+          <button id="btnStopScan" class="btn btn-danger hidden">
+            <i data-lucide="square"></i> Stop Scan
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Scan Progress Bar -->
+      <div id="scanProgressContainer" class="scan-progress-container hidden">
+        <div class="progress-info">
+          <div class="progress-status">
+            <div class="spinner"></div>
+            <span id="scanProgressText">Scanning subdirectories...</span>
+          </div>
+          <div class="progress-metrics">
+            <span id="scanMetricsFiles">0 files scanned</span>
+            <span class="metric-divider">|</span>
+            <span id="scanMetricsDirs">0 folders</span>
+            <span class="metric-divider">|</span>
+            <span id="scanMetricsRate" class="text-highlight">0 found</span>
+          </div>
+        </div>
+        <div class="progress-bar-bg">
+          <div id="scanProgressBar" class="progress-bar-fill indeterminate"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Storage Statistics Overview -->
+    <section class="stats-grid">
+      <div class="stat-card stat-primary">
+        <div class="stat-icon-wrapper">
+          <i data-lucide="flame"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Total Garbage Found</span>
+          <h2 class="stat-value" id="statTotalGarbageSize">0.00 MB</h2>
+          <span class="stat-subtext" id="statTotalGarbageCount">0 items ready for review</span>
+        </div>
+      </div>
+
+      <div class="stat-card" data-category="Installers & Setup Packages">
+        <div class="stat-icon-wrapper cat-installers">
+          <i data-lucide="box"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Installers & APKs</span>
+          <h3 class="stat-value" id="statInstallersSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statInstallersCount">0 files</span>
+        </div>
+      </div>
+
+      <div class="stat-card" data-category="Old Java & Build Artifacts">
+        <div class="stat-icon-wrapper cat-java">
+          <i data-lucide="terminal"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Java & Build Artifacts</span>
+          <h3 class="stat-value" id="statJavaSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statJavaCount">0 files / build dirs</span>
+        </div>
+      </div>
+
+      <div class="stat-card" data-category="Temporary & Cache Files">
+        <div class="stat-icon-wrapper cat-temp">
+          <i data-lucide="archive"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Temp & Cache Files</span>
+          <h3 class="stat-value" id="statTempSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statTempCount">0 files</span>
+        </div>
+      </div>
+
+      <div class="stat-card" data-category="Broken / Incomplete Downloads">
+        <div class="stat-icon-wrapper cat-downloads">
+          <i data-lucide="alert-octagon"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Broken Downloads</span>
+          <h3 class="stat-value" id="statDownloadsSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statDownloadsCount">0 files</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- File Manager Section -->
+    <main class="file-manager-section card">
+      <!-- Table Controls Toolbar -->
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="search-box">
+            <i data-lucide="search" class="search-icon"></i>
+            <input type="text" id="searchInput" placeholder="Search by name, path, or extension (.apk, .exe, .class)..." />
+            <button id="clearSearch" class="clear-btn hidden">&times;</button>
+          </div>
+
+          <div class="filter-dropdown-group">
+            <select id="categoryFilter" class="select-filter">
+              <option value="ALL">All Categories</option>
+              <option value="Installers & Setup Packages">Installers & Setup (.exe, .apk, .msi)</option>
+              <option value="Old Java & Build Artifacts">Old Java & Builds (.class, .jar, node_modules)</option>
+              <option value="Temporary & Cache Files">Temporary & Cache (.tmp, .log, .dmp)</option>
+              <option value="Broken / Incomplete Downloads">Broken Downloads (.crdownload, .part)</option>
+              <option value="Stale Large Files">Stale Large Files (>100MB)</option>
+            </select>
+
+            <select id="riskFilter" class="select-filter">
+              <option value="ALL">All Risk Levels</option>
+              <option value="Safe">Safe to Delete Only</option>
+              <option value="Review Recommended">Review Recommended</option>
+              <option value="Caution">Caution</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar-right">
+          <div class="selection-presets">
+            <button id="btnSelectAllSafe" class="btn btn-ghost" title="Select all safe items (Temporary, crash dumps, .class, broken downloads)">
+              <i data-lucide="check-check"></i> Select All Safe
+            </button>
+            <button id="btnSelectAll" class="btn btn-ghost">
+              <i data-lucide="check-square"></i> Select All
+            </button>
+            <button id="btnDeselectAll" class="btn btn-ghost">
+              <i data-lucide="square"></i> Deselect
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- File Manager Table -->
+      <div class="table-container">
+        <table class="file-table" id="fileTable">
+          <thead>
+            <tr>
+              <th width="44">
+                <input type="checkbox" id="masterCheckbox" title="Select / Deselect all visible items" />
+              </th>
+              <th width="32"></th>
+              <th class="sortable" data-sort="name">Name <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="category" width="180">Category <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="size" width="110">Size <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="modified" width="140">Modified <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="risk" width="130">Risk Level <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
+              <th>Path</th>
+              <th width="120" class="text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="fileTableBody">
+            <tr class="empty-row">
+              <td colspan="9">
+                <div class="empty-state">
+                  <i data-lucide="sparkles" class="empty-icon"></i>
+                  <h3>No Scan Performed Yet</h3>
+                  <p>Select a drive or folder above and click <strong>"Start Deep Scan"</strong> to uncover garbage files.</p>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Sticky Action Footer -->
+      <footer class="action-footer">
+        <div class="footer-left">
+          <div class="selected-summary">
+            <span class="summary-label">Selected for Removal:</span>
+            <strong id="selectedCount" class="summary-highlight">0 items</strong>
+            <span class="summary-divider">•</span>
+            <strong id="selectedSize" class="summary-highlight">0.00 MB</strong>
+            <span class="safety-badge permanent-badge">
+              <i data-lucide="zap"></i> Direct Permanent Deletion (No Recycle Bin)
+            </span>
+          </div>
+        </div>
+
+        <div class="footer-right">
+          <button id="btnExportReport" class="btn btn-secondary" title="Export list to CSV">
+            <i data-lucide="file-spreadsheet"></i> Export CSV
+          </button>
+          <button id="btnDeleteItems" class="btn btn-danger" disabled title="Permanently delete selected files from disk">
+            <i data-lucide="trash-2"></i> Delete Selected Files Permanently
+          </button>
+        </div>
+      </footer>
+    </main>
+
+    <!-- Folder Hierarchy & Multi-Level Parent Explorer Modal -->
+    <div id="hierarchyModal" class="modal-overlay hidden">
+      <div class="modal-card modal-hierarchy">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="hierarchy-badge-icon"><i data-lucide="folder-tree"></i></div>
+            <div>
+              <h3 class="modal-title" id="hierarchyModalTitle">Folder Hierarchy & Parent Explorer</h3>
+              <p class="modal-subtitle" id="hierarchyModalSubtitle">Explore folder levels and choose deletion scope</p>
+            </div>
+          </div>
+          <button id="closeHierarchyModal" class="close-modal-btn">&times;</button>
+        </div>
+
+        <!-- Breadcrumbs Navigation -->
+        <div class="hierarchy-nav-bar">
+          <div class="breadcrumb-container" id="hierarchyBreadcrumbs">
+            <!-- Dynamic breadcrumbs: C:\ > Users > ... -->
+          </div>
+          <button id="btnUpLevel" class="btn btn-secondary btn-sm" title="Ascend to parent directory">
+            <i data-lucide="arrow-up"></i> Up to Parent
+          </button>
+        </div>
+
+        <!-- Current Folder Header -->
+        <div class="hierarchy-folder-header">
+          <div class="folder-header-meta">
+            <i data-lucide="folder-open" class="folder-header-icon"></i>
+            <div>
+              <h4 id="hierarchyFolderName" class="folder-name-title">folder_name</h4>
+              <span id="hierarchyFolderMeta" class="folder-meta-text">0 items • 0 MB</span>
+            </div>
+          </div>
+          <div class="folder-header-actions">
+            <button id="btnDeleteThisFolder" class="btn btn-danger btn-sm" title="Permanently delete this entire folder level">
+              <i data-lucide="trash-2"></i> Delete Entire Folder Level
+            </button>
+          </div>
+        </div>
+
+        <!-- Current Folder Contents Table -->
+        <div class="hierarchy-table-container">
+          <table class="file-table" id="hierarchyTable">
+            <thead>
+              <tr>
+                <th width="38"><input type="checkbox" id="hierarchyMasterCheck" /></th>
+                <th width="32"></th>
+                <th>Name</th>
+                <th width="100">Size</th>
+                <th width="130">Modified</th>
+                <th width="120">Status</th>
+                <th width="90" class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody id="hierarchyTableBody">
+              <!-- Dynamic entries -->
+            </tbody>
+          </table>
+        </div>
+
+        <div class="modal-footer hierarchy-footer">
+          <div class="hierarchy-footer-left">
+            <span id="hierarchySelectedSummary">0 items selected in this folder</span>
+          </div>
+          <div class="hierarchy-footer-right">
+            <button id="btnDeleteInitialFile" class="btn btn-outline-danger hidden">
+              <i data-lucide="file-minus"></i> Delete Initial File Only
+            </button>
+            <button id="btnDeleteHierarchySelected" class="btn btn-danger" disabled>
+              <i data-lucide="trash-2"></i> Delete Selected in Folder
+            </button>
+            <button id="btnCloseHierarchy" class="btn btn-secondary">Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Inspector Modal -->
+    <div id="aiModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="ai-badge-icon"><i data-lucide="bot"></i></div>
+            <div>
+              <h3 class="modal-title">Intelligent File Inspector</h3>
+              <p class="modal-subtitle">Contextual analysis and safety verdict</p>
+            </div>
+          </div>
+          <button id="closeAiModal" class="close-modal-btn">&times;</button>
+        </div>
+
+        <div class="modal-body" id="aiModalBody">
+          <div class="ai-loading">
+            <div class="spinner"></div>
+            <p>Inspecting file structure and context...</p>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button id="btnAiClose" class="btn btn-secondary">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Deletion Confirmation Modal -->
+    <div id="confirmModal" class="modal-overlay hidden">
+      <div class="modal-card modal-confirm">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div id="confirmModalIcon" class="modal-icon danger"><i data-lucide="alert-triangle"></i></div>
+            <div>
+              <h3 class="modal-title" id="confirmModalTitle">Confirm Permanent Deletion</h3>
+              <p class="modal-subtitle" id="confirmModalSubtitle">Items will be removed from disk immediately</p>
+            </div>
+          </div>
+          <button id="closeConfirmModal" class="close-modal-btn">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <div id="confirmWarningBanner" class="warning-banner danger-banner">
+            <i data-lucide="flame"></i>
+            <span id="confirmWarningText">Selected items will be PERMANENTLY deleted from your hard drive immediately (Recycle Bin bypassed).</span>
+          </div>
+
+          <div class="confirm-stats-box">
+            <div class="stat-pill">
+              <span>Items / Folders:</span>
+              <strong id="confirmCount">0</strong>
+            </div>
+            <div class="stat-pill">
+              <span>Space to Free:</span>
+              <strong id="confirmSize">0.00 MB</strong>
+            </div>
+            <div class="stat-pill">
+              <span>Mode:</span>
+              <strong id="confirmMode" class="text-danger">Permanent Direct</strong>
+            </div>
+          </div>
+
+          <p class="confirm-note">Protected system paths and root drives are automatically blocked by the engine safety filter.</p>
+        </div>
+
+        <div class="modal-footer">
+          <button id="btnCancelDelete" class="btn btn-secondary">Cancel</button>
+          <button id="btnExecuteDelete" class="btn btn-danger">
+            <i data-lucide="trash-2"></i> Permanently Delete Now
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toastContainer" class="toast-container"></div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

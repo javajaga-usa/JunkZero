@@ -1,0 +1,1207 @@
+/**
+ * DiskPurge - Frontend Application Controller
+ * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
+ * and direct permanent deletion.
+ */
+
+// Global State
+const state = {
+  items: [],              // All scanned GarbageItems
+  filteredItems: [],      // Items currently visible after search & filter
+  selectedIds: new Set(), // Set of selected item IDs in main table
+  stats: {
+    totalBytes: 0,
+    totalCount: 0,
+    categoryCounts: {},
+    categoryBytes: {},
+  },
+  drives: [],
+  isScanning: false,
+  eventSource: null,
+  sortField: 'size',
+  sortAsc: false,
+  categoryFilter: 'ALL',
+  riskFilter: 'ALL',
+  searchQuery: '',
+
+  // Hierarchy Explorer State
+  currentHierarchy: null,
+  hierarchySelectedPaths: new Set(),
+  initialTargetFilePath: null,
+  deleteConfirmCallback: null,
+};
+
+// DOM Element References
+const el = {
+  themeToggle: document.getElementById('themeToggle'),
+  themeIcon: document.getElementById('themeIcon'),
+  engineStatus: document.getElementById('engineStatus'),
+  statusText: document.getElementById('statusText'),
+  driveButtons: document.getElementById('driveButtons'),
+  targetPathInput: document.getElementById('targetPathInput'),
+  btnBrowse: document.getElementById('btnBrowse'),
+
+  // Option Checkboxes
+  optInstallers: document.getElementById('optInstallers'),
+  optJavaBuilds: document.getElementById('optJavaBuilds'),
+  optTemp: document.getElementById('optTemp'),
+  optDownloads: document.getElementById('optDownloads'),
+  optStaleLarge: document.getElementById('optStaleLarge'),
+
+  // Primary Buttons
+  btnStartScan: document.getElementById('btnStartScan'),
+  btnStopScan: document.getElementById('btnStopScan'),
+  btnSelectAll: document.getElementById('btnSelectAll'),
+  btnSelectAllSafe: document.getElementById('btnSelectAllSafe'),
+  btnDeselectAll: document.getElementById('btnDeselectAll'),
+  btnExportReport: document.getElementById('btnExportReport'),
+  btnDeleteItems: document.getElementById('btnDeleteItems'),
+
+  // Progress UI
+  scanProgressContainer: document.getElementById('scanProgressContainer'),
+  scanProgressText: document.getElementById('scanProgressText'),
+  scanMetricsFiles: document.getElementById('scanMetricsFiles'),
+  scanMetricsDirs: document.getElementById('scanMetricsDirs'),
+  scanMetricsRate: document.getElementById('scanMetricsRate'),
+
+  // Stat Counters
+  statTotalGarbageSize: document.getElementById('statTotalGarbageSize'),
+  statTotalGarbageCount: document.getElementById('statTotalGarbageCount'),
+  statInstallersSize: document.getElementById('statInstallersSize'),
+  statInstallersCount: document.getElementById('statInstallersCount'),
+  statJavaSize: document.getElementById('statJavaSize'),
+  statJavaCount: document.getElementById('statJavaCount'),
+  statTempSize: document.getElementById('statTempSize'),
+  statTempCount: document.getElementById('statTempCount'),
+  statDownloadsSize: document.getElementById('statDownloadsSize'),
+  statDownloadsCount: document.getElementById('statDownloadsCount'),
+
+  // Table & Toolbar
+  searchInput: document.getElementById('searchInput'),
+  clearSearch: document.getElementById('clearSearch'),
+  categoryFilter: document.getElementById('categoryFilter'),
+  riskFilter: document.getElementById('riskFilter'),
+  fileTableBody: document.getElementById('fileTableBody'),
+  masterCheckbox: document.getElementById('masterCheckbox'),
+  selectedCount: document.getElementById('selectedCount'),
+  selectedSize: document.getElementById('selectedSize'),
+
+  // Folder Hierarchy Explorer Modal
+  hierarchyModal: document.getElementById('hierarchyModal'),
+  closeHierarchyModal: document.getElementById('closeHierarchyModal'),
+  btnCloseHierarchy: document.getElementById('btnCloseHierarchy'),
+  hierarchyBreadcrumbs: document.getElementById('hierarchyBreadcrumbs'),
+  btnUpLevel: document.getElementById('btnUpLevel'),
+  hierarchyFolderName: document.getElementById('hierarchyFolderName'),
+  hierarchyFolderMeta: document.getElementById('hierarchyFolderMeta'),
+  btnDeleteThisFolder: document.getElementById('btnDeleteThisFolder'),
+  hierarchyTableBody: document.getElementById('hierarchyTableBody'),
+  hierarchyMasterCheck: document.getElementById('hierarchyMasterCheck'),
+  hierarchySelectedSummary: document.getElementById('hierarchySelectedSummary'),
+  btnDeleteInitialFile: document.getElementById('btnDeleteInitialFile'),
+  btnDeleteHierarchySelected: document.getElementById('btnDeleteHierarchySelected'),
+
+  // AI Modal
+  aiModal: document.getElementById('aiModal'),
+  aiModalBody: document.getElementById('aiModalBody'),
+  closeAiModal: document.getElementById('closeAiModal'),
+  btnAiClose: document.getElementById('btnAiClose'),
+
+  // Confirm Modal
+  confirmModal: document.getElementById('confirmModal'),
+  confirmModalTitle: document.getElementById('confirmModalTitle'),
+  confirmModalSubtitle: document.getElementById('confirmModalSubtitle'),
+  confirmWarningText: document.getElementById('confirmWarningText'),
+  confirmCount: document.getElementById('confirmCount'),
+  confirmSize: document.getElementById('confirmSize'),
+  confirmMode: document.getElementById('confirmMode'),
+  closeConfirmModal: document.getElementById('closeConfirmModal'),
+  btnCancelDelete: document.getElementById('btnCancelDelete'),
+  btnExecuteDelete: document.getElementById('btnExecuteDelete'),
+  confirmModalIcon: document.getElementById('confirmModalIcon'),
+
+  toastContainer: document.getElementById('toastContainer'),
+};
+
+// Utilities
+function formatSize(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let b = bytes;
+  for (let i = 0; i < units.length; i++) {
+    if (b < 1024.0 || i === units.length - 1) {
+      return (i === 0 ? b : b.toFixed(2)) + ' ' + units[i];
+    }
+    b /= 1024.0;
+  }
+  return b.toFixed(2) + ' TB';
+}
+
+function showToast(message, type = 'info') {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span>${message}</span>`;
+  el.toastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 200);
+  }, 3500);
+}
+
+// App Initialization
+async function initApp() {
+  lucide.createIcons();
+  setupEventListeners();
+  await loadAvailableDrives();
+}
+
+// Event Listeners
+function setupEventListeners() {
+  // Theme Toggle
+  el.themeToggle.addEventListener('click', () => {
+    const isDark = document.body.classList.toggle('dark-theme');
+    document.body.classList.toggle('light-theme', !isDark);
+    el.themeIcon.setAttribute('data-lucide', isDark ? 'sun' : 'moon');
+    lucide.createIcons();
+    localStorage.setItem('diskpurge_theme', isDark ? 'dark' : 'light');
+  });
+
+  const savedTheme = localStorage.getItem('diskpurge_theme');
+  if (savedTheme === 'light') {
+    document.body.classList.remove('dark-theme');
+    document.body.classList.add('light-theme');
+    el.themeIcon.setAttribute('data-lucide', 'moon');
+  }
+
+  // Browse Folder Button
+  el.btnBrowse.addEventListener('click', async () => {
+    try {
+      el.btnBrowse.disabled = true;
+      el.btnBrowse.innerHTML = '<div class="spinner"></div> Opening...';
+      const res = await fetch('/api/system/browse-folder', { method: 'POST' });
+      const data = await res.json();
+      if (data.path) {
+        el.targetPathInput.value = data.path;
+        showToast(`Target set to: ${data.path}`, 'success');
+      }
+    } catch (e) {
+      showToast('Could not open folder picker', 'error');
+    } finally {
+      el.btnBrowse.disabled = false;
+      el.btnBrowse.innerHTML = '<i data-lucide="folder-open"></i> Browse...';
+      lucide.createIcons();
+    }
+  });
+
+  // Start / Stop Scan Buttons
+  el.btnStartScan.addEventListener('click', startScan);
+  el.btnStopScan.addEventListener('click', stopScan);
+
+  // Search & Filter Listeners
+  el.searchInput.addEventListener('input', (e) => {
+    state.searchQuery = e.target.value.toLowerCase().trim();
+    el.clearSearch.classList.toggle('hidden', state.searchQuery.length === 0);
+    applyFiltersAndRender();
+  });
+
+  el.clearSearch.addEventListener('click', () => {
+    el.searchInput.value = '';
+    state.searchQuery = '';
+    el.clearSearch.classList.add('hidden');
+    applyFiltersAndRender();
+  });
+
+  el.categoryFilter.addEventListener('change', (e) => {
+    state.categoryFilter = e.target.value;
+    applyFiltersAndRender();
+  });
+
+  el.riskFilter.addEventListener('change', (e) => {
+    state.riskFilter = e.target.value;
+    applyFiltersAndRender();
+  });
+
+  // Stat Card Clicks
+  document.querySelectorAll('.stat-card[data-category]').forEach((card) => {
+    card.addEventListener('click', () => {
+      const cat = card.getAttribute('data-category');
+      el.categoryFilter.value = cat;
+      state.categoryFilter = cat;
+      applyFiltersAndRender();
+    });
+  });
+
+  // Master Checkbox
+  el.masterCheckbox.addEventListener('change', (e) => {
+    const checkAll = e.target.checked;
+    state.filteredItems.forEach((item) => {
+      if (checkAll) {
+        state.selectedIds.add(item.id);
+      } else {
+        state.selectedIds.delete(item.id);
+      }
+    });
+    renderTable();
+    updateSelectionSummary();
+  });
+
+  // Selection Presets
+  el.btnSelectAll.addEventListener('click', () => {
+    state.filteredItems.forEach((i) => state.selectedIds.add(i.id));
+    renderTable();
+    updateSelectionSummary();
+  });
+
+  el.btnSelectAllSafe.addEventListener('click', () => {
+    state.selectedIds.clear();
+    state.items.forEach((i) => {
+      if (i.risk_level === 'Safe') state.selectedIds.add(i.id);
+    });
+    renderTable();
+    updateSelectionSummary();
+    showToast('Selected all safe-to-delete items', 'success');
+  });
+
+  el.btnDeselectAll.addEventListener('click', () => {
+    state.selectedIds.clear();
+    renderTable();
+    updateSelectionSummary();
+  });
+
+  // Sorting
+  document.querySelectorAll('th.sortable').forEach((th) => {
+    th.addEventListener('click', () => {
+      const field = th.getAttribute('data-sort');
+      if (state.sortField === field) {
+        state.sortAsc = !state.sortAsc;
+      } else {
+        state.sortField = field;
+        state.sortAsc = true;
+      }
+      applyFiltersAndRender();
+    });
+  });
+
+  // Primary Delete Selected Button
+  el.btnDeleteItems.addEventListener('click', () => {
+    const selectedItems = state.items.filter((i) => state.selectedIds.has(i.id));
+    if (selectedItems.length === 0) return;
+
+    const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
+    requestPermanentDeleteConfirmation({
+      title: 'Confirm Permanent Deletion',
+      subtitle: `${selectedItems.length} garbage items will be permanently removed`,
+      count: selectedItems.length,
+      size: formatSize(totalBytes),
+      onConfirm: async () => {
+        await executeBatchDelete(selectedItems);
+      },
+    });
+  });
+
+  el.btnExportReport.addEventListener('click', exportCsvReport);
+
+  // Hierarchy Explorer Listeners
+  el.closeHierarchyModal.addEventListener('click', closeHierarchyModal);
+  el.btnCloseHierarchy.addEventListener('click', closeHierarchyModal);
+
+  el.btnUpLevel.addEventListener('click', () => {
+    if (state.currentHierarchy && state.currentHierarchy.parent_path) {
+      loadHierarchy(state.currentHierarchy.parent_path);
+    }
+  });
+
+  el.btnDeleteThisFolder.addEventListener('click', () => {
+    if (!state.currentHierarchy) return;
+    const folderPath = state.currentHierarchy.current_path;
+    const folderName = state.currentHierarchy.current_name;
+    const folderSize = state.currentHierarchy.total_size_formatted;
+
+    requestPermanentDeleteConfirmation({
+      title: `Delete Entire Folder Level: "${folderName}"`,
+      subtitle: 'All files and subdirectories inside this folder will be deleted',
+      count: state.currentHierarchy.total_files + state.currentHierarchy.total_subdirs,
+      size: folderSize,
+      onConfirm: async () => {
+        await executeDeleteFolder(folderPath);
+      },
+    });
+  });
+
+  el.btnDeleteInitialFile.addEventListener('click', async () => {
+    if (!state.initialTargetFilePath) return;
+    const filePath = state.initialTargetFilePath;
+    const fileName = filePath.split(/[\\/]/).pop();
+
+    requestPermanentDeleteConfirmation({
+      title: `Delete File Only: "${fileName}"`,
+      subtitle: 'Only this specific file will be deleted, keeping the parent folder intact',
+      count: 1,
+      size: '1 file',
+      onConfirm: async () => {
+        await executeBatchDelete([{ path: filePath, size_bytes: 0, is_directory: false }]);
+        // Refresh hierarchy
+        if (state.currentHierarchy) {
+          loadHierarchy(state.currentHierarchy.current_path);
+        }
+      },
+    });
+  });
+
+  el.btnDeleteHierarchySelected.addEventListener('click', () => {
+    const selectedEntries = (state.currentHierarchy?.entries || []).filter((e) =>
+      state.hierarchySelectedPaths.has(e.path)
+    );
+    if (selectedEntries.length === 0) return;
+
+    const totalBytes = selectedEntries.reduce((acc, e) => acc + e.size_bytes, 0);
+
+    requestPermanentDeleteConfirmation({
+      title: 'Delete Selected Items in Folder',
+      subtitle: `${selectedEntries.length} items will be permanently removed`,
+      count: selectedEntries.length,
+      size: formatSize(totalBytes),
+      onConfirm: async () => {
+        await executeBatchDelete(
+          selectedEntries.map((e) => ({ path: e.path, size_bytes: e.size_bytes, is_directory: e.is_dir }))
+        );
+        if (state.currentHierarchy) {
+          loadHierarchy(state.currentHierarchy.current_path);
+        }
+      },
+    });
+  });
+
+  el.hierarchyMasterCheck.addEventListener('change', (e) => {
+    const checkAll = e.target.checked;
+    (state.currentHierarchy?.entries || []).forEach((entry) => {
+      if (entry.is_deletable) {
+        if (checkAll) {
+          state.hierarchySelectedPaths.add(entry.path);
+        } else {
+          state.hierarchySelectedPaths.delete(entry.path);
+        }
+      }
+    });
+    renderHierarchyTable();
+    updateHierarchySelectedSummary();
+  });
+
+  // Modal Close Handlers
+  el.closeConfirmModal.addEventListener('click', closeConfirmModal);
+  el.btnCancelDelete.addEventListener('click', closeConfirmModal);
+  el.btnExecuteDelete.addEventListener('click', async () => {
+    if (state.deleteConfirmCallback) {
+      el.btnExecuteDelete.disabled = true;
+      el.btnExecuteDelete.innerHTML = '<div class="spinner"></div> Deleting...';
+      try {
+        await state.deleteConfirmCallback();
+      } finally {
+        el.btnExecuteDelete.disabled = false;
+        el.btnExecuteDelete.innerHTML = '<i data-lucide="trash-2"></i> Permanently Delete Now';
+        closeConfirmModal();
+      }
+    }
+  });
+
+  el.closeAiModal.addEventListener('click', closeAiModal);
+  el.btnAiClose.addEventListener('click', closeAiModal);
+}
+
+// Drive Discovery
+async function loadAvailableDrives() {
+  try {
+    const res = await fetch('/api/system/drives');
+    const data = await res.json();
+    state.drives = data.drives || [];
+
+    el.driveButtons.innerHTML = '';
+    state.drives.forEach((d, idx) => {
+      const btn = document.createElement('button');
+      btn.className = `drive-pill ${idx === 0 ? 'active' : ''}`;
+      btn.dataset.path = d.drive;
+      btn.innerHTML = `<i data-lucide="hard-drive"></i> <strong>${d.drive}</strong> (${d.free_formatted} free)`;
+
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.drive-pill').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        el.targetPathInput.value = d.drive;
+      });
+
+      el.driveButtons.appendChild(btn);
+    });
+
+    if (state.drives.length > 0) {
+      el.targetPathInput.value = state.drives[0].drive;
+    }
+
+    lucide.createIcons();
+  } catch (err) {
+    console.error('Failed to load drives:', err);
+  }
+}
+
+// Scanning Engine Controller
+async function startScan() {
+  const targetPath = el.targetPathInput.value.trim();
+  if (!targetPath) {
+    showToast('Please specify a valid path to scan', 'error');
+    return;
+  }
+
+  state.items = [];
+  state.filteredItems = [];
+  state.selectedIds.clear();
+  state.isScanning = true;
+
+  el.btnStartScan.classList.add('hidden');
+  el.btnStopScan.classList.remove('hidden');
+  el.scanProgressContainer.classList.remove('hidden');
+  el.statusText.textContent = 'Scanning in progress...';
+  document.querySelector('.status-dot').classList.add('scanning');
+
+  resetStatsUI();
+  renderTable();
+
+  if (state.eventSource) {
+    state.eventSource.close();
+  }
+
+  const payload = {
+    target_path: targetPath,
+    include_installers: el.optInstallers.checked,
+    include_java_builds: el.optJavaBuilds.checked,
+    include_temp_junk: el.optTemp.checked,
+    include_broken_downloads: el.optDownloads.checked,
+    include_stale_large: el.optStaleLarge.checked,
+    skip_system_dirs: true,
+  };
+
+  try {
+    const res = await fetch('/api/scan/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Scan failed to start');
+    }
+
+    state.eventSource = new EventSource('/api/scan/stream');
+    let updateThrottleTimer = null;
+
+    state.eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'item_found') {
+          state.items.push(data.item);
+          if (data.item.selected) {
+            state.selectedIds.add(data.item.id);
+          }
+
+          if (!updateThrottleTimer) {
+            updateThrottleTimer = setTimeout(() => {
+              applyFiltersAndRender(false);
+              updateMetrics(data.stats);
+              updateThrottleTimer = null;
+            }, 100);
+          }
+        } else if (data.type === 'completed') {
+          onScanCompleted(data.stats);
+        }
+      } catch (e) {
+        console.error('SSE parse error:', e);
+      }
+    };
+
+    state.eventSource.onerror = () => {
+      onScanCompleted();
+    };
+  } catch (err) {
+    showToast(err.message, 'error');
+    stopScan();
+  }
+}
+
+async function stopScan() {
+  try {
+    await fetch('/api/scan/stop', { method: 'POST' });
+  } catch (e) {}
+  onScanCompleted();
+}
+
+function onScanCompleted(finalStats = null) {
+  state.isScanning = false;
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+
+  el.btnStartScan.classList.remove('hidden');
+  el.btnStopScan.classList.add('hidden');
+  el.scanProgressContainer.classList.add('hidden');
+  el.statusText.textContent = 'Scan Finished';
+  document.querySelector('.status-dot').classList.remove('scanning');
+
+  applyFiltersAndRender(true);
+  if (finalStats) {
+    updateMetrics(finalStats);
+    showToast(`Scan finished: ${finalStats.garbage_count} garbage items detected!`, 'success');
+  } else {
+    showToast(`Scan stopped. Found ${state.items.length} items.`, 'info');
+  }
+}
+
+function updateMetrics(stats) {
+  if (!stats) return;
+
+  el.scanMetricsFiles.textContent = `${stats.files_scanned.toLocaleString()} files scanned`;
+  el.scanMetricsDirs.textContent = `${stats.dirs_scanned.toLocaleString()} folders`;
+  el.scanMetricsRate.textContent = `${stats.garbage_count.toLocaleString()} found (${formatSize(stats.garbage_bytes)})`;
+
+  el.statTotalGarbageSize.textContent = formatSize(stats.garbage_bytes);
+  el.statTotalGarbageCount.textContent = `${stats.garbage_count.toLocaleString()} items ready for review`;
+
+  const counts = stats.category_counts || {};
+  const bytes = stats.category_bytes || {};
+
+  const catInstallers = 'Installers, Setup Archives & OS Images';
+  el.statInstallersSize.textContent = formatSize(bytes[catInstallers] || 0);
+  el.statInstallersCount.textContent = `${counts[catInstallers] || 0} files`;
+
+  const catJava = 'Old Java & Build Artifacts';
+  el.statJavaSize.textContent = formatSize(bytes[catJava] || 0);
+  el.statJavaCount.textContent = `${counts[catJava] || 0} items`;
+
+  const catTemp = 'Temporary & Cache Files';
+  el.statTempSize.textContent = formatSize(bytes[catTemp] || 0);
+  el.statTempCount.textContent = `${counts[catTemp] || 0} files`;
+
+  const catDownloads = 'Broken / Incomplete Downloads';
+  el.statDownloadsSize.textContent = formatSize(bytes[catDownloads] || 0);
+  el.statDownloadsCount.textContent = `${counts[catDownloads] || 0} files`;
+}
+
+function resetStatsUI() {
+  el.statTotalGarbageSize.textContent = '0.00 MB';
+  el.statTotalGarbageCount.textContent = 'Scanning...';
+  el.statInstallersSize.textContent = '0.00 MB';
+  el.statInstallersCount.textContent = '0 files';
+  el.statJavaSize.textContent = '0.00 MB';
+  el.statJavaCount.textContent = '0 items';
+  el.statTempSize.textContent = '0.00 MB';
+  el.statTempCount.textContent = '0 files';
+  el.statDownloadsSize.textContent = '0.00 MB';
+  el.statDownloadsCount.textContent = '0 files';
+}
+
+// Filtering & Sorting
+function applyFiltersAndRender(renderFull = true) {
+  let result = state.items;
+
+  if (state.categoryFilter !== 'ALL') {
+    result = result.filter((i) => i.category === state.categoryFilter);
+  }
+
+  if (state.riskFilter !== 'ALL') {
+    result = result.filter((i) => i.risk_level === state.riskFilter);
+  }
+
+  if (state.searchQuery) {
+    const q = state.searchQuery;
+    result = result.filter(
+      (i) => i.name.toLowerCase().includes(q) || i.path.toLowerCase().includes(q)
+    );
+  }
+
+  result.sort((a, b) => {
+    let valA = a[state.sortField];
+    let valB = b[state.sortField];
+
+    if (state.sortField === 'size') {
+      valA = a.size_bytes;
+      valB = b.size_bytes;
+    } else if (state.sortField === 'modified') {
+      valA = a.modified_timestamp;
+      valB = b.modified_timestamp;
+    }
+
+    if (typeof valA === 'string') {
+      return state.sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+    }
+    return state.sortAsc ? valA - valB : valB - valA;
+  });
+
+  state.filteredItems = result;
+  if (renderFull) {
+    renderTable();
+  }
+  updateSelectionSummary();
+}
+
+// Render Main File Manager Table
+function renderTable() {
+  if (state.filteredItems.length === 0) {
+    el.fileTableBody.innerHTML = `
+      <tr class="empty-row">
+        <td colspan="9">
+          <div class="empty-state">
+            <i data-lucide="${state.isScanning ? 'loader' : 'sparkles'}" class="empty-icon ${state.isScanning ? 'spinner' : ''}"></i>
+            <h3>${state.isScanning ? 'Scanning in progress...' : 'No items match filter'}</h3>
+            <p>${state.isScanning ? 'Files will appear here as they are discovered.' : 'Try changing your search keywords or category filters.'}</p>
+          </div>
+        </td>
+      </tr>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  const html = state.filteredItems.map((item) => {
+    const isChecked = state.selectedIds.has(item.id);
+    const riskClass = item.risk_level === 'Safe' ? 'risk-safe' : item.risk_level === 'Caution' ? 'risk-caution' : 'risk-review';
+
+    let typeIcon = 'file';
+    let typeClass = '';
+    const lowerName = item.name.toLowerCase();
+
+    if (item.is_directory) {
+      typeIcon = 'folder';
+      typeClass = 'type-dir';
+    } else if (lowerName.endsWith('.apk')) {
+      typeIcon = 'smartphone';
+      typeClass = 'type-apk';
+    } else if (lowerName.endsWith('.iso') || lowerName.endsWith('.img') || lowerName.endsWith('.vhd')) {
+      typeIcon = 'disc';
+      typeClass = 'type-exe';
+    } else if (lowerName.endsWith('.zip') || lowerName.endsWith('.rar') || lowerName.endsWith('.7z')) {
+      typeIcon = 'archive';
+      typeClass = 'type-tmp';
+    } else if (lowerName.endsWith('.exe') || lowerName.endsWith('.msi')) {
+      typeIcon = 'box';
+      typeClass = 'type-exe';
+    } else if (lowerName.endsWith('.class') || lowerName.endsWith('.jar')) {
+      typeIcon = 'coffee';
+      typeClass = 'type-class';
+    } else if (lowerName.endsWith('.tmp') || lowerName.endsWith('.log') || lowerName.endsWith('.dmp')) {
+      typeIcon = 'trash-2';
+      typeClass = 'type-tmp';
+    }
+
+    return `
+      <tr class="${isChecked ? 'row-selected' : ''}" data-id="${item.id}">
+        <td>
+          <input type="checkbox" class="row-checkbox" data-id="${item.id}" ${isChecked ? 'checked' : ''} />
+        </td>
+        <td>
+          <i data-lucide="${typeIcon}" class="file-type-icon ${typeClass}"></i>
+        </td>
+        <td>
+          <div class="file-name-cell clickable-file-cell" title="Click to view parent folder and hierarchy" data-path="${item.path}">
+            <span class="file-name-text">${item.name}</span>
+          </div>
+        </td>
+        <td>
+          <span class="category-badge">${item.category}</span>
+        </td>
+        <td>
+          <span class="file-size-cell">${item.size_formatted}</span>
+        </td>
+        <td>
+          <span class="file-date-cell">${item.modified_date}</span>
+        </td>
+        <td>
+          <span class="risk-badge ${riskClass}">${item.risk_level}</span>
+        </td>
+        <td>
+          <div class="file-path-cell" title="${item.path}">${item.path}</div>
+        </td>
+        <td>
+          <div class="row-actions">
+            <button class="action-icon-btn btn-inspect-hierarchy" title="Explore parent folder hierarchy" data-path="${item.path}">
+              <i data-lucide="folder-tree"></i>
+            </button>
+            <button class="action-icon-btn btn-open-folder" title="Open containing folder in Windows Explorer" data-path="${item.path}">
+              <i data-lucide="folder"></i>
+            </button>
+            <button class="action-icon-btn ai-btn btn-inspect-ai" title="AI Inspection & Advice" data-path="${item.path}">
+              <i data-lucide="bot"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  el.fileTableBody.innerHTML = html;
+  lucide.createIcons();
+
+  // Attach Checkbox Events
+  document.querySelectorAll('.row-checkbox').forEach((chk) => {
+    chk.addEventListener('change', (e) => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) {
+        state.selectedIds.add(id);
+      } else {
+        state.selectedIds.delete(id);
+      }
+      const tr = e.target.closest('tr');
+      tr.classList.toggle('row-selected', e.target.checked);
+      updateSelectionSummary();
+    });
+  });
+
+  // Attach Hierarchy Click on Name and Icon Button
+  document.querySelectorAll('.clickable-file-cell, .btn-inspect-hierarchy').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const path = btn.dataset.path;
+      openHierarchyModal(path);
+    });
+  });
+
+  // Attach Folder Open Events
+  document.querySelectorAll('.btn-open-folder').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const path = btn.dataset.path;
+      try {
+        await fetch('/api/system/open-explorer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+      } catch (err) {
+        showToast('Could not open folder in Explorer', 'error');
+      }
+    });
+  });
+
+  // Attach AI Inspect Events
+  document.querySelectorAll('.btn-inspect-ai').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const path = btn.dataset.path;
+      openAiInspector(path);
+    });
+  });
+}
+
+// Update Footer Selection Summary
+function updateSelectionSummary() {
+  const selectedItems = state.items.filter((i) => state.selectedIds.has(i.id));
+  const count = selectedItems.length;
+  const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
+
+  el.selectedCount.textContent = `${count.toLocaleString()} items`;
+  el.selectedSize.textContent = formatSize(totalBytes);
+
+  el.btnDeleteItems.disabled = count === 0;
+
+  if (state.filteredItems.length === 0) {
+    el.masterCheckbox.checked = false;
+    el.masterCheckbox.indeterminate = false;
+  } else {
+    const allFilteredChecked = state.filteredItems.every((i) => state.selectedIds.has(i.id));
+    const someFilteredChecked = state.filteredItems.some((i) => state.selectedIds.has(i.id));
+
+    el.masterCheckbox.checked = allFilteredChecked;
+    el.masterCheckbox.indeterminate = someFilteredChecked && !allFilteredChecked;
+  }
+}
+
+// ==========================================
+// Folder Hierarchy & Multi-Level Explorer
+// ==========================================
+
+async function openHierarchyModal(targetPath) {
+  state.initialTargetFilePath = targetPath;
+  state.hierarchySelectedPaths.clear();
+  el.hierarchyModal.classList.remove('hidden');
+  await loadHierarchy(targetPath);
+}
+
+async function loadHierarchy(path) {
+  try {
+    el.hierarchyTableBody.innerHTML = `
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 40px;">
+          <div class="spinner" style="margin: 0 auto 10px;"></div>
+          <span>Inspecting directory hierarchy...</span>
+        </td>
+      </tr>
+    `;
+
+    const res = await fetch('/api/filesystem/folder-hierarchy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+
+    if (!res.ok) {
+      throw new Error('Could not load folder hierarchy');
+    }
+
+    const data = await res.json();
+    state.currentHierarchy = data;
+    state.hierarchySelectedPaths.clear();
+
+    // Render Breadcrumbs
+    renderHierarchyBreadcrumbs(data.breadcrumbs);
+
+    // Up to Parent Button
+    el.btnUpLevel.disabled = !data.parent_path;
+
+    // Folder Meta
+    el.hierarchyFolderName.textContent = data.current_name;
+    el.hierarchyFolderMeta.textContent = `${data.total_files} files, ${data.total_subdirs} folders • Total: ${data.total_size_formatted}`;
+
+    // Delete Entire Folder Level Button
+    el.btnDeleteThisFolder.disabled = !data.is_current_deletable;
+    if (!data.is_current_deletable) {
+      el.btnDeleteThisFolder.title = 'Cannot delete drive root or protected system directory';
+    } else {
+      el.btnDeleteThisFolder.title = `Permanently delete folder "${data.current_name}" and everything in it`;
+    }
+
+    // Delete Initial File Button
+    if (state.initialTargetFilePath) {
+      el.btnDeleteInitialFile.classList.remove('hidden');
+      const targetBase = state.initialTargetFilePath.split(/[\\/]/).pop();
+      el.btnDeleteInitialFile.innerHTML = `<i data-lucide="file-minus"></i> Delete File Only ("${targetBase}")`;
+    } else {
+      el.btnDeleteInitialFile.classList.add('hidden');
+    }
+
+    // Render Entries
+    renderHierarchyTable();
+    updateHierarchySelectedSummary();
+    lucide.createIcons();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
+  }
+}
+
+function renderHierarchyBreadcrumbs(breadcrumbs) {
+  el.hierarchyBreadcrumbs.innerHTML = breadcrumbs.map((b, idx) => {
+    const isLast = b.is_current;
+    return `
+      <button class="breadcrumb-pill ${isLast ? 'active' : ''}" data-path="${b.path}" title="${b.path}">
+        ${b.name}
+      </button>
+      ${!isLast ? '<span class="breadcrumb-sep">&gt;</span>' : ''}
+    `;
+  }).join('');
+
+  document.querySelectorAll('.breadcrumb-pill').forEach((pill) => {
+    pill.addEventListener('click', () => {
+      const path = pill.dataset.path;
+      loadHierarchy(path);
+    });
+  });
+}
+
+function renderHierarchyTable() {
+  if (!state.currentHierarchy) return;
+  const entries = state.currentHierarchy.entries;
+
+  if (entries.length === 0) {
+    el.hierarchyTableBody.innerHTML = `
+      <tr>
+        <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-muted);">
+          Folder is empty.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  const html = entries.map((entry) => {
+    const isChecked = state.hierarchySelectedPaths.has(entry.path);
+    const isTarget = entry.is_target_file;
+    const isDir = entry.is_dir;
+
+    let statusBadge = '';
+    if (isTarget) {
+      statusBadge = '<span class="risk-badge risk-caution"><i data-lucide="target"></i> Initial Target</span>';
+    } else if (entry.is_garbage) {
+      statusBadge = `<span class="risk-badge ${entry.risk_level === 'Safe' ? 'risk-safe' : 'risk-review'}">${entry.garbage_category || 'Garbage'}</span>`;
+    } else {
+      statusBadge = '<span class="category-badge">Standard File</span>';
+    }
+
+    return `
+      <tr class="${isTarget ? 'target-row' : ''} ${isChecked ? 'row-selected' : ''}">
+        <td>
+          <input type="checkbox" class="hierarchy-row-checkbox" data-path="${entry.path}" ${isChecked ? 'checked' : ''} ${!entry.is_deletable ? 'disabled' : ''} />
+        </td>
+        <td>
+          <i data-lucide="${isDir ? 'folder' : 'file'}" class="file-type-icon ${isDir ? 'type-dir' : ''}"></i>
+        </td>
+        <td>
+          <div class="file-name-cell" style="cursor: ${isDir ? 'pointer' : 'default'};" data-path="${entry.path}" data-isdir="${isDir}">
+            <span class="file-name-text" style="${isDir ? 'font-weight: 600; color: var(--color-cyan);' : ''}">${entry.name}</span>
+          </div>
+        </td>
+        <td><span class="file-size-cell">${entry.size_formatted}</span></td>
+        <td><span class="file-date-cell">${entry.modified_date}</span></td>
+        <td>${statusBadge}</td>
+        <td>
+          <div class="row-actions">
+            ${entry.is_deletable ? `
+              <button class="action-icon-btn btn-delete-single-entry text-danger" data-path="${entry.path}" data-name="${entry.name}" data-size="${entry.size_formatted}" data-isdir="${isDir}" title="Permanently delete this ${isDir ? 'folder' : 'file'}">
+                <i data-lucide="trash-2"></i>
+              </button>
+            ` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  el.hierarchyTableBody.innerHTML = html;
+  lucide.createIcons();
+
+  // Checkbox handlers
+  document.querySelectorAll('.hierarchy-row-checkbox').forEach((chk) => {
+    chk.addEventListener('change', (e) => {
+      const path = e.target.dataset.path;
+      if (e.target.checked) {
+        state.hierarchySelectedPaths.add(path);
+      } else {
+        state.hierarchySelectedPaths.delete(path);
+      }
+      e.target.closest('tr').classList.toggle('row-selected', e.target.checked);
+      updateHierarchySelectedSummary();
+    });
+  });
+
+  // Clicking subfolder navigates into it
+  document.querySelectorAll('.file-name-cell[data-isdir="true"]').forEach((cell) => {
+    cell.addEventListener('click', () => {
+      const path = cell.dataset.path;
+      loadHierarchy(path);
+    });
+  });
+
+  // Single Item Delete Button
+  document.querySelectorAll('.btn-delete-single-entry').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const path = btn.dataset.path;
+      const name = btn.dataset.name;
+      const size = btn.dataset.size;
+      const isDir = btn.dataset.isdir === 'true';
+
+      requestPermanentDeleteConfirmation({
+        title: `Permanently Delete ${isDir ? 'Folder' : 'File'}: "${name}"`,
+        subtitle: `This ${isDir ? 'folder and all its contents' : 'file'} will be immediately erased from disk`,
+        count: 1,
+        size: size,
+        onConfirm: async () => {
+          await executeBatchDelete([{ path, size_bytes: 0, is_directory: isDir }]);
+          if (state.currentHierarchy) {
+            loadHierarchy(state.currentHierarchy.current_path);
+          }
+        },
+      });
+    });
+  });
+}
+
+function updateHierarchySelectedSummary() {
+  const count = state.hierarchySelectedPaths.size;
+  el.hierarchySelectedSummary.textContent = `${count} item${count === 1 ? '' : 's'} selected in this folder`;
+  el.btnDeleteHierarchySelected.disabled = count === 0;
+
+  const entries = state.currentHierarchy?.entries || [];
+  const deletableEntries = entries.filter((e) => e.is_deletable);
+  const allChecked = deletableEntries.length > 0 && deletableEntries.every((e) => state.hierarchySelectedPaths.has(e.path));
+  const someChecked = deletableEntries.some((e) => state.hierarchySelectedPaths.has(e.path));
+
+  el.hierarchyMasterCheck.checked = allChecked;
+  el.hierarchyMasterCheck.indeterminate = someChecked && !allChecked;
+}
+
+function closeHierarchyModal() {
+  el.hierarchyModal.classList.add('hidden');
+  state.currentHierarchy = null;
+  state.initialTargetFilePath = null;
+  state.hierarchySelectedPaths.clear();
+}
+
+// Delete Entire Folder Level Handler
+async function executeDeleteFolder(folderPath) {
+  try {
+    const res = await fetch('/api/filesystem/delete-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: folderPath, permanent: true }),
+    });
+
+    const result = await res.json();
+    if (result.deleted_count > 0) {
+      showToast(`Permanently deleted folder level: ${folderPath}`, 'success');
+
+      // Purge any items from main scan that were inside this deleted folder
+      const normPrefix = folderPath.toLowerCase().replace(/\\/g, '/');
+      state.items = state.items.filter((i) => !i.path.toLowerCase().replace(/\\/g, '/').startsWith(normPrefix));
+      applyFiltersAndRender(true);
+
+      // Navigate to parent folder or close if at root
+      if (state.currentHierarchy && state.currentHierarchy.parent_path) {
+        await loadHierarchy(state.currentHierarchy.parent_path);
+      } else {
+        closeHierarchyModal();
+      }
+    } else if (result.failed_count > 0) {
+      showToast(`Could not delete folder: ${result.errors[0]?.error || 'Locked or permission denied'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Folder deletion failed: ${err.message}`, 'error');
+  }
+}
+
+// Batch Permanent Deletion
+async function executeBatchDelete(items) {
+  try {
+    const res = await fetch('/api/clean', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items,
+        permanent: true, // Direct permanent deletion
+      }),
+    });
+
+    const result = await res.json();
+
+    if (result.deleted_count > 0) {
+      showToast(`Permanently deleted ${result.deleted_count} item(s) (freed ${result.freed_formatted})!`, 'success');
+
+      const deletedPaths = new Set(items.map((i) => i.path));
+      state.items = state.items.filter((i) => !deletedPaths.has(i.path));
+      items.forEach((i) => state.selectedIds.delete(i.id));
+
+      applyFiltersAndRender(true);
+      updateSelectionSummary();
+    }
+
+    if (result.failed_count > 0) {
+      showToast(`${result.failed_count} item(s) could not be deleted (locked or protected).`, 'error');
+    }
+  } catch (err) {
+    showToast(`Deletion failed: ${err.message}`, 'error');
+  }
+}
+
+// Universal Permanent Deletion Modal
+function requestPermanentDeleteConfirmation({ title, subtitle, count, size, onConfirm }) {
+  el.confirmModalTitle.textContent = title;
+  el.confirmModalSubtitle.textContent = subtitle;
+  el.confirmCount.textContent = count.toLocaleString();
+  el.confirmSize.textContent = size;
+  el.confirmMode.textContent = 'Direct Permanent (No Recycle Bin)';
+  el.confirmWarningText.textContent = 'Selected files/folders will be PERMANENTLY erased from disk immediately. This cannot be undone.';
+  state.deleteConfirmCallback = onConfirm;
+
+  el.confirmModal.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeConfirmModal() {
+  el.confirmModal.classList.add('hidden');
+  state.deleteConfirmCallback = null;
+}
+
+// AI Inspector
+async function openAiInspector(path) {
+  el.aiModal.classList.remove('hidden');
+  el.aiModalBody.innerHTML = `
+    <div class="ai-loading">
+      <div class="spinner"></div>
+      <p>Analyzing file structure and safety context...</p>
+    </div>
+  `;
+
+  try {
+    const res = await fetch('/api/ai/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+
+    const data = await res.json();
+    const verdictClass = data.safety_verdict === 'Safe to Delete' ? 'risk-safe' : 'risk-review';
+
+    el.aiModalBody.innerHTML = `
+      <div class="ai-detail-row">
+        <span class="ai-detail-label">Target File</span>
+        <strong class="ai-detail-value">${data.file_name}</strong>
+      </div>
+
+      <div class="ai-detail-row">
+        <span class="ai-detail-label">File Type & Origin</span>
+        <span class="ai-detail-value">${data.detected_type} • <em>${data.origin_application}</em></span>
+      </div>
+
+      <div class="ai-verdict-box">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <span class="ai-detail-label">Safety Verdict</span>
+          <div>
+            <span class="risk-badge ${verdictClass}">${data.safety_verdict}</span>
+            ${data.ai_powered ? '<span class="ai-powered-tag"><i data-lucide="sparkles"></i> Gemini AI</span>' : ''}
+          </div>
+        </div>
+        <p style="font-size: 13px; color: var(--text-primary); margin-bottom: 8px;">${data.explanation}</p>
+        <p style="font-size: 12px; color: var(--color-primary); font-weight: 500;"><strong>Recommendation:</strong> ${data.recommendation}</p>
+      </div>
+
+      <div class="ai-detail-row">
+        <span class="ai-detail-label">Full Path</span>
+        <span class="file-path-cell" style="max-width: 100%;">${data.file_path}</span>
+      </div>
+    `;
+    lucide.createIcons();
+  } catch (err) {
+    el.aiModalBody.innerHTML = `<p style="color: var(--color-danger);">Failed to inspect file: ${err.message}</p>`;
+  }
+}
+
+function closeAiModal() {
+  el.aiModal.classList.add('hidden');
+}
+
+// Export CSV Report
+function exportCsvReport() {
+  if (state.items.length === 0) {
+    showToast('No scanned items to export', 'error');
+    return;
+  }
+
+  const headers = ['Name', 'Category', 'Size (Bytes)', 'Size Formatted', 'Modified Date', 'Risk Level', 'Path', 'Reason'];
+  const rows = state.items.map((i) => [
+    `"${i.name.replace(/"/g, '""')}"`,
+    `"${i.category}"`,
+    i.size_bytes,
+    `"${i.size_formatted}"`,
+    `"${i.modified_date}"`,
+    `"${i.risk_level}"`,
+    `"${i.path.replace(/"/g, '""')}"`,
+    `"${i.reason.replace(/"/g, '""')}"`,
+  ]);
+
+  const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  const encodedUri = encodeURI(csvContent);
+  const link = document.createElement('a');
+  link.setAttribute('href', encodedUri);
+  link.setAttribute('download', `diskpurge_report_${new Date().toISOString().slice(0, 10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  showToast('Exported scan report as CSV', 'success');
+}
+
+window.addEventListener('DOMContentLoaded', initApp);
