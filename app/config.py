@@ -1,4 +1,4 @@
-"""Configuration settings and garbage classification rules for DiskPurge."""
+"""Configuration settings and garbage classification rules for JunkZero."""
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Set, Dict

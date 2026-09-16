@@ -14,7 +14,7 @@ from app.engine.classifier import is_system_protected_path, format_size
 AUDIT_LOG_FILE = Path("cleaner_audit.log")
 
 # Setup dedicated cleaner logger
-logger = logging.getLogger("DiskPurgeCleaner")
+logger = logging.getLogger("JunkZeroCleaner")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     handler = logging.FileHandler(AUDIT_LOG_FILE, encoding="utf-8")

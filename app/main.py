@@ -27,10 +27,10 @@ from app.engine.scanner import FastScanner, ScanStats, get_available_drives
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("DiskPurgeServer")
+logger = logging.getLogger("JunkZeroServer")
 
 # FastAPI App
-app = FastAPI(title="DiskPurge API", version="1.0.0")
+app = FastAPI(title="JunkZero API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -306,7 +306,7 @@ def start_server(host: str = "127.0.0.1", port: int = 8000):
 def main():
     """Main CLI entry point supporting both native Desktop GUI and Web mode."""
     import argparse
-    parser = argparse.ArgumentParser(description="DiskPurge - Intelligent Disk Cleaner")
+    parser = argparse.ArgumentParser(description="JunkZero - Intelligent Disk Cleaner")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind server (default: 8000)")
     parser.add_argument("--mode", choices=["gui", "browser", "server"], default="gui",
                         help="Launch mode: 'gui' (Native Desktop Window), 'browser' (Browser UI), or 'server' (API only)")
@@ -322,7 +322,7 @@ def main():
     )
     server_thread.start()
 
-    logger.info(f"DiskPurge server started at {server_url}")
+    logger.info(f"JunkZero server started at {server_url}")
 
     if args.mode == "browser":
         # Launch default web browser
@@ -339,7 +339,7 @@ def main():
             import webview
             logger.info("Launching native Desktop GUI window...")
             window = webview.create_window(
-                title="DiskPurge - Intelligent Disk Garbage Detector & Cleaner",
+                title="JunkZero - Intelligent Disk Garbage Detector & Cleaner",
                 url=server_url,
                 width=1320,
                 height=880,

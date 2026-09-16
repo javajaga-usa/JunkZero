@@ -1,5 +1,5 @@
 /**
- * DiskPurge - Frontend Application Controller
+ * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
  * and direct permanent deletion.
  */
@@ -163,10 +163,10 @@ function setupEventListeners() {
     document.body.classList.toggle('light-theme', !isDark);
     el.themeIcon.setAttribute('data-lucide', isDark ? 'sun' : 'moon');
     lucide.createIcons();
-    localStorage.setItem('diskpurge_theme', isDark ? 'dark' : 'light');
+    localStorage.setItem('junkzero_theme', isDark ? 'dark' : 'light');
   });
 
-  const savedTheme = localStorage.getItem('diskpurge_theme');
+  const savedTheme = localStorage.getItem('junkzero_theme');
   if (savedTheme === 'light') {
     document.body.classList.remove('dark-theme');
     document.body.classList.add('light-theme');
@@ -1197,7 +1197,7 @@ function exportCsvReport() {
   const encodedUri = encodeURI(csvContent);
   const link = document.createElement('a');
   link.setAttribute('href', encodedUri);
-  link.setAttribute('download', `diskpurge_report_${new Date().toISOString().slice(0, 10)}.csv`);
+  link.setAttribute('download', `junkzero_report_${new Date().toISOString().slice(0, 10)}.csv`);
   document.body.appendChild(link);
   link.click();
   link.remove();

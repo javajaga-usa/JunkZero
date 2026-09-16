@@ -1,7 +1,7 @@
-# DiskPurge 🚀
+# JunkZero 🚀
 > **Intelligent, High-Performance Disk Garbage Detector & Cleaner with Modern GUI**
 
-DiskPurge is a lightning-fast storage cleanup and disk optimization utility designed for Windows. It identifies, categorizes, and safely removes gigabytes of leftover clutter—such as APKs, software setup packages (`.exe`, `.msi`), compiled Java binaries (`.class`, `.jar`), development build caches (`node_modules`, `target/`, `__pycache__`), temporary crash logs, and broken browser downloads.
+JunkZero is a lightning-fast storage cleanup and disk optimization utility designed for Windows. It identifies, categorizes, and safely removes gigabytes of leftover clutter—such as APKs, software setup packages (`.exe`, `.msi`), compiled Java binaries (`.class`, `.jar`), development build caches (`node_modules`, `target/`, `__pycache__`), temporary crash logs, and broken browser downloads.
 
 ---
 

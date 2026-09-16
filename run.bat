@@ -1,5 +1,5 @@
 @echo off
-title DiskPurge - Intelligent Storage Cleaner
-echo Starting DiskPurge Desktop GUI...
+title JunkZero - Intelligent Storage Cleaner
+echo Starting JunkZero Desktop GUI...
 python -m app.main --mode gui
 pause
