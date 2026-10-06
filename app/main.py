@@ -53,6 +53,7 @@ class ScanRequest(BaseModel):
     include_temp_junk: bool = True
     include_broken_downloads: bool = True
     include_stale_large: bool = True
+    include_empty_folders: bool = True
     min_size_mb: float = 0.0
     stale_days: int = 180
     skip_system_dirs: bool = True
@@ -140,6 +141,7 @@ async def api_start_scan(req: ScanRequest):
         include_temp_junk=req.include_temp_junk,
         include_broken_downloads=req.include_broken_downloads,
         include_stale_large=req.include_stale_large,
+        include_empty_folders=req.include_empty_folders,
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
         stale_days=req.stale_days,
         skip_system_dirs=req.skip_system_dirs,

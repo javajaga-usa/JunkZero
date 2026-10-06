@@ -47,6 +47,7 @@ const el = {
   optTemp: document.getElementById('optTemp'),
   optDownloads: document.getElementById('optDownloads'),
   optStaleLarge: document.getElementById('optStaleLarge'),
+  optEmptyFolders: document.getElementById('optEmptyFolders'),
 
   // Primary Buttons
   btnStartScan: document.getElementById('btnStartScan'),
@@ -75,6 +76,7 @@ const el = {
   statTempCount: document.getElementById('statTempCount'),
   statDownloadsSize: document.getElementById('statDownloadsSize'),
   statDownloadsCount: document.getElementById('statDownloadsCount'),
+  statEmptyFoldersCount: document.getElementById('statEmptyFoldersCount'),
 
   // Table & Toolbar
   searchInput: document.getElementById('searchInput'),
@@ -474,6 +476,7 @@ async function startScan() {
     include_temp_junk: el.optTemp.checked,
     include_broken_downloads: el.optDownloads.checked,
     include_stale_large: el.optStaleLarge.checked,
+    include_empty_folders: el.optEmptyFolders.checked,
     skip_system_dirs: true,
   };
 
@@ -491,6 +494,7 @@ async function startScan() {
 
     state.eventSource = new EventSource('/api/scan/stream');
     let updateThrottleTimer = null;
+    let latestStats = null;
 
     state.eventSource.onmessage = (event) => {
       try {
@@ -502,14 +506,18 @@ async function startScan() {
             state.selectedIds.add(data.item.id);
           }
 
+          latestStats = data.stats;
           if (!updateThrottleTimer) {
             updateThrottleTimer = setTimeout(() => {
               applyFiltersAndRender(false);
-              updateMetrics(data.stats);
+              updateMetrics(latestStats);
               updateThrottleTimer = null;
             }, 100);
           }
         } else if (data.type === 'completed') {
+          // Drop any pending throttled update so it cannot overwrite the final stats
+          clearTimeout(updateThrottleTimer);
+          updateThrottleTimer = null;
           onScanCompleted(data.stats);
         }
       } catch (e) {
@@ -583,6 +591,8 @@ function updateMetrics(stats) {
   const catDownloads = 'Broken / Incomplete Downloads';
   el.statDownloadsSize.textContent = formatSize(bytes[catDownloads] || 0);
   el.statDownloadsCount.textContent = `${counts[catDownloads] || 0} files`;
+
+  el.statEmptyFoldersCount.textContent = (counts['Empty Folders'] || 0).toLocaleString();
 }
 
 function resetStatsUI() {
@@ -596,6 +606,7 @@ function resetStatsUI() {
   el.statTempCount.textContent = '0 files';
   el.statDownloadsSize.textContent = '0.00 MB';
   el.statDownloadsCount.textContent = '0 files';
+  el.statEmptyFoldersCount.textContent = '0';
 }
 
 // Filtering & Sorting

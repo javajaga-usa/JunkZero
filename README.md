@@ -20,6 +20,7 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - **Temporary & Cache Files**: `.tmp`, `.log`, `.dmp`, `thumbs.db`, crash dumps.
   - **Broken Downloads**: Incomplete `.crdownload`, `.part`, `.download` files.
   - **Stale Large Files**: Files > 100MB unaccessed for > 180 days.
+  - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
 - **🛡️ Ironclad Safety Safeguards**:
   - **Windows Recycle Bin by Default (`send2trash`)**: Files are safely sent to the Recycle Bin so they can be restored at any time.
   - **OS System Protection**: Core directories (`C:\Windows`, `System32`, `Program Files`, `$Recycle.Bin`) are strictly protected from accidental deletion.

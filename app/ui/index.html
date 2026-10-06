@@ -80,6 +80,10 @@
           <input type="checkbox" id="optStaleLarge" checked />
           <i data-lucide="file-warning"></i> Stale Large (>100MB, >180d)
         </label>
+        <label class="checkbox-tag">
+          <input type="checkbox" id="optEmptyFolders" checked />
+          <i data-lucide="folder-x"></i> Empty Folders (no files inside)
+        </label>
 
         <div class="action-buttons-group">
           <button id="btnStartScan" class="btn btn-primary">
@@ -168,6 +172,17 @@
           <span class="stat-subtext" id="statDownloadsCount">0 files</span>
         </div>
       </div>
+
+      <div class="stat-card" data-category="Empty Folders">
+        <div class="stat-icon-wrapper cat-empty">
+          <i data-lucide="folder-x"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Empty Folders</span>
+          <h3 class="stat-value" id="statEmptyFoldersCount">0</h3>
+          <span class="stat-subtext">folders with no files</span>
+        </div>
+      </div>
     </section>
 
     <!-- File Manager Section -->
@@ -189,6 +204,7 @@
               <option value="Temporary & Cache Files">Temporary & Cache (.tmp, .log, .dmp)</option>
               <option value="Broken / Incomplete Downloads">Broken Downloads (.crdownload, .part)</option>
               <option value="Stale Large Files">Stale Large Files (>100MB)</option>
+              <option value="Empty Folders">Empty Folders (no files inside)</option>
             </select>
 
             <select id="riskFilter" class="select-filter">
