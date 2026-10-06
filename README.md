@@ -20,10 +20,11 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - **Temporary & Cache Files**: `.tmp`, `.log`, `.dmp`, `thumbs.db`, crash dumps.
   - **Broken Downloads**: Incomplete `.crdownload`, `.part`, `.download` files.
   - **Stale Large Files**: Files > 100MB unaccessed for > 180 days.
+  - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
 - **🛡️ Ironclad Safety Safeguards**:
   - **Windows Recycle Bin by Default (`send2trash`)**: Files are safely sent to the Recycle Bin so they can be restored at any time.
   - **OS System Protection**: Core directories (`C:\Windows`, `System32`, `Program Files`, `$Recycle.Bin`) are strictly protected from accidental deletion.
-  - **Shift+Delete Mode**: Optional permanent deletion with double-confirmation modal.
+  - **Permanent Mode (opt-in)**: Switch the footer toggle from *Recycle Bin* to *Permanent* to erase files directly. Permanent deletes need an extra "cannot be restored" confirmation, and the app always starts back in Recycle Bin mode.
 - **🧠 AI Inspector (Gemini Integration)**:
   - Click the **AI Inspect** robot icon on any file to receive an instant analysis of its origin application, purpose, and safety verdict.
   - Works 100% offline with built-in heuristic database, or connects with `GEMINI_API_KEY` for deep contextual insights.
