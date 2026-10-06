@@ -5,8 +5,8 @@ import shutil
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
-from pydantic import BaseModel
+from typing import Any, Dict, List
+from pydantic import BaseModel, Field
 import send2trash
 
 from app.engine.classifier import is_system_protected_path, format_size
@@ -29,15 +29,15 @@ class CleanResult(BaseModel):
     freed_bytes: int
     freed_formatted: str
     mode: str  # "recycle_bin" or "permanent"
-    errors: List[Dict[str, str]] = []
+    errors: List[Dict[str, str]] = Field(default_factory=list)
 
 
 def delete_items(
-    items: List[Dict[str, any]],
-    permanent: bool = True
+    items: List[Dict[str, Any]],
+    permanent: bool = False
 ) -> CleanResult:
     """
-    Delete a batch of files and directories permanently from disk (bypassing Recycle Bin).
+    Delete selected paths, using the Recycle Bin unless explicitly requested otherwise.
     """
     deleted_count = 0
     failed_count = 0
@@ -48,13 +48,18 @@ def delete_items(
     for item in items:
         path_str = item.get("path", "")
         size = item.get("size_bytes", 0)
-        is_dir = item.get("is_directory", False)
 
-        if not path_str or not os.path.exists(path_str):
+        if not isinstance(path_str, str) or not path_str or "\0" in path_str:
+            errors.append({"path": str(path_str), "error": "Invalid or empty path"})
+            failed_count += 1
+            continue
+        if not isinstance(size, int) or size < 0:
+            errors.append({"path": path_str, "error": "Invalid size_bytes"})
+            failed_count += 1
             continue
 
         # Critical Guardrail: NEVER delete protected system files
-        if is_system_protected_path(path_str):
+        if is_system_protected_path(path_str) or is_system_protected_path(os.path.realpath(path_str)):
             msg = "Deletion blocked: protected system path"
             errors.append({"path": path_str, "error": msg})
             logger.warning(f"Blocked attempt to delete system path: {path_str}")
@@ -63,9 +68,19 @@ def delete_items(
 
         # Prevent root path deletion (e.g. C:\ or D:\)
         norm_path = os.path.abspath(path_str)
-        if norm_path == os.path.abspath(os.path.splitdrive(norm_path)[0] + "\\"):
+        resolved_path = Path(norm_path).resolve()
+        if resolved_path == Path(resolved_path.anchor):
             msg = "Deletion blocked: root drive path"
             errors.append({"path": path_str, "error": msg})
+            failed_count += 1
+            continue
+
+        if not path_str or not os.path.lexists(norm_path):
+            errors.append({"path": path_str, "error": "Path does not exist"})
+            failed_count += 1
+            continue
+        if os.path.islink(norm_path) or getattr(os.path, "isjunction", lambda _: False)(norm_path):
+            errors.append({"path": path_str, "error": "Deletion blocked: symbolic link or junction"})
             failed_count += 1
             continue
 

@@ -42,3 +42,30 @@ def test_fast_scanner_traversal():
 
         assert scanner.stats.garbage_items_found >= 5
         assert scanner.stats.is_completed is True
+
+
+def test_disabled_build_category_still_scans_contents(tmp_path):
+    build = tmp_path / 'build'
+    build.mkdir()
+    (build / 'junk.tmp').write_text('junk')
+    scanner = FastScanner(ScanOptions(target_path=str(tmp_path), include_java_builds=False))
+    assert [item.name for item in scanner.run_scan()] == ['junk.tmp']
+
+
+def test_repeated_scan_resets_counters(tmp_path):
+    (tmp_path / 'junk.tmp').write_text('junk')
+    scanner = FastScanner(ScanOptions(target_path=str(tmp_path)))
+    scanner.run_scan()
+    scanner.run_scan()
+    assert scanner.stats.garbage_items_found == 1
+    assert scanner.stats.total_files_scanned == 1
+    assert scanner.stats.total_garbage_bytes == 4
+
+
+def test_cancel_before_worker_starts_is_preserved(tmp_path):
+    (tmp_path / 'junk.tmp').write_text('junk')
+    scanner = FastScanner(ScanOptions(target_path=str(tmp_path)))
+    scanner.cancel()
+    assert scanner.run_scan() == []
+    assert scanner.stats.is_cancelled
+    assert not scanner.stats.is_completed

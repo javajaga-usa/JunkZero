@@ -1,3 +1,9 @@
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[char]));
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -140,7 +146,7 @@ function formatSize(bytes) {
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  toast.innerHTML = `<span>${message}</span>`;
+  toast.textContent = message;
   el.toastContainer.appendChild(toast);
   setTimeout(() => {
     toast.style.opacity = '0';
@@ -692,42 +698,42 @@ function renderTable() {
     }
 
     return `
-      <tr class="${isChecked ? 'row-selected' : ''}" data-id="${item.id}">
+      <tr class="${isChecked ? 'row-selected' : ''}" data-id="${escapeHtml(item.id)}">
         <td>
-          <input type="checkbox" class="row-checkbox" data-id="${item.id}" ${isChecked ? 'checked' : ''} />
+          <input type="checkbox" class="row-checkbox" data-id="${escapeHtml(item.id)}" ${isChecked ? 'checked' : ''} />
         </td>
         <td>
           <i data-lucide="${typeIcon}" class="file-type-icon ${typeClass}"></i>
         </td>
         <td>
-          <div class="file-name-cell clickable-file-cell" title="Click to view parent folder and hierarchy" data-path="${item.path}">
-            <span class="file-name-text">${item.name}</span>
+          <div class="file-name-cell clickable-file-cell" title="Click to view parent folder and hierarchy" data-path="${escapeHtml(item.path)}">
+            <span class="file-name-text">${escapeHtml(item.name)}</span>
           </div>
         </td>
         <td>
-          <span class="category-badge">${item.category}</span>
+          <span class="category-badge">${escapeHtml(item.category)}</span>
         </td>
         <td>
-          <span class="file-size-cell">${item.size_formatted}</span>
+          <span class="file-size-cell">${escapeHtml(item.size_formatted)}</span>
         </td>
         <td>
-          <span class="file-date-cell">${item.modified_date}</span>
+          <span class="file-date-cell">${escapeHtml(item.modified_date)}</span>
         </td>
         <td>
-          <span class="risk-badge ${riskClass}">${item.risk_level}</span>
+          <span class="risk-badge ${riskClass}">${escapeHtml(item.risk_level)}</span>
         </td>
         <td>
-          <div class="file-path-cell" title="${item.path}">${item.path}</div>
+          <div class="file-path-cell" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</div>
         </td>
         <td>
           <div class="row-actions">
-            <button class="action-icon-btn btn-inspect-hierarchy" title="Explore parent folder hierarchy" data-path="${item.path}">
+            <button class="action-icon-btn btn-inspect-hierarchy" title="Explore parent folder hierarchy" data-path="${escapeHtml(item.path)}">
               <i data-lucide="folder-tree"></i>
             </button>
-            <button class="action-icon-btn btn-open-folder" title="Open containing folder in Windows Explorer" data-path="${item.path}">
+            <button class="action-icon-btn btn-open-folder" title="Open containing folder in Windows Explorer" data-path="${escapeHtml(item.path)}">
               <i data-lucide="folder"></i>
             </button>
-            <button class="action-icon-btn ai-btn btn-inspect-ai" title="AI Inspection & Advice" data-path="${item.path}">
+            <button class="action-icon-btn ai-btn btn-inspect-ai" title="AI Inspection & Advice" data-path="${escapeHtml(item.path)}">
               <i data-lucide="bot"></i>
             </button>
           </div>
@@ -870,7 +876,7 @@ async function loadHierarchy(path) {
     if (state.initialTargetFilePath) {
       el.btnDeleteInitialFile.classList.remove('hidden');
       const targetBase = state.initialTargetFilePath.split(/[\\/]/).pop();
-      el.btnDeleteInitialFile.innerHTML = `<i data-lucide="file-minus"></i> Delete File Only ("${targetBase}")`;
+      el.btnDeleteInitialFile.innerHTML = `<i data-lucide="file-minus"></i> Delete File Only ("${escapeHtml(targetBase)}")`;
     } else {
       el.btnDeleteInitialFile.classList.add('hidden');
     }
@@ -888,8 +894,8 @@ function renderHierarchyBreadcrumbs(breadcrumbs) {
   el.hierarchyBreadcrumbs.innerHTML = breadcrumbs.map((b, idx) => {
     const isLast = b.is_current;
     return `
-      <button class="breadcrumb-pill ${isLast ? 'active' : ''}" data-path="${b.path}" title="${b.path}">
-        ${b.name}
+      <button class="breadcrumb-pill ${isLast ? 'active' : ''}" data-path="${escapeHtml(b.path)}" title="${escapeHtml(b.path)}">
+        ${escapeHtml(b.name)}
       </button>
       ${!isLast ? '<span class="breadcrumb-sep">&gt;</span>' : ''}
     `;
@@ -927,7 +933,7 @@ function renderHierarchyTable() {
     if (isTarget) {
       statusBadge = '<span class="risk-badge risk-caution"><i data-lucide="target"></i> Initial Target</span>';
     } else if (entry.is_garbage) {
-      statusBadge = `<span class="risk-badge ${entry.risk_level === 'Safe' ? 'risk-safe' : 'risk-review'}">${entry.garbage_category || 'Garbage'}</span>`;
+      statusBadge = `<span class="risk-badge ${entry.risk_level === 'Safe' ? 'risk-safe' : 'risk-review'}">${escapeHtml(entry.garbage_category || 'Garbage')}</span>`;
     } else {
       statusBadge = '<span class="category-badge">Standard File</span>';
     }
@@ -935,23 +941,23 @@ function renderHierarchyTable() {
     return `
       <tr class="${isTarget ? 'target-row' : ''} ${isChecked ? 'row-selected' : ''}">
         <td>
-          <input type="checkbox" class="hierarchy-row-checkbox" data-path="${entry.path}" ${isChecked ? 'checked' : ''} ${!entry.is_deletable ? 'disabled' : ''} />
+          <input type="checkbox" class="hierarchy-row-checkbox" data-path="${escapeHtml(entry.path)}" ${isChecked ? 'checked' : ''} ${!entry.is_deletable ? 'disabled' : ''} />
         </td>
         <td>
           <i data-lucide="${isDir ? 'folder' : 'file'}" class="file-type-icon ${isDir ? 'type-dir' : ''}"></i>
         </td>
         <td>
-          <div class="file-name-cell" style="cursor: ${isDir ? 'pointer' : 'default'};" data-path="${entry.path}" data-isdir="${isDir}">
-            <span class="file-name-text" style="${isDir ? 'font-weight: 600; color: var(--color-cyan);' : ''}">${entry.name}</span>
+          <div class="file-name-cell" style="cursor: ${isDir ? 'pointer' : 'default'};" data-path="${escapeHtml(entry.path)}" data-isdir="${isDir}">
+            <span class="file-name-text" style="${isDir ? 'font-weight: 600; color: var(--color-cyan);' : ''}">${escapeHtml(entry.name)}</span>
           </div>
         </td>
-        <td><span class="file-size-cell">${entry.size_formatted}</span></td>
-        <td><span class="file-date-cell">${entry.modified_date}</span></td>
+        <td><span class="file-size-cell">${escapeHtml(entry.size_formatted)}</span></td>
+        <td><span class="file-date-cell">${escapeHtml(entry.modified_date)}</span></td>
         <td>${statusBadge}</td>
         <td>
           <div class="row-actions">
             ${entry.is_deletable ? `
-              <button class="action-icon-btn btn-delete-single-entry text-danger" data-path="${entry.path}" data-name="${entry.name}" data-size="${entry.size_formatted}" data-isdir="${isDir}" title="Permanently delete this ${isDir ? 'folder' : 'file'}">
+              <button class="action-icon-btn btn-delete-single-entry text-danger" data-path="${escapeHtml(entry.path)}" data-name="${escapeHtml(entry.name)}" data-size="${escapeHtml(entry.size_formatted)}" data-isdir="${isDir}" title="Permanently delete this ${isDir ? 'folder' : 'file'}">
                 <i data-lucide="trash-2"></i>
               </button>
             ` : ''}
@@ -1139,34 +1145,34 @@ async function openAiInspector(path) {
     el.aiModalBody.innerHTML = `
       <div class="ai-detail-row">
         <span class="ai-detail-label">Target File</span>
-        <strong class="ai-detail-value">${data.file_name}</strong>
+        <strong class="ai-detail-value">${escapeHtml(data.file_name)}</strong>
       </div>
 
       <div class="ai-detail-row">
         <span class="ai-detail-label">File Type & Origin</span>
-        <span class="ai-detail-value">${data.detected_type} • <em>${data.origin_application}</em></span>
+        <span class="ai-detail-value">${escapeHtml(data.detected_type)} • <em>${escapeHtml(data.origin_application)}</em></span>
       </div>
 
       <div class="ai-verdict-box">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
           <span class="ai-detail-label">Safety Verdict</span>
           <div>
-            <span class="risk-badge ${verdictClass}">${data.safety_verdict}</span>
+            <span class="risk-badge ${verdictClass}">${escapeHtml(data.safety_verdict)}</span>
             ${data.ai_powered ? '<span class="ai-powered-tag"><i data-lucide="sparkles"></i> Gemini AI</span>' : ''}
           </div>
         </div>
-        <p style="font-size: 13px; color: var(--text-primary); margin-bottom: 8px;">${data.explanation}</p>
-        <p style="font-size: 12px; color: var(--color-primary); font-weight: 500;"><strong>Recommendation:</strong> ${data.recommendation}</p>
+        <p style="font-size: 13px; color: var(--text-primary); margin-bottom: 8px;">${escapeHtml(data.explanation)}</p>
+        <p style="font-size: 12px; color: var(--color-primary); font-weight: 500;"><strong>Recommendation:</strong> ${escapeHtml(data.recommendation)}</p>
       </div>
 
       <div class="ai-detail-row">
         <span class="ai-detail-label">Full Path</span>
-        <span class="file-path-cell" style="max-width: 100%;">${data.file_path}</span>
+        <span class="file-path-cell" style="max-width: 100%;">${escapeHtml(data.file_path)}</span>
       </div>
     `;
     lucide.createIcons();
   } catch (err) {
-    el.aiModalBody.innerHTML = `<p style="color: var(--color-danger);">Failed to inspect file: ${err.message}</p>`;
+    el.aiModalBody.innerHTML = `<p style="color: var(--color-danger);">Failed to inspect file: ${escapeHtml(err.message)}</p>`;
   }
 }
 
@@ -1193,14 +1199,15 @@ function exportCsvReport() {
     `"${i.reason.replace(/"/g, '""')}"`,
   ]);
 
-  const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-  const encodedUri = encodeURI(csvContent);
+  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+  const url = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
-  link.setAttribute('href', encodedUri);
-  link.setAttribute('download', `junkzero_report_${new Date().toISOString().slice(0, 10)}.csv`);
+  link.href = url;
+  link.download = `junkzero_report_${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
   showToast('Exported scan report as CSV', 'success');
 }
 

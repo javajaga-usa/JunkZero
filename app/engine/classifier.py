@@ -1,6 +1,7 @@
 """Intelligent classification engine for detecting disk garbage and assessing safety risks."""
 from __future__ import annotations
 import os
+import ntpath
 import re
 import time
 from datetime import datetime
@@ -9,6 +10,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from app.config import (
+    LARGE_FILE_BYTES_THRESHOLD,
     CAT_INSTALLERS,
     CAT_JAVA_BUILDS,
     CAT_TEMP_JUNK,
@@ -61,7 +63,7 @@ def format_size(bytes_val: int) -> str:
 
 def is_system_protected_path(path_str: str) -> bool:
     """Check if path is inside a protected Windows OS or application critical path."""
-    normalized = path_str.lower().replace("\\", "/")
+    normalized = ntpath.normpath(path_str).lower().replace("\\", "/")
     parts = normalized.split("/")
 
     for part in parts:
@@ -71,7 +73,10 @@ def is_system_protected_path(path_str: str) -> bool:
             return True
 
     # Windows root directory protection
-    if re.match(r"^[a-z]:/windows", normalized) or re.match(r"^[a-z]:/program files", normalized):
+    if re.match(r"^[a-z]:/(?:windows|program files(?: \(x86\))?|programdata)(?:/|$)", normalized):
+        return True
+
+    if "programdata/microsoft" in normalized:
         return True
 
     return False
@@ -214,7 +219,7 @@ def classify_item(
                 reason = "Executable file located in user directory"
 
     # 9. Stale Large Files
-    elif options.include_stale_large and size_bytes >= (50 * 1024 * 1024) and age_days >= options.stale_days:
+    elif options.include_stale_large and size_bytes >= LARGE_FILE_BYTES_THRESHOLD and age_days >= options.stale_days:
         category = CAT_STALE_LARGE
         risk_level = RISK_REVIEW
         reason = f"Large file ({format_size(size_bytes)}) unedited for {int(age_days)} days"

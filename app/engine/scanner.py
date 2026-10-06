@@ -119,7 +119,7 @@ class FastScanner:
                                 self.stats.total_dirs_scanned += 1
 
                             # Check if the directory itself is a build artifact (e.g. node_modules, target, __pycache__)
-                            if name.lower() in BUILD_DIR_NAMES:
+                            if self.options.include_java_builds and name.lower() in BUILD_DIR_NAMES:
                                 dir_size = self._calc_dir_size(path)
                                 item = classify_item(path, name, dir_size, mtime, is_dir=True, options=self.options)
                                 if item:
@@ -148,11 +148,11 @@ class FastScanner:
 
     def run_scan(self) -> List[GarbageItem]:
         """Execute parallel multi-threaded scan starting at options.target_path."""
-        self._stop_event.clear()
+        self.stats = ScanStats(target_path=self.options.target_path)
         self.stats.start_time = time.time()
         self.stats.is_running = True
         self.stats.is_completed = False
-        self.stats.is_cancelled = False
+        self.stats.is_cancelled = self._stop_event.is_set()
         self.garbage_items.clear()
 
         # Gather drive usage

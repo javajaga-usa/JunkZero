@@ -13,10 +13,9 @@ from typing import Any, Dict, List, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import ScanOptions
 from app.engine.ai_advisor import analyze_item
@@ -32,14 +31,6 @@ logger = logging.getLogger("JunkZeroServer")
 # FastAPI App
 app = FastAPI(title="JunkZero API", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Global Scanner State
 current_scanner: Optional[FastScanner] = None
 scanner_lock = threading.Lock()
@@ -53,14 +44,14 @@ class ScanRequest(BaseModel):
     include_temp_junk: bool = True
     include_broken_downloads: bool = True
     include_stale_large: bool = True
-    min_size_mb: float = 0.0
-    stale_days: int = 180
+    min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    stale_days: int = Field(default=180, ge=1)
     skip_system_dirs: bool = True
 
 
 class CleanRequest(BaseModel):
     items: List[Dict[str, Any]]
-    permanent: bool = True
+    permanent: bool = False
 
 
 class InspectPathRequest(BaseModel):
@@ -69,7 +60,7 @@ class InspectPathRequest(BaseModel):
 
 class DeleteFolderRequest(BaseModel):
     path: str
-    permanent: bool = True
+    permanent: bool = False
 
 
 class OpenFolderRequest(BaseModel):
@@ -90,16 +81,17 @@ def api_get_drives():
 def api_browse_folder():
     """Open a native Windows directory picker and return the selected path."""
     try:
-        ps_cmd = (
-            'powershell -WindowStyle Hidden -Command "'
-            '[System.Reflection.Assembly]::LoadWithPartialName(\'System.windows.forms\') | Out-Null;'
-            '$f = New-Object System.Windows.Forms.FolderBrowserDialog;'
-            '$f.Description = \'Select a drive or folder to scan for garbage files\';'
-            '$f.ShowNewFolderButton = $false;'
-            'if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }'
-            '"'
+        ps_script = (
+            "Add-Type -AssemblyName System.Windows.Forms;"
+            "$f = New-Object System.Windows.Forms.FolderBrowserDialog;"
+            "$f.Description = 'Select a drive or folder to scan for garbage files';"
+            "$f.ShowNewFolderButton = $false;"
+            "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
         )
-        res = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=30)
+        res = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", ps_script],
+            capture_output=True, text=True, timeout=30,
+        )
         selected_path = res.stdout.strip()
         if selected_path and os.path.exists(selected_path):
             return {"path": selected_path}
@@ -117,9 +109,9 @@ def api_open_explorer(req: OpenFolderRequest):
 
     try:
         if os.path.isfile(path):
-            subprocess.Popen(f'explorer.exe /select,"{path}"')
+            subprocess.Popen(['explorer.exe', '/select,', path])
         else:
-            subprocess.Popen(f'explorer.exe "{path}"')
+            subprocess.Popen(['explorer.exe', path])
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -130,8 +122,8 @@ async def api_start_scan(req: ScanRequest):
     """Start a multi-threaded scan for the given target path."""
     global current_scanner, event_queue
 
-    if not os.path.exists(req.target_path):
-        raise HTTPException(status_code=400, detail=f"Target path '{req.target_path}' does not exist")
+    if not os.path.isdir(req.target_path):
+        raise HTTPException(status_code=400, detail=f"Target path '{req.target_path}' is not a directory")
 
     options = ScanOptions(
         target_path=req.target_path,
@@ -152,6 +144,9 @@ async def api_start_scan(req: ScanRequest):
         # Reset event queue
         event_queue = asyncio.Queue()
         current_scanner = FastScanner(options)
+        scanner = current_scanner
+        session_queue = event_queue
+        scanner.stats.is_running = True
 
     loop = asyncio.get_running_loop()
 
@@ -164,16 +159,15 @@ async def api_start_scan(req: ScanRequest):
                 "dirs_scanned": stats.total_dirs_scanned,
                 "garbage_count": stats.garbage_items_found,
                 "garbage_bytes": stats.total_garbage_bytes,
-                "category_counts": stats.category_counts,
-                "category_bytes": stats.category_bytes,
+                "category_counts": dict(stats.category_counts),
+                "category_bytes": dict(stats.category_bytes),
             }
         }
-        loop.call_soon_threadsafe(event_queue.put_nowait, msg)
+        loop.call_soon_threadsafe(session_queue.put_nowait, msg)
 
-    current_scanner.set_callback(on_item_found)
+    scanner.set_callback(on_item_found)
 
     def run_worker():
-        scanner = current_scanner
         if scanner:
             scanner.run_scan()
             completion_msg = {
@@ -190,7 +184,7 @@ async def api_start_scan(req: ScanRequest):
                     "is_cancelled": scanner.stats.is_cancelled,
                 }
             }
-            loop.call_soon_threadsafe(event_queue.put_nowait, completion_msg)
+            loop.call_soon_threadsafe(session_queue.put_nowait, completion_msg)
 
     threading.Thread(target=run_worker, daemon=True).start()
     return {"status": "started", "target_path": req.target_path}
@@ -199,12 +193,14 @@ async def api_start_scan(req: ScanRequest):
 @app.get("/api/scan/stream")
 async def api_scan_stream():
     """SSE endpoint streaming live scan items and statistics to the UI."""
+    session_queue = event_queue
+    session_scanner = current_scanner
+
     async def sse_generator():
-        global event_queue
         while True:
             try:
                 # Wait for next event with a timeout
-                msg = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                msg = await asyncio.wait_for(session_queue.get(), timeout=1.0)
                 yield f"data: {json.dumps(msg)}\n\n"
                 if msg.get("type") == "completed":
                     break
@@ -212,7 +208,7 @@ async def api_scan_stream():
                 # Heartbeat ping
                 yield f": heartbeat\n\n"
                 with scanner_lock:
-                    if current_scanner and not current_scanner.stats.is_running and event_queue.empty():
+                    if (session_scanner is None or not session_scanner.stats.is_running) and session_queue.empty():
                         break
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
@@ -243,8 +239,8 @@ def api_scan_status():
             "dirs_scanned": stats.total_dirs_scanned,
             "garbage_count": stats.garbage_items_found,
             "garbage_bytes": stats.total_garbage_bytes,
-            "category_counts": stats.category_counts,
-            "category_bytes": stats.category_bytes,
+            "category_counts": dict(stats.category_counts),
+            "category_bytes": dict(stats.category_bytes),
             "elapsed_seconds": stats.elapsed_seconds,
             "items_count": len(current_scanner.garbage_items),
         }
@@ -283,7 +279,7 @@ def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
     if not os.path.exists(req.path):
         raise HTTPException(status_code=404, detail="Folder not found")
     if not os.path.isdir(req.path):
-        raise HTTPException(status_code=400, detail="Path is not a directory")
+        raise HTTPException(status_code=400, detail="Path does not exist")
     return delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent)
 
 
@@ -314,6 +310,10 @@ def main():
 
     port = args.port
     server_url = f"http://127.0.0.1:{port}"
+
+    if args.mode == "server":
+        start_server(port=port)
+        return
 
     # Start FastAPI in background daemon thread
     server_thread = threading.Thread(

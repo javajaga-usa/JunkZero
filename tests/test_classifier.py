@@ -119,3 +119,20 @@ def test_system_protection_block():
     assert is_system_protected_path("C:/Program Files/Google/Chrome/chrome.exe") is True
     assert is_system_protected_path("D:/$Recycle.Bin/somefile") is True
     assert is_system_protected_path("C:/Users/Jagad/Downloads/setup.exe") is False
+
+
+def test_system_protection_normalizes_parent_segments():
+    assert is_system_protected_path('C:/Users/../Windows/System32/kernel32.dll')
+    assert is_system_protected_path('C:/ProgramData/Microsoft/cache.tmp')
+    assert not is_system_protected_path('C:/WindowsBackups/setup.exe')
+
+
+def test_stale_large_threshold_matches_config(default_options):
+    import time
+    from app.config import LARGE_FILE_BYTES_THRESHOLD, CAT_STALE_LARGE
+    old = time.time() - 200 * 86400
+    assert classify_item('C:/Users/Test/video.dat', 'video.dat',
+                         LARGE_FILE_BYTES_THRESHOLD - 1, old, False, default_options) is None
+    item = classify_item('C:/Users/Test/video.dat', 'video.dat',
+                         LARGE_FILE_BYTES_THRESHOLD, old, False, default_options)
+    assert item.category == CAT_STALE_LARGE
