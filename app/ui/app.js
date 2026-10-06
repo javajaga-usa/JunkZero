@@ -1,7 +1,7 @@
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
- * and direct permanent deletion.
+ * and Recycle Bin (default) or permanent deletion.
  */
 
 // Global State
@@ -29,6 +29,10 @@ const state = {
   hierarchySelectedPaths: new Set(),
   initialTargetFilePath: null,
   deleteConfirmCallback: null,
+
+  // Delete mode: Recycle Bin unless the user explicitly switches to permanent.
+  // Deliberately not persisted, so every launch starts in the safe mode.
+  permanentDelete: false,
 };
 
 // DOM Element References
@@ -57,6 +61,8 @@ const el = {
   btnDeselectAll: document.getElementById('btnDeselectAll'),
   btnExportReport: document.getElementById('btnExportReport'),
   btnDeleteItems: document.getElementById('btnDeleteItems'),
+  modeRecycle: document.getElementById('modeRecycle'),
+  modePermanent: document.getElementById('modePermanent'),
 
   // Progress UI
   scanProgressContainer: document.getElementById('scanProgressContainer'),
@@ -117,6 +123,10 @@ const el = {
   confirmCount: document.getElementById('confirmCount'),
   confirmSize: document.getElementById('confirmSize'),
   confirmMode: document.getElementById('confirmMode'),
+  confirmModalIcon: document.getElementById('confirmModalIcon'),
+  confirmWarningBanner: document.getElementById('confirmWarningBanner'),
+  confirmPermanentAck: document.getElementById('confirmPermanentAck'),
+  confirmPermanentAckInput: document.getElementById('confirmPermanentAckInput'),
   closeConfirmModal: document.getElementById('closeConfirmModal'),
   btnCancelDelete: document.getElementById('btnCancelDelete'),
   btnExecuteDelete: document.getElementById('btnExecuteDelete'),
@@ -290,9 +300,9 @@ function setupEventListeners() {
     if (selectedItems.length === 0) return;
 
     const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
-    requestPermanentDeleteConfirmation({
-      title: 'Confirm Permanent Deletion',
-      subtitle: `${selectedItems.length} garbage items will be permanently removed`,
+    requestDeleteConfirmation({
+      title: 'Confirm Deletion',
+      subtitle: `${selectedItems.length} garbage items will be removed`,
       count: selectedItems.length,
       size: formatSize(totalBytes),
       onConfirm: async () => {
@@ -302,6 +312,13 @@ function setupEventListeners() {
   });
 
   el.btnExportReport.addEventListener('click', exportCsvReport);
+
+  // Delete Mode Toggle
+  el.modeRecycle.addEventListener('click', () => setDeleteMode(false));
+  el.modePermanent.addEventListener('click', () => setDeleteMode(true));
+  el.confirmPermanentAckInput.addEventListener('change', () => {
+    el.btnExecuteDelete.disabled = !el.confirmPermanentAckInput.checked;
+  });
 
   // Hierarchy Explorer Listeners
   el.closeHierarchyModal.addEventListener('click', closeHierarchyModal);
@@ -319,7 +336,7 @@ function setupEventListeners() {
     const folderName = state.currentHierarchy.current_name;
     const folderSize = state.currentHierarchy.total_size_formatted;
 
-    requestPermanentDeleteConfirmation({
+    requestDeleteConfirmation({
       title: `Delete Entire Folder Level: "${folderName}"`,
       subtitle: 'All files and subdirectories inside this folder will be deleted',
       count: state.currentHierarchy.total_files + state.currentHierarchy.total_subdirs,
@@ -335,7 +352,7 @@ function setupEventListeners() {
     const filePath = state.initialTargetFilePath;
     const fileName = filePath.split(/[\\/]/).pop();
 
-    requestPermanentDeleteConfirmation({
+    requestDeleteConfirmation({
       title: `Delete File Only: "${fileName}"`,
       subtitle: 'Only this specific file will be deleted, keeping the parent folder intact',
       count: 1,
@@ -358,9 +375,9 @@ function setupEventListeners() {
 
     const totalBytes = selectedEntries.reduce((acc, e) => acc + e.size_bytes, 0);
 
-    requestPermanentDeleteConfirmation({
+    requestDeleteConfirmation({
       title: 'Delete Selected Items in Folder',
-      subtitle: `${selectedEntries.length} items will be permanently removed`,
+      subtitle: `${selectedEntries.length} items will be removed`,
       count: selectedEntries.length,
       size: formatSize(totalBytes),
       onConfirm: async () => {
@@ -400,7 +417,6 @@ function setupEventListeners() {
         await state.deleteConfirmCallback();
       } finally {
         el.btnExecuteDelete.disabled = false;
-        el.btnExecuteDelete.innerHTML = '<i data-lucide="trash-2"></i> Permanently Delete Now';
         closeConfirmModal();
       }
     }
@@ -874,7 +890,7 @@ async function loadHierarchy(path) {
     if (!data.is_current_deletable) {
       el.btnDeleteThisFolder.title = 'Cannot delete drive root or protected system directory';
     } else {
-      el.btnDeleteThisFolder.title = `Permanently delete folder "${data.current_name}" and everything in it`;
+      el.btnDeleteThisFolder.title = `Delete folder "${data.current_name}" and everything in it`;
     }
 
     // Delete Initial File Button
@@ -962,7 +978,7 @@ function renderHierarchyTable() {
         <td>
           <div class="row-actions">
             ${entry.is_deletable ? `
-              <button class="action-icon-btn btn-delete-single-entry text-danger" data-path="${entry.path}" data-name="${entry.name}" data-size="${entry.size_formatted}" data-isdir="${isDir}" title="Permanently delete this ${isDir ? 'folder' : 'file'}">
+              <button class="action-icon-btn btn-delete-single-entry text-danger" data-path="${entry.path}" data-name="${entry.name}" data-size="${entry.size_formatted}" data-isdir="${isDir}" title="Delete this ${isDir ? 'folder' : 'file'}">
                 <i data-lucide="trash-2"></i>
               </button>
             ` : ''}
@@ -1006,9 +1022,9 @@ function renderHierarchyTable() {
       const size = btn.dataset.size;
       const isDir = btn.dataset.isdir === 'true';
 
-      requestPermanentDeleteConfirmation({
-        title: `Permanently Delete ${isDir ? 'Folder' : 'File'}: "${name}"`,
-        subtitle: `This ${isDir ? 'folder and all its contents' : 'file'} will be immediately erased from disk`,
+      requestDeleteConfirmation({
+        title: `Delete ${isDir ? 'Folder' : 'File'}: "${name}"`,
+        subtitle: `This ${isDir ? 'folder and all its contents' : 'file'} will be removed`,
         count: 1,
         size: size,
         onConfirm: async () => {
@@ -1049,12 +1065,13 @@ async function executeDeleteFolder(folderPath) {
     const res = await fetch('/api/filesystem/delete-folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: folderPath, permanent: true }),
+      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete }),
     });
 
     const result = await res.json();
     if (result.deleted_count > 0) {
-      showToast(`Permanently deleted folder level: ${folderPath}`, 'success');
+      const verb = result.mode === 'permanent' ? 'Permanently deleted' : 'Moved to Recycle Bin';
+      showToast(`${verb}: ${folderPath}`, 'success');
 
       // Purge any items from main scan that were inside this deleted folder
       const normPrefix = folderPath.toLowerCase().replace(/\\/g, '/');
@@ -1075,7 +1092,7 @@ async function executeDeleteFolder(folderPath) {
   }
 }
 
-// Batch Permanent Deletion
+// Batch Deletion (Recycle Bin or permanent, per the current delete mode)
 async function executeBatchDelete(items) {
   try {
     const res = await fetch('/api/clean', {
@@ -1083,14 +1100,18 @@ async function executeBatchDelete(items) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items,
-        permanent: true, // Direct permanent deletion
+        permanent: state.permanentDelete,
       }),
     });
 
     const result = await res.json();
 
     if (result.deleted_count > 0) {
-      showToast(`Permanently deleted ${result.deleted_count} item(s) (freed ${result.freed_formatted})!`, 'success');
+      if (result.mode === 'permanent') {
+        showToast(`Permanently deleted ${result.deleted_count} item(s) (freed ${result.freed_formatted})!`, 'success');
+      } else {
+        showToast(`Moved ${result.deleted_count} item(s) (${result.freed_formatted}) to the Recycle Bin. Empty it to free the space.`, 'success');
+      }
 
       const deletedPaths = new Set(items.map((i) => i.path));
       state.items = state.items.filter((i) => !deletedPaths.has(i.path));
@@ -1108,14 +1129,46 @@ async function executeBatchDelete(items) {
   }
 }
 
-// Universal Permanent Deletion Modal
-function requestPermanentDeleteConfirmation({ title, subtitle, count, size, onConfirm }) {
+// Delete Mode
+function setDeleteMode(permanent) {
+  state.permanentDelete = permanent;
+  el.modeRecycle.classList.toggle('active', !permanent);
+  el.modePermanent.classList.toggle('active', permanent);
+  el.modeRecycle.setAttribute('aria-pressed', String(!permanent));
+  el.modePermanent.setAttribute('aria-pressed', String(permanent));
+  el.btnDeleteItems.innerHTML = permanent
+    ? '<i data-lucide="trash-2"></i> Delete Selected Permanently'
+    : '<i data-lucide="trash-2"></i> Move Selected to Recycle Bin';
+  lucide.createIcons();
+}
+
+// Universal Deletion Confirmation Modal
+function requestDeleteConfirmation({ title, subtitle, count, size, onConfirm }) {
+  const permanent = state.permanentDelete;
   el.confirmModalTitle.textContent = title;
   el.confirmModalSubtitle.textContent = subtitle;
   el.confirmCount.textContent = count.toLocaleString();
   el.confirmSize.textContent = size;
-  el.confirmMode.textContent = 'Direct Permanent (No Recycle Bin)';
-  el.confirmWarningText.textContent = 'Selected files/folders will be PERMANENTLY erased from disk immediately. This cannot be undone.';
+
+  el.confirmModalIcon.className = permanent ? 'modal-icon danger' : 'modal-icon warning';
+  el.confirmWarningBanner.classList.toggle('danger-banner', permanent);
+  el.confirmMode.classList.toggle('text-danger', permanent);
+
+  if (permanent) {
+    el.confirmMode.textContent = 'Permanent (No Recycle Bin)';
+    el.confirmWarningText.textContent = 'Selected files/folders will be PERMANENTLY erased from disk immediately. This cannot be undone.';
+    el.btnExecuteDelete.innerHTML = '<i data-lucide="trash-2"></i> Permanently Delete Now';
+  } else {
+    el.confirmMode.textContent = 'Recycle Bin';
+    el.confirmWarningText.textContent = 'Selected files/folders will be moved to the Recycle Bin. You can restore them from there until it is emptied.';
+    el.btnExecuteDelete.innerHTML = '<i data-lucide="recycle"></i> Move to Recycle Bin';
+  }
+
+  // Permanent mode needs an explicit second confirmation before the button unlocks
+  el.confirmPermanentAckInput.checked = false;
+  el.confirmPermanentAck.classList.toggle('hidden', !permanent);
+  el.btnExecuteDelete.disabled = permanent;
+
   state.deleteConfirmCallback = onConfirm;
 
   el.confirmModal.classList.remove('hidden');

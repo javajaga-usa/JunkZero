@@ -61,7 +61,7 @@ class ScanRequest(BaseModel):
 
 class CleanRequest(BaseModel):
     items: List[Dict[str, Any]]
-    permanent: bool = True
+    permanent: bool = False
 
 
 class InspectPathRequest(BaseModel):
@@ -70,7 +70,7 @@ class InspectPathRequest(BaseModel):
 
 class DeleteFolderRequest(BaseModel):
     path: str
-    permanent: bool = True
+    permanent: bool = False
 
 
 class OpenFolderRequest(BaseModel):
@@ -281,7 +281,7 @@ def api_folder_hierarchy(req: InspectPathRequest) -> FolderHierarchyView:
 
 @app.post("/api/filesystem/delete-folder")
 def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
-    """Permanently delete a specified folder level."""
+    """Delete a specified folder level (Recycle Bin by default, or permanently)."""
     if not os.path.exists(req.path):
         raise HTTPException(status_code=404, detail="Folder not found")
     if not os.path.isdir(req.path):

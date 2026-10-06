@@ -271,9 +271,14 @@
             <strong id="selectedCount" class="summary-highlight">0 items</strong>
             <span class="summary-divider">•</span>
             <strong id="selectedSize" class="summary-highlight">0.00 MB</strong>
-            <span class="safety-badge permanent-badge">
-              <i data-lucide="zap"></i> Direct Permanent Deletion (No Recycle Bin)
-            </span>
+            <div class="delete-mode-toggle" role="group" aria-label="Delete mode">
+              <button type="button" id="modeRecycle" class="mode-option active" aria-pressed="true" title="Move deleted items to the Recycle Bin so they can be restored">
+                <i data-lucide="recycle"></i> Recycle Bin
+              </button>
+              <button type="button" id="modePermanent" class="mode-option" aria-pressed="false" title="Erase deleted items from disk immediately (cannot be undone)">
+                <i data-lucide="zap"></i> Permanent
+              </button>
+            </div>
           </div>
         </div>
 
@@ -281,8 +286,8 @@
           <button id="btnExportReport" class="btn btn-secondary" title="Export list to CSV">
             <i data-lucide="file-spreadsheet"></i> Export CSV
           </button>
-          <button id="btnDeleteItems" class="btn btn-danger" disabled title="Permanently delete selected files from disk">
-            <i data-lucide="trash-2"></i> Delete Selected Files Permanently
+          <button id="btnDeleteItems" class="btn btn-danger" disabled title="Delete selected files">
+            <i data-lucide="trash-2"></i> Move Selected to Recycle Bin
           </button>
         </div>
       </footer>
@@ -322,7 +327,7 @@
             </div>
           </div>
           <div class="folder-header-actions">
-            <button id="btnDeleteThisFolder" class="btn btn-danger btn-sm" title="Permanently delete this entire folder level">
+            <button id="btnDeleteThisFolder" class="btn btn-danger btn-sm" title="Delete this entire folder level">
               <i data-lucide="trash-2"></i> Delete Entire Folder Level
             </button>
           </div>
@@ -399,7 +404,7 @@
           <div class="modal-title-group">
             <div id="confirmModalIcon" class="modal-icon danger"><i data-lucide="alert-triangle"></i></div>
             <div>
-              <h3 class="modal-title" id="confirmModalTitle">Confirm Permanent Deletion</h3>
+              <h3 class="modal-title" id="confirmModalTitle">Confirm Deletion</h3>
               <p class="modal-subtitle" id="confirmModalSubtitle">Items will be removed from disk immediately</p>
             </div>
           </div>
@@ -418,7 +423,7 @@
               <strong id="confirmCount">0</strong>
             </div>
             <div class="stat-pill">
-              <span>Space to Free:</span>
+              <span>Size:</span>
               <strong id="confirmSize">0.00 MB</strong>
             </div>
             <div class="stat-pill">
@@ -426,6 +431,11 @@
               <strong id="confirmMode" class="text-danger">Permanent Direct</strong>
             </div>
           </div>
+
+          <label id="confirmPermanentAck" class="permanent-ack hidden">
+            <input type="checkbox" id="confirmPermanentAckInput" />
+            I understand these items cannot be restored from the Recycle Bin
+          </label>
 
           <p class="confirm-note">Protected system paths and root drives are automatically blocked by the engine safety filter.</p>
         </div>

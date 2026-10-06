@@ -1306,10 +1306,63 @@ input[type="text"]:focus {
   align-items: center;
 }
 
-.permanent-badge {
+/* Delete Mode Toggle */
+.delete-mode-toggle {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+}
+
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.mode-option i {
+  width: 13px;
+  height: 13px;
+}
+
+#modeRecycle.active {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+#modePermanent.active {
+  color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.modal-icon.danger {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
   background: rgba(239, 68, 68, 0.15);
   color: var(--color-danger);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.permanent-ack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-danger);
+  cursor: pointer;
 }
 
 .danger-banner {

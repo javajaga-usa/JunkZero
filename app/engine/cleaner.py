@@ -50,10 +50,11 @@ class CleanResult(BaseModel):
 
 def delete_items(
     items: List[Dict[str, any]],
-    permanent: bool = True
+    permanent: bool = False
 ) -> CleanResult:
     """
-    Delete a batch of files and directories permanently from disk (bypassing Recycle Bin).
+    Delete a batch of files and directories. Items go to the Recycle Bin by default;
+    pass permanent=True to erase them from disk directly.
     """
     deleted_count = 0
     failed_count = 0
@@ -121,7 +122,7 @@ def delete_items(
                     os.remove(norm_path)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
             else:
-                # Optional Recycle Bin fallback
+                # Default: move to the Recycle Bin so the user can restore it
                 send2trash.send2trash(norm_path)
                 logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
 
