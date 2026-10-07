@@ -44,6 +44,10 @@ class ScanRequest(BaseModel):
     include_temp_junk: bool = True
     include_broken_downloads: bool = True
     include_stale_large: bool = True
+    include_temp_junk: bool = True
+    include_broken_downloads: bool = True
+    include_stale_large: bool = True
+    include_empty_folders: bool = True
     min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     stale_days: int = Field(default=180, ge=1)
     skip_system_dirs: bool = True
@@ -132,6 +136,7 @@ async def api_start_scan(req: ScanRequest):
         include_temp_junk=req.include_temp_junk,
         include_broken_downloads=req.include_broken_downloads,
         include_stale_large=req.include_stale_large,
+        include_empty_folders=req.include_empty_folders,
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
         stale_days=req.stale_days,
         skip_system_dirs=req.skip_system_dirs,
@@ -275,7 +280,7 @@ def api_folder_hierarchy(req: InspectPathRequest) -> FolderHierarchyView:
 
 @app.post("/api/filesystem/delete-folder")
 def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
-    """Permanently delete a specified folder level."""
+    """Delete a specified folder level (Recycle Bin by default, or permanently)."""
     if not os.path.exists(req.path):
         raise HTTPException(status_code=404, detail="Folder not found")
     if not os.path.isdir(req.path):

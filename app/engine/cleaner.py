@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 import send2trash
 
+from app.config import CAT_EMPTY_FOLDERS
 from app.engine.classifier import is_system_protected_path, format_size
 
 AUDIT_LOG_FILE = Path("cleaner_audit.log")
@@ -20,6 +21,21 @@ if not logger.handlers:
     handler = logging.FileHandler(AUDIT_LOG_FILE, encoding="utf-8")
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s"))
     logger.addHandler(handler)
+
+
+def folder_has_files(dir_path: str) -> bool:
+    """Return True if the folder contains anything other than (empty) subfolders, at any depth."""
+    for root, dirs, files in os.walk(dir_path, onerror=_raise):
+        if files:
+            return True
+        for d in dirs:
+            if os.path.islink(os.path.join(root, d)):
+                return True
+    return False
+
+
+def _raise(err: OSError) -> None:
+    raise err
 
 
 class CleanResult(BaseModel):
@@ -37,7 +53,11 @@ def delete_items(
     permanent: bool = False
 ) -> CleanResult:
     """
-    Delete selected paths, using the Recycle Bin unless explicitly requested otherwise.
+    Delete a batch of files and directories. Items go to the Recycle Bin by default;
+    pass permanent=True to erase them from disk directly.
+    """
+    deleted_count = 0
+    failed_count = 0
     """
     deleted_count = 0
     failed_count = 0
@@ -84,6 +104,19 @@ def delete_items(
             failed_count += 1
             continue
 
+        # A folder flagged as empty may have gained files since the scan
+        if item.get("category") == CAT_EMPTY_FOLDERS:
+            try:
+                still_empty = os.path.isdir(norm_path) and not folder_has_files(norm_path)
+            except OSError:
+                still_empty = False
+            if not still_empty:
+                msg = "Deletion skipped: folder is no longer empty"
+                errors.append({"path": path_str, "error": msg})
+                logger.warning(f"Skipped empty-folder delete, folder now has content: {norm_path}")
+                failed_count += 1
+                continue
+
         try:
             # Auto-calculate size if not passed
             if size == 0:
@@ -107,7 +140,7 @@ def delete_items(
                     os.remove(norm_path)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
             else:
-                # Optional Recycle Bin fallback
+                # Default: move to the Recycle Bin so the user can restore it
                 send2trash.send2trash(norm_path)
                 logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
 

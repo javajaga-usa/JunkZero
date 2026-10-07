@@ -9,6 +9,7 @@ CAT_JAVA_BUILDS = "Old Java & Build Artifacts"
 CAT_TEMP_JUNK = "Temporary & Cache Files"
 CAT_BROKEN_DOWNLOADS = "Broken / Incomplete Downloads"
 CAT_STALE_LARGE = "Stale Large Files"
+CAT_EMPTY_FOLDERS = "Empty Folders"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -98,6 +99,7 @@ class ScanOptions:
     include_temp_junk: bool = True
     include_broken_downloads: bool = True
     include_stale_large: bool = True
+    include_empty_folders: bool = True
     min_file_size_bytes: int = 0
     stale_days: int = STALE_DAYS_THRESHOLD
     skip_system_dirs: bool = True
