@@ -1,0 +1,117 @@
+"""Small JSON-backed persistence for user settings, cleanup history and scan reports."""
+from __future__ import annotations
+import json
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+HISTORY_LIMIT = 200          # Cleanup records kept
+HISTORY_PATHS_LIMIT = 500    # Paths stored per cleanup record
+
+_lock = threading.Lock()
+
+
+def data_dir() -> Path:
+    """Per-user folder for JunkZero state (override with JUNKZERO_DATA_DIR)."""
+    override = os.environ.get("JUNKZERO_DATA_DIR")
+    if override:
+        base = Path(override)
+    elif os.environ.get("APPDATA"):
+        base = Path(os.environ["APPDATA"]) / "JunkZero"
+    else:
+        base = Path.home() / ".junkzero"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _read_json(name: str, default: Any) -> Any:
+    path = data_dir() / name
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return default
+
+
+def _write_json(name: str, value: Any) -> None:
+    path = data_dir() / name
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f, indent=2)
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------- Settings
+
+def load_settings() -> Dict[str, Any]:
+    settings = _read_json("settings.json", {})
+    return settings if isinstance(settings, dict) else {}
+
+
+def update_settings(**changes: Any) -> Dict[str, Any]:
+    with _lock:
+        settings = load_settings()
+        settings.update(changes)
+        _write_json("settings.json", settings)
+        return settings
+
+
+def get_exclusions() -> List[str]:
+    rules = load_settings().get("exclusions", [])
+    return [r for r in rules if isinstance(r, str) and r.strip()]
+
+
+def set_exclusions(rules: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    for rule in rules:
+        rule = rule.strip()
+        if rule and rule not in cleaned:
+            cleaned.append(rule)
+    update_settings(exclusions=cleaned)
+    return cleaned
+
+
+# ---------------------------------------------------------------- History
+
+def load_history() -> List[Dict[str, Any]]:
+    history = _read_json("history.json", [])
+    return history if isinstance(history, list) else []
+
+
+def record_cleanup(result: Dict[str, Any], paths: List[str], source: str) -> Dict[str, Any]:
+    """Append one cleanup run to the history (newest first) and return the record."""
+    deleted = [p for p in paths if p not in {e.get("path") for e in result.get("errors", [])}]
+    record = {
+        "timestamp": time.time(),
+        "source": source,
+        "mode": result.get("mode", "recycle_bin"),
+        "deleted_count": result.get("deleted_count", 0),
+        "failed_count": result.get("failed_count", 0),
+        "freed_bytes": result.get("freed_bytes", 0),
+        "paths": deleted[:HISTORY_PATHS_LIMIT],
+        "paths_truncated": max(0, len(deleted) - HISTORY_PATHS_LIMIT),
+    }
+    with _lock:
+        history = load_history()
+        history.insert(0, record)
+        _write_json("history.json", history[:HISTORY_LIMIT])
+    return record
+
+
+def clear_history() -> None:
+    with _lock:
+        _write_json("history.json", [])
+
+
+# ---------------------------------------------------------------- Scan reports
+
+def save_report(report: Dict[str, Any]) -> None:
+    with _lock:
+        _write_json("latest_report.json", report)
+
+
+def load_report() -> Dict[str, Any] | None:
+    report = _read_json("latest_report.json", None)
+    return report if isinstance(report, dict) else None

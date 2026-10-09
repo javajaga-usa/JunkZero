@@ -1,5 +1,6 @@
 """High-performance multi-threaded directory scanner."""
 from __future__ import annotations
+import fnmatch
 import os
 import shutil
 import time
@@ -8,21 +9,32 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from app.config import (
     BUILD_DIR_NAMES,
+    CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
+    CAT_TEMP_JUNK,
+    DUPLICATE_MIN_BYTES,
+    RISK_REVIEW,
     RISK_SAFE,
     ScanOptions,
     SYSTEM_BLACKLIST_DIRS,
 )
 from app.engine.classifier import (
     GarbageItem,
+    build_item,
     classify_item,
     format_size,
     is_system_protected_path,
 )
+from app.engine.duplicates import FileCandidate, find_duplicate_groups, pick_keeper
+from app.engine.exclusions import ExclusionMatcher
+
+
+def _norm_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
 
 
 @dataclass
@@ -58,6 +70,16 @@ class FastScanner:
         # path -> (has_non_folder_content, child_dir_paths). Insertion order is
         # parent-before-child because a child is only discovered by scanning its parent.
         self._dir_tree: Dict[str, tuple[bool, List[str]]] = {}
+        self._excluder = ExclusionMatcher(options.exclusions)
+        # Junk locations: folders flagged as a single item, and folders whose files are flagged
+        self._dir_locations = {
+            _norm_path(loc.path): loc for loc in options.junk_locations if loc.whole_dir
+        }
+        self._file_locations = [
+            (_norm_path(loc.path), loc) for loc in options.junk_locations if not loc.whole_dir
+        ]
+        # Unflagged files large enough to be checked for duplicates after traversal
+        self._dup_candidates: List[FileCandidate] = []
 
     def cancel(self) -> None:
         """Cancel ongoing scan gracefully."""
@@ -89,6 +111,27 @@ class FastScanner:
             pass
         return total
 
+    def _file_locations_for(self, dir_path: str) -> List:
+        """Junk locations (flagging individual files) that contain dir_path."""
+        if not self._file_locations or not self.options.include_temp_junk:
+            return []
+        norm = _norm_path(dir_path)
+        return [loc for root, loc in self._file_locations if norm == root or norm.startswith(root + os.sep)]
+
+    def _location_item(self, path: str, name: str, size: int, mtime: float, locations: List) -> Optional[GarbageItem]:
+        """Flag a file that sits inside a known junk location."""
+        if size < self.options.min_file_size_bytes:
+            return None
+        for loc in locations:
+            if loc.pattern and not fnmatch.fnmatchcase(name.lower(), loc.pattern):
+                continue
+            recent = mtime > 0 and (time.time() - mtime) < 86400
+            reason = f"File in {loc.label}"
+            if recent:
+                reason += " (changed in the last 24 hours, may still be in use)"
+            return build_item(path, name, CAT_TEMP_JUNK, size, mtime, RISK_REVIEW if recent else RISK_SAFE, reason)
+        return None
+
     def _scan_directory_shallow(self, dir_path: str) -> tuple[List[GarbageItem], List[str]]:
         """
         Scan a single directory level using os.scandir.
@@ -97,6 +140,8 @@ class FastScanner:
         """
         found_items: List[GarbageItem] = []
         subdirs: List[str] = []
+        dup_candidates: List[FileCandidate] = []
+        file_locations = self._file_locations_for(dir_path)
         # Anything other than a plain, traversable subfolder (files, links, build dirs,
         # protected or unreadable entries) means this folder is not empty.
         has_content = False
@@ -121,6 +166,11 @@ class FastScanner:
                             has_content = True
                             continue
 
+                        # User exclusions: never flagged, never descended into
+                        if self._excluder.matches(path, name):
+                            has_content = True
+                            continue
+
                         # Read metadata
                         stat = entry.stat(follow_symlinks=False)
                         mtime = stat.st_mtime
@@ -135,6 +185,16 @@ class FastScanner:
                                 has_content = True
 
                             # Check if the directory itself is a build artifact (e.g. node_modules, target, __pycache__)
+                            # Known cache folders that apps rebuild are flagged as one item
+                            location = self._dir_locations.get(_norm_path(path)) if self.options.include_temp_junk else None
+                            if location:
+                                has_content = True
+                                found_items.append(build_item(
+                                    path, name, CAT_TEMP_JUNK, self._calc_dir_size(path), mtime, RISK_SAFE,
+                                    f"{location.label} (rebuilt automatically; close the app first)", is_dir=True,
+                                ))
+                                continue
+
                             if name.lower() in BUILD_DIR_NAMES:
                                 has_content = True
                             if self.options.include_java_builds and name.lower() in BUILD_DIR_NAMES:
@@ -153,9 +213,13 @@ class FastScanner:
                                 self.stats.total_files_scanned += 1
 
                             size = stat.st_size
-                            item = classify_item(path, name, size, mtime, is_dir=False, options=self.options)
+                            item = self._location_item(path, name, size, mtime, file_locations) if file_locations else None
+                            if item is None:
+                                item = classify_item(path, name, size, mtime, is_dir=False, options=self.options)
                             if item:
                                 found_items.append(item)
+                            elif self.options.include_duplicates and size >= DUPLICATE_MIN_BYTES:
+                                dup_candidates.append(FileCandidate(path, name, size, mtime))
 
                         else:
                             # Symlinks and other special entries
@@ -174,6 +238,7 @@ class FastScanner:
 
         with self._lock:
             self._dir_tree[dir_path] = (has_content, list(subdirs))
+            self._dup_candidates.extend(dup_candidates)
 
         return found_items, subdirs
 
@@ -190,11 +255,12 @@ class FastScanner:
         if self._callback:
             self._callback(item, self.stats)
 
-    def _find_empty_folders(self, root_path: str) -> List[GarbageItem]:
+    def _find_empty_folders(self, root_paths: str | Iterable[str]) -> List[GarbageItem]:
         """
         Return folders that contain no files at any depth, reporting only the topmost
-        folder of each empty tree. The scan root itself is never reported.
+        folder of each empty tree. The scan roots themselves are never reported.
         """
+        roots = {root_paths} if isinstance(root_paths, str) else set(root_paths)
         empty: Dict[str, bool] = {}
         nested_count: Dict[str, int] = {}
         parent_of: Dict[str, str] = {}
@@ -210,12 +276,12 @@ class FastScanner:
 
         items: List[GarbageItem] = []
         for dir_path, is_empty in empty.items():
-            if not is_empty or dir_path == root_path:
+            if not is_empty or dir_path in roots:
                 continue
             parent = parent_of.get(dir_path)
             if parent is None:
                 continue
-            if parent != root_path and empty.get(parent, False):
+            if parent not in roots and empty.get(parent, False):
                 continue  # Reported as part of its empty parent
 
             try:
@@ -246,6 +312,58 @@ class FastScanner:
 
         return items
 
+    @staticmethod
+    def _is_within(path: str, root: str) -> bool:
+        norm, norm_root = _norm_path(path), _norm_path(root)
+        return norm == norm_root or norm.startswith(norm_root.rstrip(os.sep) + os.sep)
+
+    def _outside_location_items(self, roots: List[str]) -> List[GarbageItem]:
+        items: List[GarbageItem] = []
+        for loc in self.options.junk_locations:
+            if not loc.whole_dir or any(self._is_within(loc.path, r) for r in roots):
+                continue
+            if not os.path.isdir(loc.path) or self._excluder.matches(loc.path):
+                continue
+            if self.options.skip_system_dirs and is_system_protected_path(loc.path):
+                continue
+            try:
+                mtime = os.stat(loc.path, follow_symlinks=False).st_mtime
+            except OSError:
+                continue
+            items.append(build_item(
+                loc.path, os.path.basename(loc.path), CAT_TEMP_JUNK, self._calc_dir_size(loc.path), mtime,
+                RISK_SAFE, f"{loc.label} (rebuilt automatically; close the app first)", is_dir=True,
+            ))
+        return items
+
+    def _scan_roots(self, paths: List[str]) -> List[str]:
+        """Existing scan roots, skipping any nested inside another root."""
+        roots: List[str] = []
+        for path in paths:
+            path = os.path.abspath(path)
+            if not os.path.isdir(path):
+                continue
+            if any(self._is_within(path, r) for r in roots):
+                continue
+            # A new root may contain earlier ones; replace them
+            roots = [r for r in roots if not self._is_within(r, path)]
+            roots.append(path)
+        return roots
+
+    def _find_duplicates(self) -> List[GarbageItem]:
+        """Flag every copy but the newest in each group of identical files."""
+        items: List[GarbageItem] = []
+        for group in find_duplicate_groups(self._dup_candidates, self._stop_event):
+            keep = pick_keeper(group)
+            for c in group:
+                if c is keep:
+                    continue
+                items.append(build_item(
+                    c.path, c.name, CAT_DUPLICATES, c.size, c.mtime, RISK_REVIEW,
+                    f"Identical copy of {keep.path} (newest copy is kept)", selected=False,
+                ))
+        return items
+
     def run_scan(self) -> List[GarbageItem]:
         """Execute parallel multi-threaded scan starting at options.target_path."""
         self.stats = ScanStats(target_path=self.options.target_path)
@@ -255,6 +373,7 @@ class FastScanner:
         self.stats.is_cancelled = self._stop_event.is_set()
         self.garbage_items.clear()
         self._dir_tree.clear()
+        self._dup_candidates.clear()
 
         # Gather drive usage
         try:
@@ -265,14 +384,25 @@ class FastScanner:
         except Exception:
             pass
 
-        root_path = os.path.abspath(self.options.target_path)
-        if not os.path.exists(root_path):
+        root_path = os.path.abspath(self.options.target_path) if self.options.target_path else None
+        if root_path and not os.path.exists(root_path):
             self.stats.is_running = False
             self.stats.is_completed = True
             return []
 
+        extra_paths = list(self.options.extra_paths)
+        if self.options.scan_junk_locations and self.options.include_temp_junk:
+            extra_paths += [loc.path for loc in self.options.junk_locations if not loc.whole_dir]
+        roots = self._scan_roots([root_path, *extra_paths] if root_path else extra_paths)
+
+        # Cache folders outside every root are flagged directly; inside a root, traversal finds them
+        if self.options.scan_junk_locations and self.options.include_temp_junk:
+            for item in self._outside_location_items(roots):
+                with self._lock:
+                    self._record_item(item)
+
         # Directory queue to scan
-        pending_dirs: List[str] = [root_path]
+        pending_dirs: List[str] = list(roots)
 
         # Use ThreadPoolExecutor for concurrent batch scanning
         with ThreadPoolExecutor(max_workers=self.options.max_workers) as executor:
@@ -299,9 +429,15 @@ class FastScanner:
 
         # Empty folders can only be known once the whole tree has been traversed
         if self.options.include_empty_folders and not self._stop_event.is_set():
-            empty_items = self._find_empty_folders(root_path)
+            empty_items = self._find_empty_folders(roots)
             with self._lock:
                 for item in empty_items:
+                    self._record_item(item)
+
+        # Duplicates need every candidate file, so they are also found after traversal
+        if self.options.include_duplicates and not self._stop_event.is_set():
+            for item in self._find_duplicates():
+                with self._lock:
                     self._record_item(item)
 
         with self._lock:

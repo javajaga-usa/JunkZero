@@ -1,7 +1,7 @@
 """Configuration settings and garbage classification rules for JunkZero."""
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Set, Dict
+from typing import Any, List, Set, Dict
 
 # Category Constants
 CAT_INSTALLERS = "Installers, Setup Archives & OS Images"
@@ -10,6 +10,7 @@ CAT_TEMP_JUNK = "Temporary & Cache Files"
 CAT_BROKEN_DOWNLOADS = "Broken / Incomplete Downloads"
 CAT_STALE_LARGE = "Stale Large Files"
 CAT_EMPTY_FOLDERS = "Empty Folders"
+CAT_DUPLICATES = "Duplicate Files"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -89,6 +90,9 @@ PROTECTED_PATHS = [
 STALE_DAYS_THRESHOLD = 180
 LARGE_FILE_BYTES_THRESHOLD = 100 * 1024 * 1024  # 100 MB
 
+# Duplicate detection only hashes files at least this big (smaller ones free little space)
+DUPLICATE_MIN_BYTES = 1024 * 1024  # 1 MB
+
 
 @dataclass
 class ScanOptions:
@@ -100,7 +104,16 @@ class ScanOptions:
     include_broken_downloads: bool = True
     include_stale_large: bool = True
     include_empty_folders: bool = True
+    include_duplicates: bool = False
     min_file_size_bytes: int = 0
     stale_days: int = STALE_DAYS_THRESHOLD
     skip_system_dirs: bool = True
     max_workers: int = 8
+    # Further folders scanned in the same session (e.g. Windows junk locations)
+    extra_paths: List[str] = field(default_factory=list)
+    # User exclusion rules: folder/file paths, or glob patterns such as "*.iso"
+    exclusions: List[str] = field(default_factory=list)
+    # Known junk locations (app.engine.locations.JunkLocation) whose contents are flagged
+    junk_locations: List[Any] = field(default_factory=list)
+    # Also scan every junk location as its own root (target_path may then be empty)
+    scan_junk_locations: bool = False
