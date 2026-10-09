@@ -21,6 +21,13 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - **Broken Downloads**: Incomplete `.crdownload`, `.part`, `.download` files.
   - **Stale Large Files**: Files ≥ 100MB unmodified for ≥ 180 days.
   - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
+  - **Duplicate Files** (opt-in): Files ≥ 1MB with identical contents. The newest copy is kept; the others are listed for review. Hard links are never counted as copies.
+- **⚡ Quick Clean**: One click scans your temp folder, application crash dumps, and Chrome / Edge / Brave / Firefox caches. Browser cache folders are listed as single items (close the browser before deleting them). Locations under `C:\Windows` (Windows Update downloads, system temp) stay protected and are not offered.
+- **🙈 Exclusions**: Mark a file or folder as "never flag" from its row, or add paths and patterns such as `*.iso` in the Exclusions dialog. Excluded folders are not scanned at all.
+- **🕘 Cleanup History**: Every cleanup is logged with its date, delete mode, item list and space freed, with a shortcut to the Recycle Bin for restoring.
+- **📊 Space Breakdown**: A bar under the summary cards shows where the reclaimable space is by category; click a segment to filter the table.
+- **📅 Scheduled Scans (report only)**: Schedule daily or weekly scans through Windows Task Scheduler. Scheduled scans never delete anything; they save a report you can review in the table later. Run one manually with `python -m app.main --mode report --path C:\Users\You\Downloads`.
+- **📄 CSV Export**: Exports the rows currently shown. Cells are escaped so file names can't run as spreadsheet formulas.
 - **🛡️ Ironclad Safety Safeguards**:
   - **Recycle Bin by Default (`send2trash`)**: The GUI, API and engine all move deleted items to the Recycle Bin unless Permanent mode is chosen.
   - **OS System Protection**: Core directories (`C:\Windows`, `System32`, `Program Files`, `$Recycle.Bin`) are strictly protected from accidental deletion.
@@ -76,5 +83,7 @@ To run the API without opening a window:
 ```powershell
 python -m app.main --mode server
 ```
+
+Settings (exclusions, schedule), cleanup history and the latest scan report are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
 
 Use the application on localhost. Native folder selection and Explorer integration require Windows. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.
