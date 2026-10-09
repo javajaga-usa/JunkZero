@@ -22,7 +22,7 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - **Stale Large Files**: Files ≥ 100MB unmodified for ≥ 180 days.
   - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
 - **🛡️ Ironclad Safety Safeguards**:
-  - **Recycle Bin Support (`send2trash`)**: API and engine calls default to the Recycle Bin. The current GUI explicitly requests permanent deletion and displays a confirmation dialog.
+  - **Recycle Bin by Default (`send2trash`)**: The GUI, API and engine all move deleted items to the Recycle Bin unless Permanent mode is chosen.
   - **OS System Protection**: Core directories (`C:\Windows`, `System32`, `Program Files`, `$Recycle.Bin`) are strictly protected from accidental deletion.
   - **Permanent Deletion Confirmation**: The GUI requires confirmation before permanently deleting selected files or folders.
   - **Permanent Mode (opt-in)**: Switch the footer toggle from *Recycle Bin* to *Permanent* to erase files directly. Permanent deletes need an extra "cannot be restored" confirmation, and the app always starts back in Recycle Bin mode.

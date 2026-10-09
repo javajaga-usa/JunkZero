@@ -135,6 +135,8 @@ class FastScanner:
                                 has_content = True
 
                             # Check if the directory itself is a build artifact (e.g. node_modules, target, __pycache__)
+                            if name.lower() in BUILD_DIR_NAMES:
+                                has_content = True
                             if self.options.include_java_builds and name.lower() in BUILD_DIR_NAMES:
                                 dir_size = self._calc_dir_size(path)
                                 item = classify_item(path, name, dir_size, mtime, is_dir=True, options=self.options)

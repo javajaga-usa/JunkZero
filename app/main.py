@@ -44,9 +44,6 @@ class ScanRequest(BaseModel):
     include_temp_junk: bool = True
     include_broken_downloads: bool = True
     include_stale_large: bool = True
-    include_temp_junk: bool = True
-    include_broken_downloads: bool = True
-    include_stale_large: bool = True
     include_empty_folders: bool = True
     min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     stale_days: int = Field(default=180, ge=1)
