@@ -11,16 +11,17 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
 - **🖥️ Modern File Manager GUI**:
   - Live animated scan progress and metrics.
   - Storage summary cards with instant visual size breakdowns.
-  - Interactive table with virtualized scrolling, search by filename/path/extension, and column sorting.
+  - Interactive table that shows 500 rows at a time ("Show more" adds the next 500), so scans with tens of thousands of results stay responsive. Search by filename/path/extension (it runs once you pause typing) and sort by any column.
   - Quick multi-select buttons: **"Select All Safe"**, **"Select All"**, **"Deselect"**.
+  - **Delete Selected only removes what you can see**: ticked items hidden by a search, category, folder or "New only" filter are left alone, and the footer says how many of those there are.
   - **Open Enclosing Folder**: One-click jump directly to the file in Windows Explorer.
 - **🎯 Accurate Garbage Classification**:
   - **Installers & Setup Packages**: `.exe`, `.msi`, `.apk`, `.iso`, `.dmg`, `.pkg`.
-  - **Old Java & Build Artifacts**: Compiled `.class` files, standalone `.jar`s, `node_modules/`, `target/`, `__pycache__/`, `.obj`, `.pyc`.
-  - **Temporary & Cache Files**: `.tmp`, `.log`, `.dmp`, `thumbs.db`, crash dumps.
+  - **Old Java & Build Artifacts**: Compiled `.class` files, standalone `.jar`s, `node_modules/`, `target/`, `__pycache__/`, `.obj`, `.pyc`. File types that are also used for real files (`.obj` 3D models, `.pdb` protein data, `.user`, `.orig`) are only marked Safe inside a build output folder (`bin`, `obj`, `build`, `Debug`...); elsewhere they are Review Recommended.
+  - **Temporary & Cache Files**: `.tmp`, `.log`, `.dmp`, `thumbs.db`, crash dumps. Backup copies (`.bak`, `.old`) are listed as Review Recommended and never preselected.
   - **Broken Downloads**: Incomplete `.crdownload`, `.part`, `.download` files.
   - **Stale Large Files**: Files ≥ 100MB unmodified for ≥ 180 days.
-  - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
+  - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Empty folders are never preselected, since some apps expect their folders to exist. Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan. Version-control folders (`.git`, `.svn`, `.hg`) are never scanned or deleted from, because Git needs some of its empty folders.
   - **Duplicate Files** (opt-in): Files ≥ 1MB with identical contents. The newest copy is kept; the others are listed for review. Hard links are never counted as copies.
   - **Old Downloads** (opt-in): Files in your Downloads folder that haven't been modified or added for 90 days or more. They are listed as "Review Recommended" and never preselected. Files that fit another category (installers, broken downloads) stay in that category.
 - **📝 Junk Rules**: Add your own patterns (such as `*.bak2` or `render_*`) or folders to flag as junk. Matches appear under "My Junk Rules" as Review Recommended and are never preselected; a matching folder is listed as one item. Built-in categories and exclusions take priority, rules that would match everything (`*`, `*.*`, a whole drive) are refused, and Quick Clean ignores your rules.
@@ -37,6 +38,8 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
 - **🛡️ Ironclad Safety Safeguards**:
   - **Recycle Bin by Default (`send2trash`)**: The GUI, API and engine all move deleted items to the Recycle Bin unless Permanent mode is chosen.
   - **OS System Protection**: Core directories (`C:\Windows`, `System32`, `Program Files`, `$Recycle.Bin`) are strictly protected from accidental deletion.
+  - **Personal Folder Protection**: Your user profile, other profiles in `C:\Users`, and personal folders such as Desktop, Documents, Downloads and Pictures can't be deleted as a whole (what's inside them still can).
+  - **Local Only**: The app's server only answers requests addressed to `127.0.0.1`/`localhost`, and uses a free port if 8000 is taken. Icons are bundled, so the app works fully offline.
   - **Permanent Deletion Confirmation**: The GUI requires confirmation before permanently deleting selected files or folders.
   - **Permanent Mode (opt-in)**: Switch the footer toggle from *Recycle Bin* to *Permanent* to erase files directly. Permanent deletes need an extra "cannot be restored" confirmation, and the app always starts back in Recycle Bin mode.
 - **🧠 AI Inspector (Gemini Integration)**:

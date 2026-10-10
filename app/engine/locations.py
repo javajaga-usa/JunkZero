@@ -112,3 +112,62 @@ def downloads_folder(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
         if path and os.path.isdir(path) and not is_system_protected_path(path):
             return os.path.normpath(path)
     return None
+
+
+# Personal folders directly under the user profile. They can be emptied, but never deleted themselves.
+_PERSONAL_FOLDER_NAMES = (
+    "Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos", "OneDrive", "AppData",
+    "Favorites", "Contacts", "Links", "Saved Games", "Searches", "3D Objects",
+)
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path)).rstrip("\\/")
+
+
+def _is_drive_root(path: str) -> bool:
+    return _norm(path) == _norm(os.path.splitdrive(os.path.abspath(path))[0] + os.sep)
+
+
+def protected_user_folders(env: Optional[Mapping[str, str]] = None) -> set:
+    """Normalized paths of the user profile, the folder holding all profiles, and the main personal folders."""
+    env = os.environ if env is None else env
+    home = env.get("USERPROFILE") or env.get("HOME")
+    folders = set()
+    if home:
+        folders.add(_norm(home))
+        users_dir = os.path.dirname(os.path.abspath(home))  # e.g. C:\Users
+        if not _is_drive_root(users_dir):
+            folders.add(_norm(users_dir))
+        for name in _PERSONAL_FOLDER_NAMES:
+            folders.add(_norm(os.path.join(home, name)))
+        for name in ("Local", "LocalLow", "Roaming"):
+            folders.add(_norm(os.path.join(home, "AppData", name)))
+    for key in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        onedrive = env.get(key)
+        if onedrive:
+            folders.add(_norm(onedrive))
+            for name in ("Desktop", "Documents", "Pictures"):
+                folders.add(_norm(os.path.join(onedrive, name)))
+    downloads = downloads_folder(env)
+    if downloads:
+        folders.add(_norm(downloads))
+    return folders
+
+
+def is_protected_user_folder(
+    path: str, env: Optional[Mapping[str, str]] = None, folders: Optional[set] = None,
+) -> bool:
+    """True for the user profile itself, any profile folder (C:\\Users\\<name>) or a main personal folder.
+    Pass folders (from protected_user_folders) when checking many paths."""
+    env = os.environ if env is None else env
+    norm = _norm(path)
+    if norm in (folders if folders is not None else protected_user_folders(env)):
+        return True
+    home = env.get("USERPROFILE") or env.get("HOME")
+    if home:
+        users_dir = _norm(os.path.dirname(os.path.abspath(home)))
+        # Other profiles next to the user's own (Public, Default, other accounts); skip when that's a drive root
+        if not _is_drive_root(users_dir) and _norm(os.path.dirname(norm)) == users_dir:
+            return True
+    return False

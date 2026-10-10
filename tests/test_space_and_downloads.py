@@ -11,7 +11,7 @@ from app.engine.scanner import FastScanner
 from app.engine.space import largest_items
 from app.main import app
 
-client = TestClient(app)
+client = TestClient(app, base_url="http://127.0.0.1")
 DAY = 86400
 
 

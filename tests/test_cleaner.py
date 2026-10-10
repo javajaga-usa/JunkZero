@@ -100,7 +100,7 @@ def test_api_deletes_go_to_recycle_bin_unless_permanent_requested(monkeypatch):
 
     trashed = []
     monkeypatch.setattr("app.engine.cleaner.send2trash.send2trash", lambda p: trashed.append(p))
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         a = Path(tmpdir) / "a.tmp"

@@ -14,7 +14,7 @@ from app.engine.scanner import FastScanner
 from app.main import app
 
 MB = 1024 * 1024
-client = TestClient(app)
+client = TestClient(app, base_url="http://127.0.0.1")
 
 
 def _scan(**kwargs):

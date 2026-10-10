@@ -9,16 +9,19 @@ from typing import Any, Dict, List
 from pydantic import BaseModel, Field
 import send2trash
 
-from app.config import CAT_EMPTY_FOLDERS
+from app.config import CAT_EMPTY_FOLDERS, VCS_DIR_NAMES
 from app.engine.classifier import is_system_protected_path, format_size
+from app.engine import storage
+from app.engine.locations import is_protected_user_folder, protected_user_folders
 
-AUDIT_LOG_FILE = Path("cleaner_audit.log")
+# Kept with the rest of JunkZero's data (%APPDATA%\JunkZero), not in whatever folder the app started from
+AUDIT_LOG_FILE = storage.data_dir() / "cleaner_audit.log"
 
 # Setup dedicated cleaner logger
 logger = logging.getLogger("JunkZeroCleaner")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    handler = logging.FileHandler(AUDIT_LOG_FILE, encoding="utf-8")
+    handler = logging.FileHandler(AUDIT_LOG_FILE, encoding="utf-8", delay=True)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s"))
     logger.addHandler(handler)
 
@@ -32,6 +35,12 @@ def folder_has_files(dir_path: str) -> bool:
             if os.path.islink(os.path.join(root, d)):
                 return True
     return False
+
+
+def in_vcs_folder(path: str) -> bool:
+    """True if the path is a .git/.svn/.hg/.bzr folder or lies inside one."""
+    parts = os.path.normpath(path).replace("\\", "/").lower().split("/")
+    return any(part in VCS_DIR_NAMES for part in parts)
 
 
 def _raise(err: OSError) -> None:
@@ -61,6 +70,7 @@ def delete_items(
     freed_bytes = 0
     errors: List[Dict[str, str]] = []
     mode_str = "permanent" if permanent else "recycle_bin"
+    user_folders = protected_user_folders()
 
     for item in items:
         path_str = item.get("path", "")
@@ -80,6 +90,22 @@ def delete_items(
             msg = "Deletion blocked: protected system path"
             errors.append({"path": path_str, "error": msg})
             logger.warning(f"Blocked attempt to delete system path: {path_str}")
+            failed_count += 1
+            continue
+
+        # The user profile and its main personal folders (Documents, Desktop...) are never removed whole
+        if is_protected_user_folder(path_str, folders=user_folders) or \
+                is_protected_user_folder(os.path.realpath(path_str), folders=user_folders):
+            msg = "Deletion blocked: personal folder (delete what's inside it instead)"
+            errors.append({"path": path_str, "error": msg})
+            logger.warning(f"Blocked attempt to delete personal folder: {path_str}")
+            failed_count += 1
+            continue
+
+        # Version-control folders (.git, .svn...) and anything inside them are never deleted
+        if in_vcs_folder(path_str):
+            msg = "Deletion blocked: version-control folder (.git, .svn, .hg)"
+            errors.append({"path": path_str, "error": msg})
             failed_count += 1
             continue
 

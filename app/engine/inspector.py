@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from app.config import ScanOptions
 from app.engine.classifier import classify_item, format_size, is_system_protected_path
+from app.engine.cleaner import in_vcs_folder
+from app.engine.locations import is_protected_user_folder, protected_user_folders
 
 
 class BreadcrumbItem(BaseModel):
@@ -46,6 +48,15 @@ class FolderHierarchyView(BaseModel):
     target_file_path: Optional[str] = None
 
 
+def _deletable(path: str, user_folders: set) -> bool:
+    """Whether the folder explorer may offer to delete this path."""
+    return not (
+        is_system_protected_path(path)
+        or is_protected_user_folder(path, folders=user_folders)
+        or in_vcs_folder(path)
+    )
+
+
 def get_dir_size_fast(dir_path: str, max_depth: int = 3) -> int:
     """Calculate directory size with depth limit for high UI responsiveness."""
     total = 0
@@ -64,8 +75,10 @@ def get_dir_size_fast(dir_path: str, max_depth: int = 3) -> int:
     return total
 
 
-def build_breadcrumbs(folder_path: str) -> List[BreadcrumbItem]:
+def build_breadcrumbs(folder_path: str, user_folders: Optional[set] = None) -> List[BreadcrumbItem]:
     """Build root-to-current breadcrumb chain for navigation and deletion."""
+    if user_folders is None:
+        user_folders = protected_user_folders()
     norm = os.path.abspath(folder_path)
     drive, tail = os.path.splitdrive(norm)
     parts = [p for p in tail.split(os.sep) if p]
@@ -83,7 +96,7 @@ def build_breadcrumbs(folder_path: str) -> List[BreadcrumbItem]:
     for idx, part in enumerate(parts):
         current_accum = os.path.join(current_accum, part)
         is_last = (idx == len(parts) - 1)
-        deletable = not is_system_protected_path(current_accum) and (idx > 0 or len(parts) > 1)
+        deletable = _deletable(current_accum, user_folders) and (idx > 0 or len(parts) > 1)
         breadcrumbs.append(BreadcrumbItem(
             name=part,
             path=current_accum,
@@ -116,8 +129,9 @@ def inspect_path_hierarchy(input_path: str) -> FolderHierarchyView:
     parent_path = parent_path_raw if parent_path_raw and parent_path_raw != folder_path else None
     parent_name = os.path.basename(parent_path) if parent_path else None
 
-    breadcrumbs = build_breadcrumbs(folder_path)
-    is_current_deletable = not is_system_protected_path(folder_path) and (parent_path is not None)
+    user_folders = protected_user_folders()
+    breadcrumbs = build_breadcrumbs(folder_path, user_folders)
+    is_current_deletable = _deletable(folder_path, user_folders) and (parent_path is not None)
 
     entries: List[FolderEntry] = []
     total_files = 0
@@ -154,7 +168,7 @@ def inspect_path_hierarchy(input_path: str) -> FolderHierarchyView:
                             is_garbage=(garbage_item is not None),
                             garbage_category=garbage_item.category if garbage_item else None,
                             risk_level=garbage_item.risk_level if garbage_item else None,
-                            is_deletable=not is_system_protected_path(entry.path)
+                            is_deletable=_deletable(entry.path, user_folders)
                         ))
                     else:
                         total_files += 1
@@ -175,7 +189,7 @@ def inspect_path_hierarchy(input_path: str) -> FolderHierarchyView:
                             is_garbage=(garbage_item is not None),
                             garbage_category=garbage_item.category if garbage_item else None,
                             risk_level=garbage_item.risk_level if garbage_item else None,
-                            is_deletable=not is_system_protected_path(entry.path)
+                            is_deletable=_deletable(entry.path, user_folders)
                         ))
                 except (PermissionError, OSError):
                     continue

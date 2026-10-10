@@ -11,7 +11,7 @@ from app.engine import changes, scheduler, storage
 from app.engine.exclusions import ExclusionMatcher, rule_too_broad
 from app.engine.scanner import FastScanner
 
-client = TestClient(main.app)
+client = TestClient(main.app, base_url="http://127.0.0.1")
 
 
 def _scan(**kwargs):

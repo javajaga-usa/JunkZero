@@ -64,6 +64,14 @@ BUILD_DIR_NAMES: Set[str] = {
     "bin", "obj", ".gradle"
 }
 
+# Build outputs that share an extension with real user files (.obj 3D models, .pdb protein data,
+# .user / .orig settings and merge backups): Safe only inside a build output folder
+AMBIGUOUS_BUILD_EXTENSIONS: Set[str] = {".obj", ".pdb", ".user", ".orig"}
+BUILD_OUTPUT_FOLDER_NAMES: Set[str] = BUILD_DIR_NAMES | {"debug", "release", "x64", "x86"}
+
+# Backup copies are often someone's only other copy, so they are never preselected
+BACKUP_EXTENSIONS: Set[str] = {".bak", ".old"}
+
 TEMP_EXTENSIONS: Set[str] = {
     ".tmp", ".temp", ".log", ".dmp", ".bak", ".old", ".thumb",
     "thumbs.db", ".ds_store", ".eslintcache"
@@ -72,6 +80,10 @@ TEMP_EXTENSIONS: Set[str] = {
 BROKEN_DOWNLOAD_EXTENSIONS: Set[str] = {
     ".crdownload", ".part", ".partial", ".download"
 }
+
+# Version-control folders: never scanned, never flagged, never deleted from inside.
+# (Git keeps empty folders such as .git/refs/heads that it needs to recognise the repo.)
+VCS_DIR_NAMES: Set[str] = {".git", ".svn", ".hg", ".bzr"}
 
 # System Protection Blacklist (Never scan into or delete from these folders)
 SYSTEM_BLACKLIST_DIRS: Set[str] = {

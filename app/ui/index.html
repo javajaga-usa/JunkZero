@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="/static/vendor/lucide-1.46.0.min.js"></script>
 </head>
 <body class="dark-theme">
   <div class="app-container">
@@ -355,6 +355,7 @@
             <strong id="selectedCount" class="summary-highlight">0 items</strong>
             <span class="summary-divider">•</span>
             <strong id="selectedSize" class="summary-highlight">0.00 MB</strong>
+            <span id="hiddenSelectedNote" class="hidden-selected-note hidden" title="Ticked items your filters are hiding are not deleted"></span>
             <div class="delete-mode-toggle" role="group" aria-label="Delete mode">
               <button type="button" id="modeRecycle" class="mode-option active" aria-pressed="true" title="Move deleted items to the Recycle Bin so they can be restored">
                 <i data-lucide="recycle"></i> Recycle Bin
