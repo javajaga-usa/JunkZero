@@ -828,6 +828,7 @@ input[type="text"]:focus {
 }
 
 .file-size-cell {
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 500;
@@ -1418,6 +1419,7 @@ input[type="text"]:focus {
   --series-6: #008300;
   --series-7: #8b7cf6;
   --series-8: #b0835a;
+  --series-9: #94a3b8;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
@@ -1432,6 +1434,7 @@ input[type="text"]:focus {
   --series-6: #008300;
   --series-7: #7c6ae6;
   --series-8: #8f6440;
+  --series-9: #64748b;
 }
 .space-breakdown-header {
   display: flex;
@@ -1621,3 +1624,72 @@ input[type="text"]:focus {
   cursor: pointer;
 }
 .clear-chip-btn:hover { color: var(--text-primary); }
+
+/* Smart score */
+.score-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.score-cell:hover .score-pill { filter: brightness(1.15); }
+.score-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid currentColor;
+}
+.score-num {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.score-delete { color: var(--color-success); background: var(--color-success-bg); }
+.score-review { color: var(--color-warning); background: var(--color-warning-bg); }
+.score-keep { color: var(--text-secondary); background: var(--bg-surface); }
+.score-reasons-row td { padding-top: 0; }
+.score-reasons {
+  margin-left: 76px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--color-primary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.score-reasons strong { color: var(--text-primary); }
+.score-reasons ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* Plain-language scan summary */
+.smart-summary {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.smart-summary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-primary);
+}
+.smart-summary-list li { display: flex; align-items: baseline; gap: 10px; line-height: 1.45; }
+.score-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(-1px);
+}
+.score-dot.score-delete { color: var(--color-success); }
+.score-dot.score-review { color: var(--color-warning); }
+.score-dot.score-keep { color: var(--text-secondary); }
+.learning-note { margin: 0 0 12px; font-size: 13px; color: var(--text-secondary); }

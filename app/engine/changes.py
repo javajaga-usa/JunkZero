@@ -4,7 +4,7 @@ import os
 from typing import Any, Dict, Iterable, List
 
 from app.config import CATEGORY_OPTIONS, ScanOptions
-from app.engine import storage
+from app.engine import smart, storage
 from app.engine.classifier import GarbageItem
 
 QUICK_CLEAN_KEY = "quick-clean"
@@ -42,6 +42,8 @@ def compare_and_remember(options: ScanOptions, items: Iterable[GarbageItem]) -> 
             i.path for i in items
             if i.category in compared and os.path.normcase(i.path) not in seen
         ]
+        # Found again after the last scan: the user chose to keep it (feeds the smart score)
+        smart.learn_kept(items, previous["paths"])
     storage.remember_scan(key, [i.path for i in items], enabled_categories(options))
     return {
         "previous_scan_at": previous.get("at") if previous else None,

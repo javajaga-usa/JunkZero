@@ -12,7 +12,7 @@ function csvCell(value) {
 }
 
 function buildCsv(items) {
-  const headers = ['Name', 'Type', 'Category', 'Size (Bytes)', 'Size Formatted', 'Modified Date', 'Risk Level', 'Path', 'Reason'];
+  const headers = ['Name', 'Type', 'Category', 'Size (Bytes)', 'Size Formatted', 'Modified Date', 'Risk Level', 'Path', 'Reason', 'Smart Score', 'Recommendation', 'Why'];
   const rows = items.map((i) => [
     csvCell(i.name),
     csvCell(i.is_directory ? 'Folder' : 'File'),
@@ -23,6 +23,9 @@ function buildCsv(items) {
     csvCell(i.risk_level),
     csvCell(i.path),
     csvCell(i.reason),
+    Number(i.score) || 0,
+    csvCell(i.recommendation),
+    csvCell((i.score_reasons || []).join('; ')),
   ].join(','));
   return '\uFEFF' + [headers.map(csvCell).join(','), ...rows].join('\r\n');
 }
@@ -37,6 +40,7 @@ const SPACE_CATEGORIES = [
   { name: 'Stale Large Files', label: 'Stale large' },
   { name: 'Old Downloads', label: 'Old downloads' },
   { name: 'My Junk Rules', label: 'My rules' },
+  { name: 'Program Leftovers', label: 'Leftovers' },
 ];
 
 function spaceBreakdown(categoryBytes) {
@@ -75,6 +79,59 @@ function junkByFolder(items, limit = 50) {
     .slice(0, limit);
 }
 
+// Smart score bands (match app/engine/smart.py)
+const SCORE_DELETE = 75;
+const SCORE_REVIEW = 45;
+
+function scoreBand(score) {
+  if (score >= SCORE_DELETE) return 'delete';
+  if (score >= SCORE_REVIEW) return 'review';
+  return 'keep';
+}
+
+// "Large file ..." -> "large file ...", but acronyms such as "OS" stay as they are
+function lowerFirst(text) {
+  return /^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
+}
+
+// Plain-language summary of a scan, built from the smart scores. fmt formats a byte count.
+function smartSummary(items, fmt) {
+  const sum = (list) => list.reduce((acc, i) => acc + (Number(i.size_bytes) || 0), 0);
+  const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+  const verb = (list, one, many) => (list.length === 1 ? one : many);
+  const bands = { delete: [], review: [], keep: [] };
+  // Items from reports saved before smart scores existed have no score and are left out
+  items.filter((i) => Number(i.score) > 0).forEach((i) => bands[scoreBand(Number(i.score))].push(i));
+  const lines = [];
+
+  if (bands.delete.length) {
+    // The category holding most of the confident space (or most items, if they are all empty)
+    const byCat = {};
+    bands.delete.forEach((i) => {
+      const c = byCat[i.category] || (byCat[i.category] = { bytes: 0, count: 0 });
+      c.bytes += Number(i.size_bytes) || 0;
+      c.count += 1;
+    });
+    const [topName] = Object.entries(byCat).sort((a, b) => (b[1].bytes - a[1].bytes) || (b[1].count - a[1].count))[0];
+    const top = SPACE_CATEGORIES.find((c) => c.name === topName);
+    lines.push({ band: 'delete', text: `${plural(bands.delete.length, 'item')} (${fmt(sum(bands.delete))}) can go now with little risk, mostly ${(top ? top.label : topName).toLowerCase()}.` });
+  } else if (items.length) {
+    lines.push({ band: 'delete', text: 'Nothing here is a sure bet, so look before you delete.' });
+  }
+
+  if (bands.review.length) {
+    const biggest = bands.review.reduce((a, b) => ((Number(b.size_bytes) || 0) > (Number(a.size_bytes) || 0) ? b : a));
+    lines.push({ band: 'review', text: `${plural(bands.review.length, 'item')} (${fmt(sum(bands.review))}) ${verb(bands.review, 'is', 'are')} worth a look first. The biggest is ${biggest.name} (${fmt(Number(biggest.size_bytes) || 0)}): ${lowerFirst(String(biggest.reason || ''))}.` });
+  }
+
+  if (bands.keep.length) {
+    const kept = bands.keep.filter((i) => (i.score_reasons || []).some((r) => r.includes('you kept'))).length;
+    const note = kept ? `, including ${plural(kept, 'item')} you kept after earlier scans` : '';
+    lines.push({ band: 'keep', text: `${plural(bands.keep.length, 'item')} (${fmt(sum(bands.keep))}) ${verb(bands.keep, 'looks', 'look')} worth keeping${note}.` });
+  }
+  return { lines, deleteCount: bands.delete.length, deleteBytes: sum(bands.delete) };
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -111,6 +168,7 @@ const state = {
   folderFilter: null,     // Lower-cased folder from "By Folder", or null for all
   newPaths: new Set(),    // Paths the previous scan of this target did not find
   newOnly: false,
+  expandedScoreId: null,  // Row whose smart-score reasons are shown
 
   // Hierarchy Explorer State
   currentHierarchy: null,
@@ -150,6 +208,13 @@ const el = {
   btnLargest: document.getElementById('btnLargest'),
   btnSelectAll: document.getElementById('btnSelectAll'),
   btnSelectAllSafe: document.getElementById('btnSelectAllSafe'),
+  btnSmartSelect: document.getElementById('btnSmartSelect'),
+  btnSmartSelectSummary: document.getElementById('btnSmartSelectSummary'),
+  smartSummary: document.getElementById('smartSummary'),
+  smartSummaryList: document.getElementById('smartSummaryList'),
+  learningNote: document.getElementById('learningNote'),
+  btnForgetLearning: document.getElementById('btnForgetLearning'),
+  optLeftovers: document.getElementById('optLeftovers'),
   btnDeselectAll: document.getElementById('btnDeselectAll'),
   btnExportReport: document.getElementById('btnExportReport'),
   btnDeleteItems: document.getElementById('btnDeleteItems'),
@@ -316,6 +381,7 @@ const SCAN_OPTION_INPUTS = {
   include_empty_folders: el.optEmptyFolders,
   include_duplicates: el.optDuplicates,
   include_old_downloads: el.optOldDownloads,
+  include_leftovers: el.optLeftovers,
 };
 
 // Utilities
@@ -461,6 +527,9 @@ function setupEventListeners() {
     updateSelectionSummary();
     showToast('Selected all safe-to-delete items', 'success');
   });
+
+  el.btnSmartSelect.addEventListener('click', smartSelect);
+  el.btnSmartSelectSummary.addEventListener('click', smartSelect);
 
   el.btnDeselectAll.addEventListener('click', () => {
     state.selectedIds.clear();
@@ -648,6 +717,7 @@ function setupEventListeners() {
   el.closeHistoryModal.addEventListener('click', () => el.historyModal.classList.add('hidden'));
   el.btnCloseHistory.addEventListener('click', () => el.historyModal.classList.add('hidden'));
   el.btnClearHistory.addEventListener('click', clearHistory);
+  el.btnForgetLearning.addEventListener('click', forgetLearning);
   el.btnOpenRecycleBin.addEventListener('click', openRecycleBin);
 
   // Schedule
@@ -818,6 +888,7 @@ function onScanCompleted(finalStats = null, changes = null) {
 
   if (changes) setNewItems(changes);
   applyFiltersAndRender(true);
+  renderSmartSummary();
   if (finalStats) {
     updateMetrics(finalStats);
     let note = '';
@@ -987,7 +1058,7 @@ function renderTable() {
   if (state.filteredItems.length === 0) {
     el.fileTableBody.innerHTML = `
       <tr class="empty-row">
-        <td colspan="9">
+        <td colspan="10">
           <div class="empty-state">
             <i data-lucide="${state.isScanning ? 'loader' : 'sparkles'}" class="empty-icon ${state.isScanning ? 'spinner' : ''}"></i>
             <h3>${state.isScanning ? 'Scanning in progress...' : 'No items match filter'}</h3>
@@ -1058,6 +1129,13 @@ function renderTable() {
           <span class="risk-badge ${riskClass}">${escapeHtml(item.risk_level)}</span>
         </td>
         <td>
+          <button type="button" class="score-cell" data-id="${escapeHtml(item.id)}" aria-expanded="${state.expandedScoreId === item.id}"
+                  title="${escapeHtml((item.score_reasons || []).join('\n'))}">
+            ${item.score ? `<span class="score-pill score-${scoreBand(item.score)}">${escapeHtml(item.recommendation || '')}</span>
+            <span class="score-num">${Number(item.score)}</span>` : '<span class="score-num">&mdash;</span>'}
+          </button>
+        </td>
+        <td>
           <div class="file-path-cell" title="${escapeHtml(item.path)}">${escapeHtml(item.path)}</div>
         </td>
         <td>
@@ -1076,14 +1154,22 @@ function renderTable() {
             </button>
           </div>
         </td>
-      </tr>
+      </tr>${state.expandedScoreId === item.id ? `
+      <tr class="score-reasons-row">
+        <td colspan="10">
+          <div class="score-reasons">
+            <strong>Why ${Number(item.score) || 0}/100 (${escapeHtml(item.recommendation || '')})</strong>
+            <ul>${(item.score_reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
+          </div>
+        </td>
+      </tr>` : ''}
     `;
   }).join('');
 
   const remaining = state.filteredItems.length - shown.length;
   const moreRow = remaining > 0 ? `
       <tr class="more-row">
-        <td colspan="9">
+        <td colspan="10">
           <button type="button" class="btn btn-secondary btn-show-more">
             Show ${Math.min(remaining, TABLE_PAGE_SIZE).toLocaleString()} more (${remaining.toLocaleString()} not shown yet)
           </button>
@@ -1112,6 +1198,13 @@ function bindTableEvents() {
   el.fileTableBody.addEventListener('click', async (e) => {
     if (e.target.closest('.btn-show-more')) {
       state.renderLimit += TABLE_PAGE_SIZE;
+      renderTable();
+      return;
+    }
+
+    const scoreCell = e.target.closest('.score-cell');
+    if (scoreCell) {
+      state.expandedScoreId = state.expandedScoreId === scoreCell.dataset.id ? null : scoreCell.dataset.id;
       renderTable();
       return;
     }
@@ -1150,6 +1243,28 @@ function bindTableEvents() {
       openAiInspector(ai.dataset.path);
     }
   });
+}
+
+// Tick only the items JunkZero is confident about (marked Delete)
+function smartSelect() {
+  state.selectedIds.clear();
+  const picked = state.items.filter((i) => scoreBand(i.score || 0) === 'delete');
+  picked.forEach((i) => state.selectedIds.add(i.id));
+  renderTable();
+  updateSelectionSummary();
+  const bytes = picked.reduce((acc, i) => acc + i.size_bytes, 0);
+  showToast(picked.length
+    ? `Selected ${picked.length.toLocaleString()} items marked Delete (${formatSize(bytes)})`
+    : 'No items are marked Delete; review the rest before deleting', picked.length ? 'success' : 'info');
+}
+
+function renderSmartSummary() {
+  const summary = smartSummary(state.items, formatSize);
+  el.smartSummary.classList.toggle('hidden', summary.lines.length === 0);
+  el.btnSmartSelectSummary.classList.toggle('hidden', summary.deleteCount === 0);
+  el.smartSummaryList.innerHTML = summary.lines.map((l) => `
+    <li><span class="score-dot score-${l.band}"></span>${escapeHtml(l.text)}</li>
+  `).join('');
 }
 
 // Ticked items that the current filters show (the ones "Delete Selected" removes)
@@ -1466,6 +1581,7 @@ async function executeBatchDelete(items) {
 
       applyFiltersAndRender(true);
       updateSelectionSummary();
+      renderSmartSummary();
     }
 
     if (result.failed_count > 0) {
@@ -1742,6 +1858,8 @@ async function addJunkRule(rule) {
 // ==========================================
 
 function resetResultViews() {
+  state.expandedScoreId = null;
+  el.smartSummary.classList.add('hidden');
   state.newPaths = new Set();
   state.newOnly = false;
   state.folderFilter = null;
@@ -1827,8 +1945,26 @@ async function openHistoryModal() {
   el.historyList.innerHTML = '<li class="list-empty">Loading...</li>';
   try {
     renderHistory((await apiJson('/api/history')).history);
+    renderLearning(await apiJson('/api/learning'));
   } catch (err) {
     showToast(`Could not load history: ${err.message}`, 'error');
+  }
+}
+
+function renderLearning(summary) {
+  const learned = summary.deleted + summary.kept;
+  el.learningNote.textContent = learned
+    ? `Smart scores have learned from ${summary.deleted.toLocaleString()} item${summary.deleted === 1 ? '' : 's'} you deleted and ${summary.kept.toLocaleString()} you kept.`
+    : 'Smart scores learn from what you delete and what you keep between scans.';
+  el.btnForgetLearning.disabled = learned === 0;
+}
+
+async function forgetLearning() {
+  try {
+    renderLearning(await apiJson('/api/learning', { method: 'DELETE' }));
+    showToast('Learned choices forgotten. The next scan scores items from scratch.', 'success');
+  } catch (err) {
+    showToast(`Could not reset learning: ${err.message}`, 'error');
   }
 }
 
@@ -1970,6 +2106,7 @@ async function loadLatestReport() {
       category_bytes: report.category_bytes,
     });
     applyFiltersAndRender(true);
+    renderSmartSummary();
     el.scheduleModal.classList.add('hidden');
     const note = report.items_truncated ? ` (largest ${report.items.length.toLocaleString()} shown)` : '';
     showToast(`Loaded report from ${new Date(report.generated_at * 1000).toLocaleString()}${note}. Review before deleting.`, 'info');

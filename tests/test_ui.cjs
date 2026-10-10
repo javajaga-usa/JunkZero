@@ -66,3 +66,41 @@ test('junk by folder groups case-insensitively and ranks by size', () => {
     JSON.stringify([['C:\\Downloads', 100, 1], ['C:\\Temp', 15, 2], ['C:\\Empty', 0, 1]]));
   assert.equal(context.junkByFolder([{ path: 'C:\\x\\a', size_bytes: 1 }, { path: 'C:\\y\\b', size_bytes: 2 }], 1).length, 1);
 });
+
+test('smart score bands match the backend thresholds', () => {
+  assert.equal(context.scoreBand(75), 'delete');
+  assert.equal(context.scoreBand(74), 'review');
+  assert.equal(context.scoreBand(45), 'review');
+  assert.equal(context.scoreBand(44), 'keep');
+});
+
+test('smart summary describes each band in plain words', () => {
+  const fmt = (b) => `${b} B`;
+  const summary = context.smartSummary([
+    { name: 'a.tmp', category: 'Temporary & Cache Files', size_bytes: 30, score: 90 },
+    { name: 'b.tmp', category: 'Temporary & Cache Files', size_bytes: 20, score: 80 },
+    { name: 'gone', category: 'Empty Folders', size_bytes: 0, score: 75 },
+    { name: 'Win11.iso', category: 'Installers, Setup Archives & OS Images', size_bytes: 500, score: 60, reason: 'OS / Disc image file (.ISO)' },
+    { name: 'tool.exe', category: 'Installers, Setup Archives & OS Images', size_bytes: 9, score: 20,
+      score_reasons: ['-25: you kept this through 2 earlier scans'] },
+    { name: 'old-report.tmp', category: 'Temporary & Cache Files', size_bytes: 1 },
+  ], fmt);
+  assert.equal(JSON.stringify(summary.lines.map((l) => [l.band, l.text])), JSON.stringify([
+    ['delete', '3 items (50 B) can go now with little risk, mostly temp & cache.'],
+    ['review', '1 item (500 B) is worth a look first. The biggest is Win11.iso (500 B): OS / Disc image file (.ISO).'],
+    ['keep', '1 item (9 B) looks worth keeping, including 1 item you kept after earlier scans.'],
+  ]));
+  assert.equal(summary.deleteCount, 3);
+  assert.equal(context.smartSummary([], fmt).lines.length, 0);
+  assert.equal(context.smartSummary([{ name: 'x', size_bytes: 1, score: 50, reason: 'r' }], fmt).lines[0].text,
+    'Nothing here is a sure bet, so look before you delete.');
+});
+
+test('CSV export includes the smart score and its reasons', () => {
+  const csv = context.buildCsv([{ name: 'a.tmp', is_directory: false, category: 'c', size_bytes: 5, size_formatted: '5 B',
+    modified_date: 'd', risk_level: 'Safe', path: 'p', reason: 'r', score: 88, recommendation: 'Delete',
+    score_reasons: ['Starts at 80: rated Safe', '+8: old'] }]);
+  const [header, row] = csv.slice(1).split('\r\n');
+  assert.ok(header.endsWith('"Smart Score","Recommendation","Why"'));
+  assert.ok(row.endsWith(',88,"Delete","Starts at 80: rated Safe; +8: old"'));
+});

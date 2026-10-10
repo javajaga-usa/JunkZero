@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
-from app.engine import changes, scheduler, storage
+from app.engine import changes, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
@@ -64,6 +64,7 @@ class ScanRequest(BaseModel):
     include_duplicates: bool = False
     include_old_downloads: bool = False
     include_custom_rules: bool = True
+    include_leftovers: bool = False
     old_download_days: int = Field(default=OLD_DOWNLOAD_DAYS, ge=1)
     scan_junk_locations: bool = False
     min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
@@ -122,6 +123,7 @@ class LargestItemsRequest(BaseModel):
 SCAN_OPTION_KEYS = (
     "include_installers", "include_java_builds", "include_temp_junk", "include_broken_downloads",
     "include_stale_large", "include_empty_folders", "include_duplicates", "include_old_downloads",
+    "include_leftovers",
 )
 
 
@@ -207,6 +209,8 @@ async def api_start_scan(req: ScanRequest):
         exclusions=storage.get_exclusions(),
         include_custom_rules=req.include_custom_rules,
         custom_rules=storage.get_custom_rules(),
+        include_leftovers=req.include_leftovers,
+        learning=smart.load_learning(),
         junk_locations=windows_junk_locations(),
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
         stale_days=req.stale_days,
@@ -335,7 +339,23 @@ def api_clean_items(req: CleanRequest) -> CleanResult:
 
     result = delete_items(req.items, permanent=req.permanent)
     _record_history(result, [str(i.get("path", "")) for i in req.items], "scan results")
+    try:
+        smart.learn_deleted(req.items, [e.get("path", "") for e in result.errors])
+    except OSError as e:
+        logger.warning(f"Could not save what was learned from this cleanup: {e}")
     return result
+
+
+@app.get("/api/learning")
+def api_get_learning():
+    """How much the smart score has learned from the user's past choices."""
+    return smart.learning_summary()
+
+
+@app.delete("/api/learning")
+def api_forget_learning():
+    smart.forget_learning()
+    return smart.learning_summary()
 
 
 def _record_history(result: CleanResult, paths: List[str], source: str) -> None:

@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Smarter results (all offline, no account or API key)
+- Smart Score: every result gets a 1-99 score with a Delete / Review / Keep label. Click it to see the reasons. Smart Select ticks only the items marked Delete.
+- JunkZero learns from your choices: kinds of items you delete score higher next time, and items you keep through repeated scans score lower. Cleanup History can forget what was learned.
+- Program Leftovers (opt-in): app data folders left behind by programs you have uninstalled, unchanged for 180 days or more.
+- A plain-language summary after each scan says what can go now, what to look at first, and what to keep.
+- CSV exports include the score, label and reasons.
+
 ## [1.0.0] - 2026-10-10
 
 The first release of JunkZero, a Windows app that finds junk files, shows you what they are, and moves the ones you pick to the Recycle Bin. It comes as a single `JunkZero.exe` that runs without installing Python.

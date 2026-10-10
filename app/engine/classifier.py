@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 from app.config import (
@@ -51,6 +51,10 @@ class GarbageItem(BaseModel):
     reason: str
     is_directory: bool = False
     selected: bool = False
+    # Smart score (app.engine.smart): 1-99 confidence that this is junk, and why
+    score: int = 0
+    score_reasons: List[str] = []
+    recommendation: str = ""
 
 
 def format_size(bytes_val: int) -> str:

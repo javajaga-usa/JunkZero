@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import ScanOptions
-from app.engine import storage
+from app.engine import smart, storage
 from app.engine.locations import windows_junk_locations
 from app.engine.scanner import FastScanner
 
@@ -128,6 +128,7 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
         custom_rules=storage.get_custom_rules(),
         junk_locations=windows_junk_locations(),
         scan_junk_locations=include_junk_locations,
+        learning=smart.load_learning(),
     )
     scanner = FastScanner(options)
     items = scanner.run_scan()
