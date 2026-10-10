@@ -26,6 +26,8 @@ def mac(monkeypatch):
 @pytest.fixture
 def mac_home(tmp_path, monkeypatch, mac):
     """A fake macOS home folder with the usual Library layout."""
+    if os.name == "nt":
+        pytest.skip("macOS home-folder rules need a POSIX temp path")
     home = tmp_path / "home"
     lib = home / "Library"
     for rel in ["Caches/com.spotify.client", "Caches/Homebrew/downloads", "Caches/com.apple.Safari",

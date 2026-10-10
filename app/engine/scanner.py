@@ -143,6 +143,10 @@ class FastScanner:
         # A file copied in recently keeps its old mtime, so also use the creation time
         # (st_birthtime on macOS and Windows, or st_ctime on older Windows Pythons) and take whichever is newer.
         created = getattr(stat, "st_birthtime", None) or stat.st_ctime
+        if osinfo.is_macos():
+            # macOS moves the creation date back when a copy keeps an old modified date, but
+            # the change time (st_ctime) still shows when the file was copied, moved or downloaded
+            created = max(created, stat.st_ctime)
         last_touched = max(stat.st_mtime, created)
         age_days = (time.time() - last_touched) / 86400.0
         if last_touched <= 0 or age_days < self.options.old_download_days:
