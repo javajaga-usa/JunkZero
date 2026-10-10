@@ -15,6 +15,7 @@ from app.config import (
     BUILD_DIR_NAMES,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
+    CAT_OLD_DOWNLOADS,
     CAT_TEMP_JUNK,
     DUPLICATE_MIN_BYTES,
     RISK_REVIEW,
@@ -78,6 +79,7 @@ class FastScanner:
         self._file_locations = [
             (_norm_path(loc.path), loc) for loc in options.junk_locations if not loc.whole_dir
         ]
+        self._downloads_dirs = [_norm_path(p) for p in options.downloads_dirs if p]
         # Unflagged files large enough to be checked for duplicates after traversal
         self._dup_candidates: List[FileCandidate] = []
 
@@ -118,6 +120,28 @@ class FastScanner:
         norm = _norm_path(dir_path)
         return [loc for root, loc in self._file_locations if norm == root or norm.startswith(root + os.sep)]
 
+    def _in_downloads(self, dir_path: str) -> bool:
+        if not self._downloads_dirs or not self.options.include_old_downloads:
+            return False
+        norm = _norm_path(dir_path)
+        return any(norm == root or norm.startswith(root.rstrip(os.sep) + os.sep) for root in self._downloads_dirs)
+
+    def _old_download_item(self, path: str, name: str, size: int, stat: os.stat_result) -> Optional[GarbageItem]:
+        """Flag a file in Downloads that hasn't been modified (or copied in) for a while."""
+        if size < self.options.min_file_size_bytes:
+            return None
+        # A file copied in recently keeps its old mtime, so also use the creation time
+        # (st_birthtime, or st_ctime on older Windows Pythons) and take whichever is newer.
+        created = getattr(stat, "st_birthtime", None) or stat.st_ctime
+        last_touched = max(stat.st_mtime, created)
+        age_days = (time.time() - last_touched) / 86400.0
+        if last_touched <= 0 or age_days < self.options.old_download_days:
+            return None
+        return build_item(
+            path, name, CAT_OLD_DOWNLOADS, size, stat.st_mtime, RISK_REVIEW,
+            f"In Downloads, untouched for {int(age_days)} days", selected=False,
+        )
+
     def _location_item(self, path: str, name: str, size: int, mtime: float, locations: List) -> Optional[GarbageItem]:
         """Flag a file that sits inside a known junk location."""
         if size < self.options.min_file_size_bytes:
@@ -142,6 +166,7 @@ class FastScanner:
         subdirs: List[str] = []
         dup_candidates: List[FileCandidate] = []
         file_locations = self._file_locations_for(dir_path)
+        in_downloads = self._in_downloads(dir_path)
         # Anything other than a plain, traversable subfolder (files, links, build dirs,
         # protected or unreadable entries) means this folder is not empty.
         has_content = False
@@ -216,6 +241,8 @@ class FastScanner:
                             item = self._location_item(path, name, size, mtime, file_locations) if file_locations else None
                             if item is None:
                                 item = classify_item(path, name, size, mtime, is_dir=False, options=self.options)
+                            if item is None and in_downloads:
+                                item = self._old_download_item(path, name, size, stat)
                             if item:
                                 found_items.append(item)
                             elif self.options.include_duplicates and size >= DUPLICATE_MIN_BYTES:

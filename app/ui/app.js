@@ -35,6 +35,7 @@ const SPACE_CATEGORIES = [
   { name: 'Broken / Incomplete Downloads', label: 'Broken downloads' },
   { name: 'Duplicate Files', label: 'Duplicates' },
   { name: 'Stale Large Files', label: 'Stale large' },
+  { name: 'Old Downloads', label: 'Old downloads' },
 ];
 
 function spaceBreakdown(categoryBytes) {
@@ -52,6 +53,9 @@ function spaceBreakdown(categoryBytes) {
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
  * and Recycle Bin (default) or permanent deletion.
  */
+
+// Icons come from a CDN; without it (offline) the app must still work, just without icons
+if (!window.lucide) window.lucide = { createIcons() {} };
 
 // Global State
 const state = {
@@ -102,11 +106,13 @@ const el = {
   optStaleLarge: document.getElementById('optStaleLarge'),
   optEmptyFolders: document.getElementById('optEmptyFolders'),
   optDuplicates: document.getElementById('optDuplicates'),
+  optOldDownloads: document.getElementById('optOldDownloads'),
 
   // Primary Buttons
   btnStartScan: document.getElementById('btnStartScan'),
   btnStopScan: document.getElementById('btnStopScan'),
   btnScanJunk: document.getElementById('btnScanJunk'),
+  btnLargest: document.getElementById('btnLargest'),
   btnSelectAll: document.getElementById('btnSelectAll'),
   btnSelectAllSafe: document.getElementById('btnSelectAllSafe'),
   btnDeselectAll: document.getElementById('btnDeselectAll'),
@@ -138,6 +144,8 @@ const el = {
   statStaleCount: document.getElementById('statStaleCount'),
   statDuplicatesSize: document.getElementById('statDuplicatesSize'),
   statDuplicatesCount: document.getElementById('statDuplicatesCount'),
+  statOldDownloadsSize: document.getElementById('statOldDownloadsSize'),
+  statOldDownloadsCount: document.getElementById('statOldDownloadsCount'),
 
   // Space Breakdown
   spaceBreakdown: document.getElementById('spaceBreakdown'),
@@ -228,7 +236,28 @@ const el = {
   btnSaveSchedule: document.getElementById('btnSaveSchedule'),
   btnDisableSchedule: document.getElementById('btnDisableSchedule'),
 
+  // Largest Files Modal
+  largestModal: document.getElementById('largestModal'),
+  largestSubtitle: document.getElementById('largestSubtitle'),
+  largestList: document.getElementById('largestList'),
+  largestTabFolders: document.getElementById('largestTabFolders'),
+  largestTabFiles: document.getElementById('largestTabFiles'),
+  closeLargestModal: document.getElementById('closeLargestModal'),
+  btnCloseLargest: document.getElementById('btnCloseLargest'),
+
   toastContainer: document.getElementById('toastContainer'),
+};
+
+// Scan toggles remembered between launches (request field -> checkbox)
+const SCAN_OPTION_INPUTS = {
+  include_installers: el.optInstallers,
+  include_java_builds: el.optJavaBuilds,
+  include_temp_junk: el.optTemp,
+  include_broken_downloads: el.optDownloads,
+  include_stale_large: el.optStaleLarge,
+  include_empty_folders: el.optEmptyFolders,
+  include_duplicates: el.optDuplicates,
+  include_old_downloads: el.optOldDownloads,
 };
 
 // Utilities
@@ -261,6 +290,7 @@ async function initApp() {
   lucide.createIcons();
   setupEventListeners();
   await loadAvailableDrives();
+  await loadPreferences();
 }
 
 // Event Listeners
@@ -272,6 +302,7 @@ function setupEventListeners() {
     el.themeIcon.setAttribute('data-lucide', isDark ? 'sun' : 'moon');
     lucide.createIcons();
     localStorage.setItem('junkzero_theme', isDark ? 'dark' : 'light');
+    savePreferences();
   });
 
   const savedTheme = localStorage.getItem('junkzero_theme');
@@ -304,6 +335,8 @@ function setupEventListeners() {
   // Start / Stop Scan Buttons
   el.btnStartScan.addEventListener('click', () => startScan());
   el.btnScanJunk.addEventListener('click', () => startScan({ junkOnly: true }));
+  el.btnLargest.addEventListener('click', openLargestModal);
+  Object.values(SCAN_OPTION_INPUTS).forEach((input) => input.addEventListener('change', savePreferences));
   el.btnStopScan.addEventListener('click', stopScan);
 
   // Search & Filter Listeners
@@ -540,6 +573,12 @@ function setupEventListeners() {
   el.btnSaveSchedule.addEventListener('click', saveSchedule);
   el.btnDisableSchedule.addEventListener('click', disableSchedule);
   el.btnLoadReport.addEventListener('click', loadLatestReport);
+
+  // Largest Files Modal
+  el.closeLargestModal.addEventListener('click', () => el.largestModal.classList.add('hidden'));
+  el.btnCloseLargest.addEventListener('click', () => el.largestModal.classList.add('hidden'));
+  el.largestTabFolders.addEventListener('click', () => renderLargest('folders'));
+  el.largestTabFiles.addEventListener('click', () => renderLargest('files'));
 }
 
 // Drive Discovery
@@ -604,23 +643,16 @@ async function startScan({ junkOnly = false } = {}) {
 
   const payload = {
     target_path: targetPath,
-    include_installers: el.optInstallers.checked,
-    include_java_builds: el.optJavaBuilds.checked,
-    include_temp_junk: el.optTemp.checked,
-    include_broken_downloads: el.optDownloads.checked,
-    include_stale_large: el.optStaleLarge.checked,
-    include_empty_folders: el.optEmptyFolders.checked,
-    include_duplicates: el.optDuplicates.checked,
+    ...currentScanOptions(),
     scan_junk_locations: junkOnly,
     skip_system_dirs: true,
   };
   if (junkOnly) {
     // Quick Clean looks only for disposable temp and cache content
-    Object.assign(payload, {
-      include_installers: false, include_java_builds: false, include_broken_downloads: false,
-      include_stale_large: false, include_empty_folders: false, include_duplicates: false,
-      include_temp_junk: true,
-    });
+    Object.keys(SCAN_OPTION_INPUTS).forEach((key) => { payload[key] = false; });
+    payload.include_temp_junk = true;
+  } else {
+    savePreferences();
   }
 
   try {
@@ -746,6 +778,10 @@ function updateMetrics(stats) {
   el.statDuplicatesSize.textContent = formatSize(bytes[catDuplicates] || 0);
   el.statDuplicatesCount.textContent = `${counts[catDuplicates] || 0} extra copies`;
 
+  const catOldDownloads = 'Old Downloads';
+  el.statOldDownloadsSize.textContent = formatSize(bytes[catOldDownloads] || 0);
+  el.statOldDownloadsCount.textContent = `${counts[catOldDownloads] || 0} files`;
+
   renderSpaceBreakdown(bytes);
 }
 
@@ -796,6 +832,8 @@ function resetStatsUI() {
   el.statStaleCount.textContent = '0 files';
   el.statDuplicatesSize.textContent = '0.00 MB';
   el.statDuplicatesCount.textContent = '0 extra copies';
+  el.statOldDownloadsSize.textContent = '0.00 MB';
+  el.statOldDownloadsCount.textContent = '0 files';
   el.spaceBreakdown.classList.add('hidden');
 }
 
@@ -1678,6 +1716,140 @@ async function loadLatestReport() {
   } catch (err) {
     showToast(`Could not load report: ${err.message}`, 'error');
   }
+}
+
+// ==========================================
+// Remembered Preferences (theme, target folder, scan toggles)
+// ==========================================
+
+function currentScanOptions() {
+  return Object.fromEntries(Object.entries(SCAN_OPTION_INPUTS).map(([key, input]) => [key, input.checked]));
+}
+
+function applyTheme(theme) {
+  const isDark = theme !== 'light';
+  document.body.classList.toggle('dark-theme', isDark);
+  document.body.classList.toggle('light-theme', !isDark);
+  el.themeIcon.setAttribute('data-lucide', isDark ? 'sun' : 'moon');
+  lucide.createIcons();
+}
+
+async function loadPreferences() {
+  let prefs;
+  try {
+    prefs = (await apiJson('/api/preferences')).preferences || {};
+  } catch (err) {
+    return; // Defaults stay in place
+  }
+  if (prefs.theme) applyTheme(prefs.theme);
+  Object.entries(prefs.scan_options || {}).forEach(([key, value]) => {
+    if (SCAN_OPTION_INPUTS[key]) SCAN_OPTION_INPUTS[key].checked = Boolean(value);
+  });
+  if (prefs.target_path) {
+    el.targetPathInput.value = prefs.target_path;
+    document.querySelectorAll('.drive-pill').forEach((b) => {
+      b.classList.toggle('active', b.dataset.path.toLowerCase() === prefs.target_path.toLowerCase());
+    });
+  }
+}
+
+async function savePreferences() {
+  const payload = {
+    theme: document.body.classList.contains('light-theme') ? 'light' : 'dark',
+    target_path: el.targetPathInput.value.trim(),
+    scan_options: currentScanOptions(),
+  };
+  try {
+    await apiJson('/api/preferences', { method: 'PUT', body: JSON.stringify(payload) });
+  } catch (err) {
+    console.warn('Could not save preferences:', err);
+  }
+}
+
+// ==========================================
+// Largest Files & Folders (read-only)
+// ==========================================
+
+state.largest = null;
+
+async function openLargestModal() {
+  const path = el.targetPathInput.value.trim();
+  if (!path) {
+    showToast('Please specify a folder first', 'error');
+    return;
+  }
+  state.largest = null;
+  el.largestModal.classList.remove('hidden');
+  el.largestSubtitle.textContent = `Measuring ${path}...`;
+  el.largestList.innerHTML = '<li class="list-empty"><div class="spinner"></div> Measuring folder sizes. Large drives can take a minute.</li>';
+  el.btnLargest.disabled = true;
+  try {
+    const data = await apiJson('/api/space/largest', { method: 'POST', body: JSON.stringify({ path }) });
+    state.largest = data;
+    const partial = data.complete ? '' : ' (stopped early on a very large folder; sizes may be low)';
+    el.largestSubtitle.textContent =
+      `${data.total_formatted} in ${data.file_count.toLocaleString()} files under ${data.root}${partial}`;
+    renderLargest('folders');
+  } catch (err) {
+    el.largestSubtitle.textContent = 'Could not measure this folder';
+    el.largestList.innerHTML = `<li class="list-empty">${escapeHtml(err.message)}</li>`;
+  } finally {
+    el.btnLargest.disabled = false;
+  }
+}
+
+function renderLargest(tab) {
+  el.largestTabFolders.classList.toggle('active', tab === 'folders');
+  el.largestTabFiles.classList.toggle('active', tab === 'files');
+  el.largestTabFolders.setAttribute('aria-selected', String(tab === 'folders'));
+  el.largestTabFiles.setAttribute('aria-selected', String(tab === 'files'));
+  if (!state.largest) return;
+
+  const rows = tab === 'folders' ? state.largest.folders : state.largest.files;
+  if (!rows.length) {
+    el.largestList.innerHTML = `<li class="list-empty">No ${tab} found</li>`;
+    return;
+  }
+  const max = rows[0].size_bytes || 1;
+  el.largestList.innerHTML = rows.map((r) => {
+    const meta = tab === 'folders'
+      ? `${r.file_count.toLocaleString()} file${r.file_count === 1 ? '' : 's'}`
+      : `Modified ${escapeHtml(r.modified_date)}`;
+    return `
+      <li>
+        <div class="largest-main">
+          <div class="history-row">
+            <strong class="largest-name" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</strong>
+            <span>${escapeHtml(r.size_formatted)}</span>
+          </div>
+          <div class="largest-bar"><span style="width: ${Math.max(1, (r.size_bytes / max) * 100).toFixed(1)}%"></span></div>
+          <div class="history-meta">${meta} &middot; ${escapeHtml(r.path)}</div>
+        </div>
+        <div class="row-actions">
+          <button class="action-icon-btn btn-largest-inspect" title="Review in folder explorer" data-path="${escapeHtml(r.path)}">
+            <i data-lucide="folder-tree"></i>
+          </button>
+          <button class="action-icon-btn btn-largest-open" title="Show in Windows Explorer" data-path="${escapeHtml(r.path)}">
+            <i data-lucide="folder"></i>
+          </button>
+        </div>
+      </li>
+    `;
+  }).join('');
+  lucide.createIcons();
+
+  el.largestList.querySelectorAll('.btn-largest-inspect').forEach((btn) => {
+    btn.addEventListener('click', () => openHierarchyModal(btn.dataset.path));
+  });
+  el.largestList.querySelectorAll('.btn-largest-open').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await apiJson('/api/system/open-explorer', { method: 'POST', body: JSON.stringify({ path: btn.dataset.path }) });
+      } catch (err) {
+        showToast('Could not open folder in Explorer', 'error');
+      }
+    });
+  });
 }
 
 window.addEventListener('DOMContentLoaded', initApp);

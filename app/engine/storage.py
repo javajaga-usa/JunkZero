@@ -115,3 +115,15 @@ def save_report(report: Dict[str, Any]) -> None:
 def load_report() -> Dict[str, Any] | None:
     report = _read_json("latest_report.json", None)
     return report if isinstance(report, dict) else None
+
+
+# ---------------------------------------------------------------- UI preferences
+
+def get_preferences() -> Dict[str, Any]:
+    prefs = load_settings().get("preferences", {})
+    return prefs if isinstance(prefs, dict) else {}
+
+
+def set_preferences(prefs: Dict[str, Any]) -> Dict[str, Any]:
+    update_settings(preferences=prefs)
+    return prefs
