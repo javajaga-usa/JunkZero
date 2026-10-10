@@ -25,6 +25,9 @@
         </div>
       </div>
       <div class="header-right">
+        <button id="btnOpenJunkRules" class="btn btn-ghost btn-sm" title="Your own patterns and folders to flag as junk">
+          <i data-lucide="list-plus"></i> Junk Rules
+        </button>
         <button id="btnOpenExclusions" class="btn btn-ghost btn-sm" title="Paths and patterns JunkZero never flags">
           <i data-lucide="eye-off"></i> Exclusions
         </button>
@@ -273,6 +276,7 @@
               <option value="Empty Folders">Empty Folders (no files inside)</option>
               <option value="Duplicate Files">Duplicate Files (extra copies)</option>
               <option value="Old Downloads">Old Downloads (untouched 90+ days)</option>
+              <option value="My Junk Rules">My Junk Rules (your patterns)</option>
             </select>
 
             <select id="riskFilter" class="select-filter">
@@ -282,6 +286,18 @@
               <option value="Caution">Caution</option>
             </select>
           </div>
+
+          <button id="btnNewOnly" class="btn btn-ghost btn-toggle hidden" aria-pressed="false"
+                  title="Show only items the previous scan of this folder did not find">
+            <i data-lucide="sparkle"></i> <span id="newOnlyLabel">New only</span>
+          </button>
+          <button id="btnByFolder" class="btn btn-ghost" title="Which folders hold the most junk">
+            <i data-lucide="folders"></i> By Folder
+          </button>
+          <span id="folderFilterChip" class="filter-chip hidden">
+            <i data-lucide="folder"></i> <span id="folderFilterText"></span>
+            <button id="clearFolderFilter" class="clear-chip-btn" title="Show all folders">&times;</button>
+          </span>
         </div>
 
         <div class="toolbar-right">
@@ -388,6 +404,29 @@
         </div>
         <div class="modal-footer">
           <button id="btnCloseLargest" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Junk by Folder Modal (groups the current results by the folder they are in) -->
+    <div id="byFolderModal" class="modal-overlay hidden">
+      <div class="modal-card modal-wide">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon warning"><i data-lucide="folders"></i></div>
+            <div>
+              <h3 class="modal-title">Junk by Folder</h3>
+              <p class="modal-subtitle" id="byFolderSubtitle">Folders holding the most reclaimable space</p>
+            </div>
+          </div>
+          <button id="closeByFolderModal" class="close-modal-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <ul id="byFolderList" class="simple-list largest-list"></ul>
+          <p class="confirm-note">Click a folder to show only its items in the table. Your current category, risk and search filters still apply.</p>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCloseByFolder" class="btn btn-secondary">Done</button>
         </div>
       </div>
     </div>
@@ -571,6 +610,33 @@
         </div>
         <div class="modal-footer">
           <button id="btnCloseExclusions" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Junk Rules Modal -->
+    <div id="junkRulesModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon warning"><i data-lucide="list-plus"></i></div>
+            <div>
+              <h3 class="modal-title">Junk Rules</h3>
+              <p class="modal-subtitle">Your own folders, files and patterns to flag as junk</p>
+            </div>
+          </div>
+          <button id="closeJunkRulesModal" class="close-modal-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="input-with-button">
+            <input type="text" id="junkRuleInput" placeholder="*.bak2  or  render_*  or  C:\Projects\scratch" />
+            <button id="btnAddJunkRule" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add</button>
+          </div>
+          <p class="confirm-note">Matches are listed under "My Junk Rules" as Review Recommended and are never preselected. A matching folder is listed as one item. Built-in categories and your exclusions take priority. Applies from the next deep scan and scheduled scans; Quick Clean ignores these rules.</p>
+          <ul id="junkRulesList" class="simple-list"></ul>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCloseJunkRules" class="btn btn-secondary">Done</button>
         </div>
       </div>
     </div>

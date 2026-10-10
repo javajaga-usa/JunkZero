@@ -36,6 +36,7 @@ const SPACE_CATEGORIES = [
   { name: 'Duplicate Files', label: 'Duplicates' },
   { name: 'Stale Large Files', label: 'Stale large' },
   { name: 'Old Downloads', label: 'Old downloads' },
+  { name: 'My Junk Rules', label: 'My rules' },
 ];
 
 function spaceBreakdown(categoryBytes) {
@@ -46,6 +47,32 @@ function spaceBreakdown(categoryBytes) {
     bytes: categoryBytes[c.name] || 0,
     percent: total > 0 ? ((categoryBytes[c.name] || 0) / total) * 100 : 0,
   })).filter((c) => c.bytes > 0);
+}
+
+// Folder that holds an item (Windows or POSIX paths), as written in the item's path
+function parentFolder(path) {
+  const text = String(path ?? '').replace(/[\\/]+$/, '');
+  const cut = Math.max(text.lastIndexOf('\\'), text.lastIndexOf('/'));
+  if (cut < 0) return '';
+  const parent = text.slice(0, cut);
+  // Keep the separator on a drive or filesystem root ("C:\" or "/")
+  return /^[A-Za-z]:$/.test(parent) || parent === '' ? text.slice(0, cut + 1) : parent;
+}
+
+// Results grouped by the folder they are in, biggest first (count breaks ties)
+function junkByFolder(items, limit = 50) {
+  const groups = new Map();
+  items.forEach((item) => {
+    const folder = parentFolder(item.path);
+    const key = folder.toLowerCase();
+    const group = groups.get(key) || { folder, bytes: 0, count: 0 };
+    group.bytes += Number(item.size_bytes) || 0;
+    group.count += 1;
+    groups.set(key, group);
+  });
+  return [...groups.values()]
+    .sort((a, b) => b.bytes - a.bytes || b.count - a.count || a.folder.localeCompare(b.folder))
+    .slice(0, limit);
 }
 
 /**
@@ -76,6 +103,9 @@ const state = {
   categoryFilter: 'ALL',
   riskFilter: 'ALL',
   searchQuery: '',
+  folderFilter: null,     // Lower-cased folder from "By Folder", or null for all
+  newPaths: new Set(),    // Paths the previous scan of this target did not find
+  newOnly: false,
 
   // Hierarchy Explorer State
   currentHierarchy: null,
@@ -208,6 +238,28 @@ const el = {
   exclusionInput: document.getElementById('exclusionInput'),
   btnAddExclusion: document.getElementById('btnAddExclusion'),
   exclusionsList: document.getElementById('exclusionsList'),
+
+  // Junk Rules Modal
+  btnOpenJunkRules: document.getElementById('btnOpenJunkRules'),
+  junkRulesModal: document.getElementById('junkRulesModal'),
+  closeJunkRulesModal: document.getElementById('closeJunkRulesModal'),
+  btnCloseJunkRules: document.getElementById('btnCloseJunkRules'),
+  junkRuleInput: document.getElementById('junkRuleInput'),
+  btnAddJunkRule: document.getElementById('btnAddJunkRule'),
+  junkRulesList: document.getElementById('junkRulesList'),
+
+  // New since last scan & Junk by Folder
+  btnNewOnly: document.getElementById('btnNewOnly'),
+  newOnlyLabel: document.getElementById('newOnlyLabel'),
+  btnByFolder: document.getElementById('btnByFolder'),
+  folderFilterChip: document.getElementById('folderFilterChip'),
+  folderFilterText: document.getElementById('folderFilterText'),
+  clearFolderFilter: document.getElementById('clearFolderFilter'),
+  byFolderModal: document.getElementById('byFolderModal'),
+  byFolderSubtitle: document.getElementById('byFolderSubtitle'),
+  byFolderList: document.getElementById('byFolderList'),
+  closeByFolderModal: document.getElementById('closeByFolderModal'),
+  btnCloseByFolder: document.getElementById('btnCloseByFolder'),
 
   // History Modal
   btnOpenHistory: document.getElementById('btnOpenHistory'),
@@ -559,6 +611,26 @@ function setupEventListeners() {
     if (e.key === 'Enter') addExclusion(el.exclusionInput.value);
   });
 
+  // Junk Rules
+  el.btnOpenJunkRules.addEventListener('click', openJunkRulesModal);
+  el.closeJunkRulesModal.addEventListener('click', () => el.junkRulesModal.classList.add('hidden'));
+  el.btnCloseJunkRules.addEventListener('click', () => el.junkRulesModal.classList.add('hidden'));
+  el.btnAddJunkRule.addEventListener('click', () => addJunkRule(el.junkRuleInput.value));
+  el.junkRuleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addJunkRule(el.junkRuleInput.value);
+  });
+
+  // New since last scan & Junk by Folder
+  el.btnNewOnly.addEventListener('click', () => {
+    state.newOnly = !state.newOnly;
+    el.btnNewOnly.setAttribute('aria-pressed', String(state.newOnly));
+    applyFiltersAndRender();
+  });
+  el.btnByFolder.addEventListener('click', openByFolderModal);
+  el.clearFolderFilter.addEventListener('click', () => setFolderFilter(null));
+  el.closeByFolderModal.addEventListener('click', () => el.byFolderModal.classList.add('hidden'));
+  el.btnCloseByFolder.addEventListener('click', () => el.byFolderModal.classList.add('hidden'));
+
   // History
   el.btnOpenHistory.addEventListener('click', openHistoryModal);
   el.closeHistoryModal.addEventListener('click', () => el.historyModal.classList.add('hidden'));
@@ -626,6 +698,7 @@ async function startScan({ junkOnly = false } = {}) {
   state.filteredItems = [];
   state.selectedIds.clear();
   state.isScanning = true;
+  resetResultViews();
 
   el.btnStartScan.classList.add('hidden');
   el.btnScanJunk.classList.add('hidden');
@@ -651,6 +724,7 @@ async function startScan({ junkOnly = false } = {}) {
     // Quick Clean looks only for disposable temp and cache content
     Object.keys(SCAN_OPTION_INPUTS).forEach((key) => { payload[key] = false; });
     payload.include_temp_junk = true;
+    payload.include_custom_rules = false;
   } else {
     savePreferences();
   }
@@ -693,7 +767,7 @@ async function startScan({ junkOnly = false } = {}) {
           // Drop any pending throttled update so it cannot overwrite the final stats
           clearTimeout(updateThrottleTimer);
           updateThrottleTimer = null;
-          onScanCompleted(data.stats);
+          onScanCompleted(data.stats, data.changes);
         }
       } catch (e) {
         console.error('SSE parse error:', e);
@@ -716,7 +790,7 @@ async function stopScan() {
   onScanCompleted();
 }
 
-function onScanCompleted(finalStats = null) {
+function onScanCompleted(finalStats = null, changes = null) {
   state.isScanning = false;
   if (state.eventSource) {
     state.eventSource.close();
@@ -730,10 +804,16 @@ function onScanCompleted(finalStats = null) {
   el.statusText.textContent = 'Scan Finished';
   document.querySelector('.status-dot').classList.remove('scanning');
 
+  if (changes) setNewItems(changes);
   applyFiltersAndRender(true);
   if (finalStats) {
     updateMetrics(finalStats);
-    showToast(`Scan finished: ${finalStats.garbage_count} garbage items detected!`, 'success');
+    let note = '';
+    if (changes && changes.previous_scan_at) {
+      const count = state.newPaths.size;
+      note = count ? ` ${count.toLocaleString()} new since the last scan.` : ' Nothing new since the last scan.';
+    }
+    showToast(`Scan finished: ${finalStats.garbage_count} garbage items detected!${note}`, 'success');
   } else {
     showToast(`Scan stopped. Found ${state.items.length} items.`, 'info');
   }
@@ -849,6 +929,14 @@ function applyFiltersAndRender(renderFull = true) {
     result = result.filter((i) => i.risk_level === state.riskFilter);
   }
 
+  if (state.folderFilter) {
+    result = result.filter((i) => parentFolder(i.path).toLowerCase() === state.folderFilter);
+  }
+
+  if (state.newOnly) {
+    result = result.filter((i) => state.newPaths.has(i.path));
+  }
+
   if (state.searchQuery) {
     const q = state.searchQuery;
     result = result.filter(
@@ -940,7 +1028,7 @@ function renderTable() {
         </td>
         <td>
           <div class="file-name-cell clickable-file-cell" title="Click to view parent folder and hierarchy" data-path="${escapeHtml(item.path)}">
-            <span class="file-name-text">${escapeHtml(item.name)}</span>
+            <span class="file-name-text">${escapeHtml(item.name)}</span>${state.newPaths.has(item.path) ? '<span class="new-badge" title="Not found by the previous scan of this folder">New</span>' : ''}
           </div>
         </td>
         <td>
@@ -1560,6 +1648,141 @@ async function addExclusion(rule, { fromTable = false } = {}) {
 }
 
 // ==========================================
+// Junk Rules (user patterns flagged as junk)
+// ==========================================
+
+async function openJunkRulesModal() {
+  el.junkRulesModal.classList.remove('hidden');
+  el.junkRuleInput.value = '';
+  try {
+    renderJunkRules((await apiJson('/api/custom-rules')).rules);
+  } catch (err) {
+    showToast(`Could not load junk rules: ${err.message}`, 'error');
+  }
+}
+
+function renderJunkRules(rules) {
+  if (!rules.length) {
+    el.junkRulesList.innerHTML = '<li class="list-empty">No junk rules yet</li>';
+    return;
+  }
+  el.junkRulesList.innerHTML = rules.map((rule) => `
+    <li>
+      <span><span class="rule-kind">${/[*?[]/.test(rule) ? 'Pattern' : 'Path'}</span>${escapeHtml(rule)}</span>
+      <button class="action-icon-btn btn-remove-junk-rule" data-rule="${escapeHtml(rule)}" title="Remove">
+        <i data-lucide="x"></i>
+      </button>
+    </li>
+  `).join('');
+  lucide.createIcons();
+  el.junkRulesList.querySelectorAll('.btn-remove-junk-rule').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        const remaining = rules.filter((r) => r !== btn.dataset.rule);
+        renderJunkRules((await apiJson('/api/custom-rules', {
+          method: 'PUT', body: JSON.stringify({ rules: remaining }),
+        })).rules);
+      } catch (err) {
+        showToast(`Could not remove junk rule: ${err.message}`, 'error');
+      }
+    });
+  });
+}
+
+async function addJunkRule(rule) {
+  rule = (rule || '').trim();
+  if (!rule) return;
+  try {
+    const data = await apiJson('/api/custom-rules/add', { method: 'POST', body: JSON.stringify({ rule }) });
+    el.junkRuleInput.value = '';
+    renderJunkRules(data.rules);
+  } catch (err) {
+    showToast(`Could not add junk rule: ${err.message}`, 'error');
+  }
+}
+
+// ==========================================
+// New since last scan & Junk by Folder
+// ==========================================
+
+function resetResultViews() {
+  state.newPaths = new Set();
+  state.newOnly = false;
+  state.folderFilter = null;
+  el.btnNewOnly.classList.add('hidden');
+  el.btnNewOnly.setAttribute('aria-pressed', 'false');
+  el.folderFilterChip.classList.add('hidden');
+}
+
+function setNewItems(changes) {
+  state.newPaths = new Set(changes.new_paths || []);
+  const count = state.newPaths.size;
+  el.newOnlyLabel.textContent = `New only (${count.toLocaleString()})`;
+  el.btnNewOnly.classList.toggle('hidden', count === 0);
+  if (changes.previous_scan_at) {
+    el.btnNewOnly.title = `Show only items not found by the scan on ${new Date(changes.previous_scan_at * 1000).toLocaleString()}`;
+  }
+}
+
+function setFolderFilter(folder) {
+  state.folderFilter = folder ? folder.toLowerCase() : null;
+  el.folderFilterChip.classList.toggle('hidden', !folder);
+  el.folderFilterText.textContent = folder || '';
+  el.folderFilterChip.title = folder || '';
+  applyFiltersAndRender();
+}
+
+function openByFolderModal() {
+  const groups = junkByFolder(state.items);
+  el.byFolderModal.classList.remove('hidden');
+  el.byFolderSubtitle.textContent = state.items.length
+    ? `${state.items.length.toLocaleString()} items in ${new Set(state.items.map((i) => parentFolder(i.path).toLowerCase())).size.toLocaleString()} folders`
+    : 'Run a scan to see which folders hold the most junk';
+  if (!groups.length) {
+    el.byFolderList.innerHTML = '<li class="list-empty">No results yet</li>';
+    return;
+  }
+  const max = groups[0].bytes || 1;
+  el.byFolderList.innerHTML = groups.map((g) => `
+    <li>
+      <div class="largest-main">
+        <div class="history-row">
+          <strong class="largest-name" title="${escapeHtml(g.folder)}">${escapeHtml(g.folder)}</strong>
+          <span>${formatSize(g.bytes)}</span>
+        </div>
+        <div class="largest-bar"><span style="width: ${Math.max(1, (g.bytes / max) * 100).toFixed(1)}%"></span></div>
+        <div class="history-meta">${g.count.toLocaleString()} item${g.count === 1 ? '' : 's'}</div>
+      </div>
+      <div class="row-actions">
+        <button class="action-icon-btn btn-folder-filter" title="Show only this folder's items in the table" data-folder="${escapeHtml(g.folder)}">
+          <i data-lucide="filter"></i>
+        </button>
+        <button class="action-icon-btn btn-folder-open" title="Show in Windows Explorer" data-path="${escapeHtml(g.folder)}">
+          <i data-lucide="folder"></i>
+        </button>
+      </div>
+    </li>
+  `).join('');
+  lucide.createIcons();
+
+  el.byFolderList.querySelectorAll('.btn-folder-filter').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setFolderFilter(btn.dataset.folder);
+      el.byFolderModal.classList.add('hidden');
+    });
+  });
+  el.byFolderList.querySelectorAll('.btn-folder-open').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        await apiJson('/api/system/open-explorer', { method: 'POST', body: JSON.stringify({ path: btn.dataset.path }) });
+      } catch (err) {
+        showToast('Could not open folder in Explorer', 'error');
+      }
+    });
+  });
+}
+
+// ==========================================
 // Cleanup History
 // ==========================================
 
@@ -1700,6 +1923,7 @@ async function loadLatestReport() {
     const report = await apiJson('/api/reports/latest');
     state.items = report.items;
     state.selectedIds.clear();
+    resetResultViews();
     report.items.forEach((i) => { if (i.selected) state.selectedIds.add(i.id); });
     updateMetrics({
       files_scanned: 0,

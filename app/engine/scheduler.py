@@ -118,6 +118,7 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
         target_path=existing[0] if existing else "",
         extra_paths=existing[1:],
         exclusions=storage.get_exclusions(),
+        custom_rules=storage.get_custom_rules(),
         junk_locations=windows_junk_locations(),
         scan_junk_locations=include_junk_locations,
     )

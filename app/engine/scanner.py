@@ -13,6 +13,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from app.config import (
     BUILD_DIR_NAMES,
+    CAT_CUSTOM_RULES,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
     CAT_OLD_DOWNLOADS,
@@ -72,6 +73,7 @@ class FastScanner:
         # parent-before-child because a child is only discovered by scanning its parent.
         self._dir_tree: Dict[str, tuple[bool, List[str]]] = {}
         self._excluder = ExclusionMatcher(options.exclusions)
+        self._junk_rules = ExclusionMatcher(options.custom_rules if options.include_custom_rules else [])
         # Junk locations: folders flagged as a single item, and folders whose files are flagged
         self._dir_locations = {
             _norm_path(loc.path): loc for loc in options.junk_locations if loc.whole_dir
@@ -140,6 +142,16 @@ class FastScanner:
         return build_item(
             path, name, CAT_OLD_DOWNLOADS, size, stat.st_mtime, RISK_REVIEW,
             f"In Downloads, untouched for {int(age_days)} days", selected=False,
+        )
+
+    def _custom_rule_item(self, path: str, name: str, size: int, mtime: float, is_dir: bool = False) -> Optional[GarbageItem]:
+        """Flag something that matches one of the user's own junk rules (never preselected)."""
+        rule = self._junk_rules.match(path, name)
+        if rule is None or size < self.options.min_file_size_bytes:
+            return None
+        return build_item(
+            path, name, CAT_CUSTOM_RULES, size, mtime, RISK_REVIEW,
+            f"Matches your junk rule: {rule}", is_dir=is_dir, selected=False,
         )
 
     def _location_item(self, path: str, name: str, size: int, mtime: float, locations: List) -> Optional[GarbageItem]:
@@ -230,6 +242,14 @@ class FastScanner:
                                 # Do not recurse inside marked build directory
                                 continue
 
+                            # A folder matching a user junk rule is listed as one item
+                            if self._junk_rules and self._junk_rules.matches(path, name):
+                                has_content = True
+                                item = self._custom_rule_item(path, name, self._calc_dir_size(path), mtime, is_dir=True)
+                                if item:
+                                    found_items.append(item)
+                                continue
+
                             subdirs.append(path)
 
                         elif is_file:
@@ -243,6 +263,8 @@ class FastScanner:
                                 item = classify_item(path, name, size, mtime, is_dir=False, options=self.options)
                             if item is None and in_downloads:
                                 item = self._old_download_item(path, name, size, stat)
+                            if item is None and self._junk_rules:
+                                item = self._custom_rule_item(path, name, size, mtime)
                             if item:
                                 found_items.append(item)
                             elif self.options.include_duplicates and size >= DUPLICATE_MIN_BYTES:

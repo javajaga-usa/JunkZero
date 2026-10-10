@@ -23,6 +23,9 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
   - **Duplicate Files** (opt-in): Files ≥ 1MB with identical contents. The newest copy is kept; the others are listed for review. Hard links are never counted as copies.
   - **Old Downloads** (opt-in): Files in your Downloads folder that haven't been modified or added for 90 days or more. They are listed as "Review Recommended" and never preselected. Files that fit another category (installers, broken downloads) stay in that category.
+- **📝 Junk Rules**: Add your own patterns (such as `*.bak2` or `render_*`) or folders to flag as junk. Matches appear under "My Junk Rules" as Review Recommended and are never preselected; a matching folder is listed as one item. Built-in categories and exclusions take priority, rules that would match everything (`*`, `*.*`, a whole drive) are refused, and Quick Clean ignores your rules.
+- **✨ New Since Last Scan**: When you scan a folder again, items the previous scan of that folder didn't find get a "New" badge, and a "New only" button shows just those. Only categories the previous scan also looked for are compared, so turning on a category doesn't mark everything in it as new. The last 20 scanned folders are remembered.
+- **📂 Junk by Folder**: Groups the current results by the folder they are in, biggest first. Click a folder to show only its items in the table; clear the folder chip to see everything again.
 - **📏 Largest Files & Folders**: A read-only view of the biggest folders and files in the target folder, so you can see where the space goes even when it isn't junk. Review or delete through the folder explorer, which keeps the usual confirmations. Protected system folders and your exclusions are not counted.
 - **💾 Remembered Settings**: The target folder, the "Scan For" toggles and the theme are restored the next time you open JunkZero. The delete mode is never remembered; every launch starts in Recycle Bin mode.
 - **⚡ Quick Clean**: One click scans your temp folder, application crash dumps, and Chrome / Edge / Brave / Firefox caches. Browser cache folders are listed as single items (close the browser before deleting them). Locations under `C:\Windows` (Windows Update downloads, system temp) stay protected and are not offered.
@@ -87,6 +90,6 @@ To run the API without opening a window:
 python -m app.main --mode server
 ```
 
-Settings (exclusions, schedule, remembered scan options), cleanup history and the latest scan report are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
+Settings (exclusions, junk rules, schedule, remembered scan options), cleanup history, the latest scan report and the results of recent scans (for "New since last scan") are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
 
 Use the application on localhost. Native folder selection and Explorer integration require Windows. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.

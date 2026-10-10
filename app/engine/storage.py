@@ -5,10 +5,12 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 HISTORY_LIMIT = 200          # Cleanup records kept
 HISTORY_PATHS_LIMIT = 500    # Paths stored per cleanup record
+SCAN_MEMORY_LIMIT = 20       # Scan targets remembered for "new since last scan"
+SCAN_MEMORY_PATHS_LIMIT = 50000  # Flagged paths remembered per target
 
 _lock = threading.Lock()
 
@@ -63,13 +65,29 @@ def get_exclusions() -> List[str]:
     return [r for r in rules if isinstance(r, str) and r.strip()]
 
 
-def set_exclusions(rules: List[str]) -> List[str]:
+def _clean_rules(rules: List[str]) -> List[str]:
     cleaned: List[str] = []
     for rule in rules:
         rule = rule.strip()
         if rule and rule not in cleaned:
             cleaned.append(rule)
+    return cleaned
+
+
+def set_exclusions(rules: List[str]) -> List[str]:
+    cleaned = _clean_rules(rules)
     update_settings(exclusions=cleaned)
+    return cleaned
+
+
+def get_custom_rules() -> List[str]:
+    rules = load_settings().get("custom_rules", [])
+    return [r for r in rules if isinstance(r, str) and r.strip()]
+
+
+def set_custom_rules(rules: List[str]) -> List[str]:
+    cleaned = _clean_rules(rules)
+    update_settings(custom_rules=cleaned)
     return cleaned
 
 
@@ -115,6 +133,38 @@ def save_report(report: Dict[str, Any]) -> None:
 def load_report() -> Dict[str, Any] | None:
     report = _read_json("latest_report.json", None)
     return report if isinstance(report, dict) else None
+
+
+# ---------------------------------------------------------------- Previous scans
+
+def last_scan(key: str) -> Optional[Dict[str, Any]]:
+    """What the previous completed scan of this target found: {"at", "paths", "categories"}."""
+    memory = _read_json("scan_memory.json", {})
+    entry = memory.get(key) if isinstance(memory, dict) else None
+    if not isinstance(entry, dict) or not isinstance(entry.get("paths"), list):
+        return None
+    return entry
+
+
+def remember_scan(key: str, paths: Iterable[str], categories: Iterable[str]) -> None:
+    """Store the flagged paths of a completed scan; only the most recent targets are kept."""
+    paths = list(paths)
+    entry = {
+        "at": time.time(),
+        "paths": paths[:SCAN_MEMORY_PATHS_LIMIT],
+        # A cut-off list can't tell new items from old ones, so it is not compared against
+        "complete": len(paths) <= SCAN_MEMORY_PATHS_LIMIT,
+        "categories": sorted(set(categories)),
+    }
+    with _lock:
+        memory = _read_json("scan_memory.json", {})
+        if not isinstance(memory, dict):
+            memory = {}
+        memory.pop(key, None)
+        memory[key] = entry  # Re-inserted last, so dict order is oldest first
+        while len(memory) > SCAN_MEMORY_LIMIT:
+            memory.pop(next(iter(memory)))
+        _write_json("scan_memory.json", memory)
 
 
 # ---------------------------------------------------------------- UI preferences
