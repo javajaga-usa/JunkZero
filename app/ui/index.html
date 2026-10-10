@@ -25,6 +25,15 @@
         </div>
       </div>
       <div class="header-right">
+        <button id="btnOpenExclusions" class="btn btn-ghost btn-sm" title="Paths and patterns JunkZero never flags">
+          <i data-lucide="eye-off"></i> Exclusions
+        </button>
+        <button id="btnOpenHistory" class="btn btn-ghost btn-sm" title="What was cleaned, when, and how much space it freed">
+          <i data-lucide="history"></i> History
+        </button>
+        <button id="btnOpenSchedule" class="btn btn-ghost btn-sm" title="Scheduled scans that only report, never delete">
+          <i data-lucide="calendar-clock"></i> Schedule
+        </button>
         <div class="status-pill" id="engineStatus">
           <span class="status-dot"></span>
           <span id="statusText">Engine Ready</span>
@@ -84,8 +93,15 @@
           <input type="checkbox" id="optEmptyFolders" checked />
           <i data-lucide="folder-x"></i> Empty Folders (no files inside)
         </label>
+        <label class="checkbox-tag" title="Compares file contents; slower on large drives">
+          <input type="checkbox" id="optDuplicates" />
+          <i data-lucide="copy"></i> Duplicates (&ge;1MB, slower)
+        </label>
 
         <div class="action-buttons-group">
+          <button id="btnScanJunk" class="btn btn-secondary" title="Scan your temp folder, crash dumps and browser caches">
+            <i data-lucide="zap"></i> Quick Clean
+          </button>
           <button id="btnStartScan" class="btn btn-primary">
             <i data-lucide="scan"></i> Start Deep Scan
           </button>
@@ -129,7 +145,7 @@
         </div>
       </div>
 
-      <div class="stat-card" data-category="Installers & Setup Packages">
+      <div class="stat-card" data-category="Installers, Setup Archives &amp; OS Images">
         <div class="stat-icon-wrapper cat-installers">
           <i data-lucide="box"></i>
         </div>
@@ -183,6 +199,38 @@
           <span class="stat-subtext">folders with no files</span>
         </div>
       </div>
+
+      <div class="stat-card" data-category="Stale Large Files">
+        <div class="stat-icon-wrapper cat-stale">
+          <i data-lucide="file-clock"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Stale Large Files</span>
+          <h3 class="stat-value" id="statStaleSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statStaleCount">0 files</span>
+        </div>
+      </div>
+
+      <div class="stat-card" data-category="Duplicate Files">
+        <div class="stat-icon-wrapper cat-duplicates">
+          <i data-lucide="copy"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Duplicate Files</span>
+          <h3 class="stat-value" id="statDuplicatesSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statDuplicatesCount">0 extra copies</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Where the reclaimable space is -->
+    <section id="spaceBreakdown" class="space-breakdown card hidden" aria-label="Reclaimable space by category">
+      <div class="space-breakdown-header">
+        <span class="section-label"><i data-lucide="pie-chart"></i> Reclaimable space by category</span>
+        <span id="spaceBreakdownTotal" class="space-breakdown-total"></span>
+      </div>
+      <div id="spaceBar" class="space-bar" role="img"></div>
+      <ul id="spaceLegend" class="space-legend"></ul>
     </section>
 
     <!-- File Manager Section -->
@@ -199,12 +247,13 @@
           <div class="filter-dropdown-group">
             <select id="categoryFilter" class="select-filter">
               <option value="ALL">All Categories</option>
-              <option value="Installers & Setup Packages">Installers & Setup (.exe, .apk, .msi)</option>
+              <option value="Installers, Setup Archives &amp; OS Images">Installers & Setup (.exe, .apk, .msi)</option>
               <option value="Old Java & Build Artifacts">Old Java & Builds (.class, .jar, node_modules)</option>
               <option value="Temporary & Cache Files">Temporary & Cache (.tmp, .log, .dmp)</option>
               <option value="Broken / Incomplete Downloads">Broken Downloads (.crdownload, .part)</option>
               <option value="Stale Large Files">Stale Large Files (>100MB)</option>
               <option value="Empty Folders">Empty Folders (no files inside)</option>
+              <option value="Duplicate Files">Duplicate Files (extra copies)</option>
             </select>
 
             <select id="riskFilter" class="select-filter">
@@ -283,7 +332,7 @@
         </div>
 
         <div class="footer-right">
-          <button id="btnExportReport" class="btn btn-secondary" title="Export list to CSV">
+          <button id="btnExportReport" class="btn btn-secondary" title="Export the items currently shown to CSV">
             <i data-lucide="file-spreadsheet"></i> Export CSV
           </button>
           <button id="btnDeleteItems" class="btn btn-danger" disabled title="Delete selected files">
@@ -445,6 +494,111 @@
           <button id="btnExecuteDelete" class="btn btn-danger">
             <i data-lucide="trash-2"></i> Permanently Delete Now
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Exclusions Modal -->
+    <div id="exclusionsModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon warning"><i data-lucide="eye-off"></i></div>
+            <div>
+              <h3 class="modal-title">Exclusions</h3>
+              <p class="modal-subtitle">Never flag these folders, files or patterns</p>
+            </div>
+          </div>
+          <button id="closeExclusionsModal" class="close-modal-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="input-with-button">
+            <input type="text" id="exclusionInput" placeholder="C:\Projects\keep-this  or  *.iso" />
+            <button id="btnAddExclusion" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add</button>
+          </div>
+          <p class="confirm-note">A path excludes that file or folder and everything inside it. Use * or ? for patterns matched against names and paths. Applies from the next scan.</p>
+          <ul id="exclusionsList" class="simple-list"></ul>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCloseExclusions" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cleanup History Modal -->
+    <div id="historyModal" class="modal-overlay hidden">
+      <div class="modal-card modal-wide">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon warning"><i data-lucide="history"></i></div>
+            <div>
+              <h3 class="modal-title">Cleanup History</h3>
+              <p class="modal-subtitle" id="historySummary">Nothing cleaned yet</p>
+            </div>
+          </div>
+          <button id="closeHistoryModal" class="close-modal-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <ul id="historyList" class="simple-list history-list"></ul>
+        </div>
+        <div class="modal-footer">
+          <button id="btnClearHistory" class="btn btn-ghost">Clear history</button>
+          <button id="btnOpenRecycleBin" class="btn btn-secondary" title="Restore items moved to the Recycle Bin">
+            <i data-lucide="recycle"></i> Open Recycle Bin
+          </button>
+          <button id="btnCloseHistory" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scheduled Scans Modal -->
+    <div id="scheduleModal" class="modal-overlay hidden">
+      <div class="modal-card modal-wide">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon warning"><i data-lucide="calendar-clock"></i></div>
+            <div>
+              <h3 class="modal-title">Scheduled Scans</h3>
+              <p class="modal-subtitle">Runs through Windows Task Scheduler. Scheduled scans only save a report; they never delete anything.</p>
+            </div>
+          </div>
+          <button id="closeScheduleModal" class="close-modal-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p id="scheduleStatus" class="schedule-status"></p>
+          <div class="schedule-form">
+            <label>Frequency
+              <select id="scheduleFrequency" class="select-filter">
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+              </select>
+            </label>
+            <label id="scheduleDayLabel">Day
+              <select id="scheduleDay" class="select-filter">
+                <option value="MON">Monday</option><option value="TUE">Tuesday</option>
+                <option value="WED">Wednesday</option><option value="THU">Thursday</option>
+                <option value="FRI">Friday</option><option value="SAT">Saturday</option>
+                <option value="SUN">Sunday</option>
+              </select>
+            </label>
+            <label>Time
+              <input type="time" id="scheduleTime" value="09:00" />
+            </label>
+          </div>
+          <label class="schedule-paths-label">Folders to scan (one per line)
+            <textarea id="schedulePaths" rows="3" placeholder="C:\Users\YourName\Downloads"></textarea>
+          </label>
+          <label class="checkbox-tag">
+            <input type="checkbox" id="scheduleJunk" checked /> Include Windows junk locations (temp, crash dumps, browser caches)
+          </label>
+          <div id="lastReportBox" class="last-report hidden">
+            <span id="lastReportText"></span>
+            <button id="btnLoadReport" class="btn btn-secondary btn-sm"><i data-lucide="table"></i> Review in table</button>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btnDisableSchedule" class="btn btn-ghost">Turn off</button>
+          <button id="btnSaveSchedule" class="btn btn-primary"><i data-lucide="calendar-check"></i> Save schedule</button>
         </div>
       </div>
     </div>

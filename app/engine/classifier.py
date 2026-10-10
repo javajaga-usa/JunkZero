@@ -61,6 +61,34 @@ def format_size(bytes_val: int) -> str:
     return f"{bytes_val:.2f} TB"
 
 
+def build_item(
+    path: str,
+    name: str,
+    category: str,
+    size_bytes: int,
+    mtime: float,
+    risk_level: str,
+    reason: str,
+    is_dir: bool = False,
+    selected: Optional[bool] = None,
+) -> GarbageItem:
+    """Construct a GarbageItem with formatted size/date; Safe items are preselected by default."""
+    return GarbageItem(
+        id=f"{'dir' if is_dir else 'file'}-{abs(hash((category, path)))}",
+        name=name,
+        path=path,
+        category=category,
+        size_bytes=size_bytes,
+        size_formatted=format_size(size_bytes),
+        modified_timestamp=mtime,
+        modified_date=datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown",
+        risk_level=risk_level,
+        reason=reason,
+        is_directory=is_dir,
+        selected=(risk_level == RISK_SAFE) if selected is None else selected,
+    )
+
+
 def is_system_protected_path(path_str: str) -> bool:
     """Check if path is inside a protected Windows OS or application critical path."""
     normalized = ntpath.normpath(path_str).lower().replace("\\", "/")

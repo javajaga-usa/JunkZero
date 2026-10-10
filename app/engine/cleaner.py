@@ -58,9 +58,6 @@ def delete_items(
     """
     deleted_count = 0
     failed_count = 0
-    """
-    deleted_count = 0
-    failed_count = 0
     freed_bytes = 0
     errors: List[Dict[str, str]] = []
     mode_str = "permanent" if permanent else "recycle_bin"

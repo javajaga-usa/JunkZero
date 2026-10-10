@@ -4,6 +4,49 @@ function escapeHtml(value) {
   }[char]));
 }
 
+// Spreadsheet apps run cells starting with = + - @ as formulas; prefix them so file names stay text
+function csvCell(value) {
+  let text = String(value ?? '');
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function buildCsv(items) {
+  const headers = ['Name', 'Type', 'Category', 'Size (Bytes)', 'Size Formatted', 'Modified Date', 'Risk Level', 'Path', 'Reason'];
+  const rows = items.map((i) => [
+    csvCell(i.name),
+    csvCell(i.is_directory ? 'Folder' : 'File'),
+    csvCell(i.category),
+    Number(i.size_bytes) || 0,
+    csvCell(i.size_formatted),
+    csvCell(i.modified_date),
+    csvCell(i.risk_level),
+    csvCell(i.path),
+    csvCell(i.reason),
+  ].join(','));
+  return '\uFEFF' + [headers.map(csvCell).join(','), ...rows].join('\r\n');
+}
+
+// Reclaimable-space chart: categories in fixed color order (color follows the category, never its rank)
+const SPACE_CATEGORIES = [
+  { name: 'Installers, Setup Archives & OS Images', label: 'Installers' },
+  { name: 'Old Java & Build Artifacts', label: 'Builds' },
+  { name: 'Temporary & Cache Files', label: 'Temp & cache' },
+  { name: 'Broken / Incomplete Downloads', label: 'Broken downloads' },
+  { name: 'Duplicate Files', label: 'Duplicates' },
+  { name: 'Stale Large Files', label: 'Stale large' },
+];
+
+function spaceBreakdown(categoryBytes) {
+  const total = SPACE_CATEGORIES.reduce((acc, c) => acc + (categoryBytes[c.name] || 0), 0);
+  return SPACE_CATEGORIES.map((c, idx) => ({
+    ...c,
+    slot: idx + 1,
+    bytes: categoryBytes[c.name] || 0,
+    percent: total > 0 ? ((categoryBytes[c.name] || 0) / total) * 100 : 0,
+  })).filter((c) => c.bytes > 0);
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -58,10 +101,12 @@ const el = {
   optDownloads: document.getElementById('optDownloads'),
   optStaleLarge: document.getElementById('optStaleLarge'),
   optEmptyFolders: document.getElementById('optEmptyFolders'),
+  optDuplicates: document.getElementById('optDuplicates'),
 
   // Primary Buttons
   btnStartScan: document.getElementById('btnStartScan'),
   btnStopScan: document.getElementById('btnStopScan'),
+  btnScanJunk: document.getElementById('btnScanJunk'),
   btnSelectAll: document.getElementById('btnSelectAll'),
   btnSelectAllSafe: document.getElementById('btnSelectAllSafe'),
   btnDeselectAll: document.getElementById('btnDeselectAll'),
@@ -89,6 +134,16 @@ const el = {
   statDownloadsSize: document.getElementById('statDownloadsSize'),
   statDownloadsCount: document.getElementById('statDownloadsCount'),
   statEmptyFoldersCount: document.getElementById('statEmptyFoldersCount'),
+  statStaleSize: document.getElementById('statStaleSize'),
+  statStaleCount: document.getElementById('statStaleCount'),
+  statDuplicatesSize: document.getElementById('statDuplicatesSize'),
+  statDuplicatesCount: document.getElementById('statDuplicatesCount'),
+
+  // Space Breakdown
+  spaceBreakdown: document.getElementById('spaceBreakdown'),
+  spaceBreakdownTotal: document.getElementById('spaceBreakdownTotal'),
+  spaceBar: document.getElementById('spaceBar'),
+  spaceLegend: document.getElementById('spaceLegend'),
 
   // Table & Toolbar
   searchInput: document.getElementById('searchInput'),
@@ -136,7 +191,42 @@ const el = {
   closeConfirmModal: document.getElementById('closeConfirmModal'),
   btnCancelDelete: document.getElementById('btnCancelDelete'),
   btnExecuteDelete: document.getElementById('btnExecuteDelete'),
-  confirmModalIcon: document.getElementById('confirmModalIcon'),
+
+  // Exclusions Modal
+  btnOpenExclusions: document.getElementById('btnOpenExclusions'),
+  exclusionsModal: document.getElementById('exclusionsModal'),
+  closeExclusionsModal: document.getElementById('closeExclusionsModal'),
+  btnCloseExclusions: document.getElementById('btnCloseExclusions'),
+  exclusionInput: document.getElementById('exclusionInput'),
+  btnAddExclusion: document.getElementById('btnAddExclusion'),
+  exclusionsList: document.getElementById('exclusionsList'),
+
+  // History Modal
+  btnOpenHistory: document.getElementById('btnOpenHistory'),
+  historyModal: document.getElementById('historyModal'),
+  closeHistoryModal: document.getElementById('closeHistoryModal'),
+  btnCloseHistory: document.getElementById('btnCloseHistory'),
+  historySummary: document.getElementById('historySummary'),
+  historyList: document.getElementById('historyList'),
+  btnClearHistory: document.getElementById('btnClearHistory'),
+  btnOpenRecycleBin: document.getElementById('btnOpenRecycleBin'),
+
+  // Schedule Modal
+  btnOpenSchedule: document.getElementById('btnOpenSchedule'),
+  scheduleModal: document.getElementById('scheduleModal'),
+  closeScheduleModal: document.getElementById('closeScheduleModal'),
+  scheduleStatus: document.getElementById('scheduleStatus'),
+  scheduleFrequency: document.getElementById('scheduleFrequency'),
+  scheduleDay: document.getElementById('scheduleDay'),
+  scheduleDayLabel: document.getElementById('scheduleDayLabel'),
+  scheduleTime: document.getElementById('scheduleTime'),
+  schedulePaths: document.getElementById('schedulePaths'),
+  scheduleJunk: document.getElementById('scheduleJunk'),
+  lastReportBox: document.getElementById('lastReportBox'),
+  lastReportText: document.getElementById('lastReportText'),
+  btnLoadReport: document.getElementById('btnLoadReport'),
+  btnSaveSchedule: document.getElementById('btnSaveSchedule'),
+  btnDisableSchedule: document.getElementById('btnDisableSchedule'),
 
   toastContainer: document.getElementById('toastContainer'),
 };
@@ -212,7 +302,8 @@ function setupEventListeners() {
   });
 
   // Start / Stop Scan Buttons
-  el.btnStartScan.addEventListener('click', startScan);
+  el.btnStartScan.addEventListener('click', () => startScan());
+  el.btnScanJunk.addEventListener('click', () => startScan({ junkOnly: true }));
   el.btnStopScan.addEventListener('click', stopScan);
 
   // Search & Filter Listeners
@@ -241,12 +332,7 @@ function setupEventListeners() {
 
   // Stat Card Clicks
   document.querySelectorAll('.stat-card[data-category]').forEach((card) => {
-    card.addEventListener('click', () => {
-      const cat = card.getAttribute('data-category');
-      el.categoryFilter.value = cat;
-      state.categoryFilter = cat;
-      applyFiltersAndRender();
-    });
+    card.addEventListener('click', () => filterByCategory(card.getAttribute('data-category')));
   });
 
   // Master Checkbox
@@ -430,6 +516,30 @@ function setupEventListeners() {
 
   el.closeAiModal.addEventListener('click', closeAiModal);
   el.btnAiClose.addEventListener('click', closeAiModal);
+
+  // Exclusions
+  el.btnOpenExclusions.addEventListener('click', openExclusionsModal);
+  el.closeExclusionsModal.addEventListener('click', () => el.exclusionsModal.classList.add('hidden'));
+  el.btnCloseExclusions.addEventListener('click', () => el.exclusionsModal.classList.add('hidden'));
+  el.btnAddExclusion.addEventListener('click', () => addExclusion(el.exclusionInput.value));
+  el.exclusionInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addExclusion(el.exclusionInput.value);
+  });
+
+  // History
+  el.btnOpenHistory.addEventListener('click', openHistoryModal);
+  el.closeHistoryModal.addEventListener('click', () => el.historyModal.classList.add('hidden'));
+  el.btnCloseHistory.addEventListener('click', () => el.historyModal.classList.add('hidden'));
+  el.btnClearHistory.addEventListener('click', clearHistory);
+  el.btnOpenRecycleBin.addEventListener('click', openRecycleBin);
+
+  // Schedule
+  el.btnOpenSchedule.addEventListener('click', openScheduleModal);
+  el.closeScheduleModal.addEventListener('click', () => el.scheduleModal.classList.add('hidden'));
+  el.scheduleFrequency.addEventListener('change', updateScheduleDayVisibility);
+  el.btnSaveSchedule.addEventListener('click', saveSchedule);
+  el.btnDisableSchedule.addEventListener('click', disableSchedule);
+  el.btnLoadReport.addEventListener('click', loadLatestReport);
 }
 
 // Drive Discovery
@@ -466,9 +576,9 @@ async function loadAvailableDrives() {
 }
 
 // Scanning Engine Controller
-async function startScan() {
-  const targetPath = el.targetPathInput.value.trim();
-  if (!targetPath) {
+async function startScan({ junkOnly = false } = {}) {
+  const targetPath = junkOnly ? '' : el.targetPathInput.value.trim();
+  if (!targetPath && !junkOnly) {
     showToast('Please specify a valid path to scan', 'error');
     return;
   }
@@ -479,9 +589,10 @@ async function startScan() {
   state.isScanning = true;
 
   el.btnStartScan.classList.add('hidden');
+  el.btnScanJunk.classList.add('hidden');
   el.btnStopScan.classList.remove('hidden');
   el.scanProgressContainer.classList.remove('hidden');
-  el.statusText.textContent = 'Scanning in progress...';
+  el.statusText.textContent = junkOnly ? 'Scanning junk locations...' : 'Scanning in progress...';
   document.querySelector('.status-dot').classList.add('scanning');
 
   resetStatsUI();
@@ -499,8 +610,18 @@ async function startScan() {
     include_broken_downloads: el.optDownloads.checked,
     include_stale_large: el.optStaleLarge.checked,
     include_empty_folders: el.optEmptyFolders.checked,
+    include_duplicates: el.optDuplicates.checked,
+    scan_junk_locations: junkOnly,
     skip_system_dirs: true,
   };
+  if (junkOnly) {
+    // Quick Clean looks only for disposable temp and cache content
+    Object.assign(payload, {
+      include_installers: false, include_java_builds: false, include_broken_downloads: false,
+      include_stale_large: false, include_empty_folders: false, include_duplicates: false,
+      include_temp_junk: true,
+    });
+  }
 
   try {
     const res = await fetch('/api/scan/start', {
@@ -571,6 +692,7 @@ function onScanCompleted(finalStats = null) {
   }
 
   el.btnStartScan.classList.remove('hidden');
+  el.btnScanJunk.classList.remove('hidden');
   el.btnStopScan.classList.add('hidden');
   el.scanProgressContainer.classList.add('hidden');
   el.statusText.textContent = 'Scan Finished';
@@ -615,6 +737,47 @@ function updateMetrics(stats) {
   el.statDownloadsCount.textContent = `${counts[catDownloads] || 0} files`;
 
   el.statEmptyFoldersCount.textContent = (counts['Empty Folders'] || 0).toLocaleString();
+
+  const catStale = 'Stale Large Files';
+  el.statStaleSize.textContent = formatSize(bytes[catStale] || 0);
+  el.statStaleCount.textContent = `${counts[catStale] || 0} files`;
+
+  const catDuplicates = 'Duplicate Files';
+  el.statDuplicatesSize.textContent = formatSize(bytes[catDuplicates] || 0);
+  el.statDuplicatesCount.textContent = `${counts[catDuplicates] || 0} extra copies`;
+
+  renderSpaceBreakdown(bytes);
+}
+
+function renderSpaceBreakdown(categoryBytes) {
+  const parts = spaceBreakdown(categoryBytes || {});
+  el.spaceBreakdown.classList.toggle('hidden', parts.length === 0);
+  if (parts.length === 0) return;
+
+  const total = parts.reduce((acc, p) => acc + p.bytes, 0);
+  el.spaceBreakdownTotal.textContent = formatSize(total);
+  el.spaceBar.setAttribute('aria-label', parts.map((p) => `${p.label} ${formatSize(p.bytes)}`).join(', '));
+  el.spaceBar.innerHTML = parts.map((p) => `
+    <div class="space-bar-segment" data-category="${escapeHtml(p.name)}"
+         style="flex-grow: ${p.bytes}; flex-basis: 0; background: var(--series-${p.slot});"
+         title="${escapeHtml(p.label)}: ${formatSize(p.bytes)} (${p.percent.toFixed(1)}%)"></div>
+  `).join('');
+  el.spaceLegend.innerHTML = parts.map((p) => `
+    <li data-category="${escapeHtml(p.name)}" title="Show only ${escapeHtml(p.label)}">
+      <span class="legend-swatch" style="background: var(--series-${p.slot});"></span>
+      ${escapeHtml(p.label)} <strong>${formatSize(p.bytes)}</strong> (${p.percent.toFixed(1)}%)
+    </li>
+  `).join('');
+
+  el.spaceBreakdown.querySelectorAll('[data-category]').forEach((node) => {
+    node.addEventListener('click', () => filterByCategory(node.dataset.category));
+  });
+}
+
+function filterByCategory(category) {
+  el.categoryFilter.value = category;
+  state.categoryFilter = category;
+  applyFiltersAndRender();
 }
 
 function resetStatsUI() {
@@ -629,6 +792,11 @@ function resetStatsUI() {
   el.statDownloadsSize.textContent = '0.00 MB';
   el.statDownloadsCount.textContent = '0 files';
   el.statEmptyFoldersCount.textContent = '0';
+  el.statStaleSize.textContent = '0.00 MB';
+  el.statStaleCount.textContent = '0 files';
+  el.statDuplicatesSize.textContent = '0.00 MB';
+  el.statDuplicatesCount.textContent = '0 extra copies';
+  el.spaceBreakdown.classList.add('hidden');
 }
 
 // Filtering & Sorting
@@ -763,6 +931,9 @@ function renderTable() {
             <button class="action-icon-btn ai-btn btn-inspect-ai" title="AI Inspection & Advice" data-path="${escapeHtml(item.path)}">
               <i data-lucide="bot"></i>
             </button>
+            <button class="action-icon-btn btn-exclude" title="Never flag this ${item.is_directory ? 'folder' : 'file'} again" data-path="${escapeHtml(item.path)}">
+              <i data-lucide="eye-off"></i>
+            </button>
           </div>
         </td>
       </tr>
@@ -809,6 +980,14 @@ function renderTable() {
       } catch (err) {
         showToast('Could not open folder in Explorer', 'error');
       }
+    });
+  });
+
+  // Attach Exclude Events
+  document.querySelectorAll('.btn-exclude').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      addExclusion(btn.dataset.path, { fromTable: true });
     });
   });
 
@@ -1244,27 +1423,15 @@ function closeAiModal() {
   el.aiModal.classList.add('hidden');
 }
 
-// Export CSV Report
+// Export CSV Report (the rows currently shown, after search and filters)
 function exportCsvReport() {
-  if (state.items.length === 0) {
+  const items = state.filteredItems.length ? state.filteredItems : state.items;
+  if (items.length === 0) {
     showToast('No scanned items to export', 'error');
     return;
   }
 
-  const headers = ['Name', 'Category', 'Size (Bytes)', 'Size Formatted', 'Modified Date', 'Risk Level', 'Path', 'Reason'];
-  const rows = state.items.map((i) => [
-    `"${i.name.replace(/"/g, '""')}"`,
-    `"${i.category}"`,
-    i.size_bytes,
-    `"${i.size_formatted}"`,
-    `"${i.modified_date}"`,
-    `"${i.risk_level}"`,
-    `"${i.path.replace(/"/g, '""')}"`,
-    `"${i.reason.replace(/"/g, '""')}"`,
-  ]);
-
-  const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
-  const url = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8' }));
+  const url = URL.createObjectURL(new Blob([buildCsv(items)], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
   link.download = `junkzero_report_${new Date().toISOString().slice(0, 10)}.csv`;
@@ -1272,7 +1439,245 @@ function exportCsvReport() {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  showToast('Exported scan report as CSV', 'success');
+  showToast(`Exported ${items.length.toLocaleString()} item(s) as CSV`, 'success');
+}
+
+// ==========================================
+// Exclusions
+// ==========================================
+
+async function apiJson(url, options = {}) {
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+  return data;
+}
+
+function pathIsWithin(path, root) {
+  const norm = (p) => p.toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+  const a = norm(path);
+  const b = norm(root);
+  return a === b || a.startsWith(`${b}/`);
+}
+
+async function openExclusionsModal() {
+  el.exclusionsModal.classList.remove('hidden');
+  el.exclusionInput.value = '';
+  try {
+    renderExclusions((await apiJson('/api/exclusions')).rules);
+  } catch (err) {
+    showToast(`Could not load exclusions: ${err.message}`, 'error');
+  }
+}
+
+function renderExclusions(rules) {
+  if (!rules.length) {
+    el.exclusionsList.innerHTML = '<li class="list-empty">No exclusions yet</li>';
+    return;
+  }
+  el.exclusionsList.innerHTML = rules.map((rule) => `
+    <li>
+      <span><span class="rule-kind">${/[*?[]/.test(rule) ? 'Pattern' : 'Path'}</span>${escapeHtml(rule)}</span>
+      <button class="action-icon-btn btn-remove-exclusion" data-rule="${escapeHtml(rule)}" title="Remove">
+        <i data-lucide="x"></i>
+      </button>
+    </li>
+  `).join('');
+  lucide.createIcons();
+  el.exclusionsList.querySelectorAll('.btn-remove-exclusion').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        const remaining = rules.filter((r) => r !== btn.dataset.rule);
+        renderExclusions((await apiJson('/api/exclusions', {
+          method: 'PUT', body: JSON.stringify({ rules: remaining }),
+        })).rules);
+      } catch (err) {
+        showToast(`Could not remove exclusion: ${err.message}`, 'error');
+      }
+    });
+  });
+}
+
+async function addExclusion(rule, { fromTable = false } = {}) {
+  rule = (rule || '').trim();
+  if (!rule) return;
+  try {
+    const data = await apiJson('/api/exclusions/add', { method: 'POST', body: JSON.stringify({ rule }) });
+    el.exclusionInput.value = '';
+    if (!el.exclusionsModal.classList.contains('hidden')) renderExclusions(data.rules);
+    if (fromTable) {
+      // Hide the excluded item (and anything inside it) from the current results
+      const removed = state.items.filter((i) => pathIsWithin(i.path, rule));
+      state.items = state.items.filter((i) => !pathIsWithin(i.path, rule));
+      removed.forEach((i) => state.selectedIds.delete(i.id));
+      applyFiltersAndRender(true);
+      showToast(`Excluded ${rule.split(/[\\/]/).pop()}. It won't be flagged in future scans.`, 'success');
+    }
+  } catch (err) {
+    showToast(`Could not add exclusion: ${err.message}`, 'error');
+  }
+}
+
+// ==========================================
+// Cleanup History
+// ==========================================
+
+async function openHistoryModal() {
+  el.historyModal.classList.remove('hidden');
+  el.historyList.innerHTML = '<li class="list-empty">Loading...</li>';
+  try {
+    renderHistory((await apiJson('/api/history')).history);
+  } catch (err) {
+    showToast(`Could not load history: ${err.message}`, 'error');
+  }
+}
+
+function renderHistory(history) {
+  const totalFreed = history.reduce((acc, h) => acc + (h.freed_bytes || 0), 0);
+  el.historySummary.textContent = history.length
+    ? `${history.length} cleanup${history.length === 1 ? '' : 's'}, ${formatSize(totalFreed)} removed in total`
+    : 'Nothing cleaned yet';
+
+  if (!history.length) {
+    el.historyList.innerHTML = '<li class="list-empty">Cleanups you run will be listed here</li>';
+    return;
+  }
+  el.historyList.innerHTML = history.map((h) => {
+    const when = new Date(h.timestamp * 1000).toLocaleString();
+    const mode = h.mode === 'permanent' ? 'Permanently deleted' : 'Moved to Recycle Bin';
+    const extra = h.paths_truncated ? `<li>...and ${h.paths_truncated} more</li>` : '';
+    return `
+      <li>
+        <div class="history-row">
+          <strong>${escapeHtml(when)}</strong>
+          <span>${formatSize(h.freed_bytes)}</span>
+        </div>
+        <div class="history-meta">
+          ${escapeHtml(mode)} &middot; ${h.deleted_count} item${h.deleted_count === 1 ? '' : 's'}
+          ${h.failed_count ? `&middot; ${h.failed_count} failed` : ''} &middot; from ${escapeHtml(h.source)}
+        </div>
+        <details>
+          <summary>Show items</summary>
+          <ul>${h.paths.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}${extra}</ul>
+        </details>
+      </li>
+    `;
+  }).join('');
+}
+
+async function clearHistory() {
+  try {
+    renderHistory((await apiJson('/api/history', { method: 'DELETE' })).history);
+  } catch (err) {
+    showToast(`Could not clear history: ${err.message}`, 'error');
+  }
+}
+
+async function openRecycleBin() {
+  try {
+    await apiJson('/api/system/open-recycle-bin', { method: 'POST' });
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ==========================================
+// Scheduled Report-Only Scans
+// ==========================================
+
+function updateScheduleDayVisibility() {
+  el.scheduleDayLabel.classList.toggle('hidden', el.scheduleFrequency.value !== 'weekly');
+}
+
+function renderScheduleState(schedule, supported, lastReport) {
+  if (!supported) {
+    el.scheduleStatus.textContent = 'Scheduled scans need Windows Task Scheduler, so they are only available on Windows.';
+  } else if (schedule.enabled) {
+    const when = schedule.frequency === 'daily' ? 'every day' : `every ${el.scheduleDay.querySelector(`option[value="${schedule.day}"]`)?.textContent || schedule.day}`;
+    el.scheduleStatus.textContent = `On: scans ${when} at ${schedule.time}.`;
+  } else {
+    el.scheduleStatus.textContent = 'Off. Save a schedule to have JunkZero scan and report automatically.';
+  }
+  el.btnSaveSchedule.disabled = !supported;
+  el.btnDisableSchedule.classList.toggle('hidden', !schedule.enabled);
+
+  if (lastReport) {
+    const when = new Date(lastReport.generated_at * 1000).toLocaleString();
+    el.lastReportText.textContent = `Last report (${when}): ${lastReport.item_count.toLocaleString()} items, ${formatSize(lastReport.total_bytes)} reclaimable.`;
+    el.lastReportBox.classList.remove('hidden');
+  } else {
+    el.lastReportBox.classList.add('hidden');
+  }
+}
+
+async function openScheduleModal() {
+  el.scheduleModal.classList.remove('hidden');
+  try {
+    const data = await apiJson('/api/schedule');
+    const s = data.schedule;
+    el.scheduleFrequency.value = s.frequency;
+    el.scheduleDay.value = s.day;
+    el.scheduleTime.value = s.time;
+    el.scheduleJunk.checked = s.include_junk_locations;
+    el.schedulePaths.value = (s.paths.length ? s.paths : [el.targetPathInput.value.trim()].filter(Boolean)).join('\n');
+    updateScheduleDayVisibility();
+    renderScheduleState(s, data.supported, data.last_report);
+  } catch (err) {
+    showToast(`Could not load schedule: ${err.message}`, 'error');
+  }
+}
+
+async function saveSchedule() {
+  const payload = {
+    frequency: el.scheduleFrequency.value,
+    day: el.scheduleDay.value,
+    time: el.scheduleTime.value,
+    paths: el.schedulePaths.value.split('\n').map((p) => p.trim()).filter(Boolean),
+    include_junk_locations: el.scheduleJunk.checked,
+  };
+  try {
+    await apiJson('/api/schedule', { method: 'PUT', body: JSON.stringify(payload) });
+    showToast('Schedule saved. Scheduled scans only report; nothing is deleted.', 'success');
+    await openScheduleModal();
+  } catch (err) {
+    showToast(`Could not save schedule: ${err.message}`, 'error');
+  }
+}
+
+async function disableSchedule() {
+  try {
+    await apiJson('/api/schedule', { method: 'DELETE' });
+    showToast('Scheduled scans turned off', 'success');
+    await openScheduleModal();
+  } catch (err) {
+    showToast(`Could not turn off schedule: ${err.message}`, 'error');
+  }
+}
+
+async function loadLatestReport() {
+  try {
+    const report = await apiJson('/api/reports/latest');
+    state.items = report.items;
+    state.selectedIds.clear();
+    report.items.forEach((i) => { if (i.selected) state.selectedIds.add(i.id); });
+    updateMetrics({
+      files_scanned: 0,
+      dirs_scanned: 0,
+      garbage_count: report.item_count,
+      garbage_bytes: report.total_bytes,
+      category_counts: report.category_counts,
+      category_bytes: report.category_bytes,
+    });
+    applyFiltersAndRender(true);
+    el.scheduleModal.classList.add('hidden');
+    const note = report.items_truncated ? ` (largest ${report.items.length.toLocaleString()} shown)` : '';
+    showToast(`Loaded report from ${new Date(report.generated_at * 1000).toLocaleString()}${note}. Review before deleting.`, 'info');
+  } catch (err) {
+    showToast(`Could not load report: ${err.message}`, 'error');
+  }
 }
 
 window.addEventListener('DOMContentLoaded', initApp);

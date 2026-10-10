@@ -18,10 +18,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import ScanOptions
+from app.engine import scheduler, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
 from app.engine.inspector import inspect_path_hierarchy, FolderHierarchyView
+from app.engine.locations import windows_junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
 
 # Setup logging
@@ -38,16 +40,15 @@ event_queue: asyncio.Queue = asyncio.Queue()
 
 
 class ScanRequest(BaseModel):
-    target_path: str
+    target_path: str = ""
     include_installers: bool = True
     include_java_builds: bool = True
     include_temp_junk: bool = True
     include_broken_downloads: bool = True
     include_stale_large: bool = True
-    include_temp_junk: bool = True
-    include_broken_downloads: bool = True
-    include_stale_large: bool = True
     include_empty_folders: bool = True
+    include_duplicates: bool = False
+    scan_junk_locations: bool = False
     min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     stale_days: int = Field(default=180, ge=1)
     skip_system_dirs: bool = True
@@ -73,6 +74,27 @@ class OpenFolderRequest(BaseModel):
 
 class AIAnalyzeRequest(BaseModel):
     path: str
+
+
+class ExclusionsRequest(BaseModel):
+    rules: List[str]
+
+
+class AddExclusionRequest(BaseModel):
+    rule: str = Field(min_length=1)
+
+
+class ScheduleRequest(BaseModel):
+    frequency: str = "weekly"
+    time: str = "09:00"
+    day: str = "MON"
+    paths: List[str] = Field(default_factory=list)
+    include_junk_locations: bool = True
+
+
+class ReportRequest(BaseModel):
+    paths: List[str] = Field(default_factory=list)
+    include_junk_locations: bool = True
 
 
 @app.get("/api/system/drives")
@@ -126,8 +148,9 @@ async def api_start_scan(req: ScanRequest):
     """Start a multi-threaded scan for the given target path."""
     global current_scanner, event_queue
 
-    if not os.path.isdir(req.target_path):
-        raise HTTPException(status_code=400, detail=f"Target path '{req.target_path}' is not a directory")
+    if req.target_path or not req.scan_junk_locations:
+        if not os.path.isdir(req.target_path):
+            raise HTTPException(status_code=400, detail=f"Target path '{req.target_path}' is not a directory")
 
     options = ScanOptions(
         target_path=req.target_path,
@@ -137,6 +160,10 @@ async def api_start_scan(req: ScanRequest):
         include_broken_downloads=req.include_broken_downloads,
         include_stale_large=req.include_stale_large,
         include_empty_folders=req.include_empty_folders,
+        include_duplicates=req.include_duplicates,
+        scan_junk_locations=req.scan_junk_locations,
+        exclusions=storage.get_exclusions(),
+        junk_locations=windows_junk_locations(),
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
         stale_days=req.stale_days,
         skip_system_dirs=req.skip_system_dirs,
@@ -258,7 +285,17 @@ def api_clean_items(req: CleanRequest) -> CleanResult:
         raise HTTPException(status_code=400, detail="No items provided for deletion")
 
     result = delete_items(req.items, permanent=req.permanent)
+    _record_history(result, [str(i.get("path", "")) for i in req.items], "scan results")
     return result
+
+
+def _record_history(result: CleanResult, paths: List[str], source: str) -> None:
+    if result.deleted_count == 0:
+        return
+    try:
+        storage.record_cleanup(result.model_dump(), paths, source)
+    except OSError as e:
+        logger.warning(f"Could not save cleanup history: {e}")
 
 
 @app.post("/api/ai/analyze")
@@ -285,7 +322,85 @@ def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
         raise HTTPException(status_code=404, detail="Folder not found")
     if not os.path.isdir(req.path):
         raise HTTPException(status_code=400, detail="Path does not exist")
-    return delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent)
+    result = delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent)
+    _record_history(result, [req.path], "folder explorer")
+    return result
+
+
+@app.get("/api/system/junk-locations")
+def api_junk_locations():
+    """Known Windows junk locations (temp, caches, crash dumps) that exist for this user."""
+    return {"locations": [loc.to_dict() for loc in windows_junk_locations()]}
+
+
+@app.post("/api/system/open-recycle-bin")
+def api_open_recycle_bin():
+    """Open the Windows Recycle Bin so deleted items can be restored."""
+    if os.name != "nt":
+        raise HTTPException(status_code=501, detail="The Recycle Bin can only be opened on Windows")
+    subprocess.Popen(["explorer.exe", "shell:RecycleBinFolder"])
+    return {"success": True}
+
+
+@app.get("/api/exclusions")
+def api_get_exclusions():
+    return {"rules": storage.get_exclusions()}
+
+
+@app.put("/api/exclusions")
+def api_set_exclusions(req: ExclusionsRequest):
+    return {"rules": storage.set_exclusions(req.rules)}
+
+
+@app.post("/api/exclusions/add")
+def api_add_exclusion(req: AddExclusionRequest):
+    return {"rules": storage.set_exclusions(storage.get_exclusions() + [req.rule])}
+
+
+@app.get("/api/history")
+def api_get_history():
+    return {"history": storage.load_history()}
+
+
+@app.delete("/api/history")
+def api_clear_history():
+    storage.clear_history()
+    return {"history": []}
+
+
+@app.get("/api/schedule")
+def api_get_schedule():
+    return {
+        "schedule": scheduler.get_schedule(),
+        "supported": os.name == "nt",
+        "last_report": scheduler.report_summary(storage.load_report()),
+    }
+
+
+@app.put("/api/schedule")
+def api_set_schedule(req: ScheduleRequest):
+    try:
+        schedule = scheduler.save_schedule(req.frequency, req.time, req.day, req.paths, req.include_junk_locations)
+    except scheduler.ScheduleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"schedule": schedule}
+
+
+@app.delete("/api/schedule")
+def api_delete_schedule():
+    try:
+        schedule = scheduler.delete_schedule()
+    except scheduler.ScheduleError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"schedule": schedule}
+
+
+@app.get("/api/reports/latest")
+def api_latest_report():
+    report = storage.load_report()
+    if not report:
+        raise HTTPException(status_code=404, detail="No scan report yet")
+    return report
 
 
 
@@ -309,9 +424,24 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="JunkZero - Intelligent Disk Cleaner")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind server (default: 8000)")
-    parser.add_argument("--mode", choices=["gui", "browser", "server"], default="gui",
-                        help="Launch mode: 'gui' (Native Desktop Window), 'browser' (Browser UI), or 'server' (API only)")
+    parser.add_argument("--mode", choices=["gui", "browser", "server", "report"], default="gui",
+                        help="Launch mode: 'gui' (Native Desktop Window), 'browser' (Browser UI), 'server' (API only), "
+                             "or 'report' (scan and save a report without deleting anything)")
+    parser.add_argument("--path", action="append", default=[],
+                        help="Folder to scan in report mode (repeatable; defaults to the saved schedule)")
+    parser.add_argument("--no-junk-locations", action="store_true",
+                        help="In report mode, skip the Windows junk locations")
     args = parser.parse_args()
+
+    if args.mode == "report":
+        if args.path:
+            report = scheduler.run_report(args.path, not args.no_junk_locations)
+        else:
+            scheduler.run_scheduled_report()
+            report = storage.load_report() or {}
+        print(f"Report saved: {report.get('item_count', 0)} items, "
+              f"{report.get('total_bytes', 0)} bytes reclaimable. Nothing was deleted.")
+        return
 
     port = args.port
     server_url = f"http://127.0.0.1:{port}"
@@ -342,6 +472,8 @@ def main():
     elif args.mode == "gui":
         try:
             import webview
+            if hasattr(webview, "settings"):
+                webview.settings["ALLOW_DOWNLOADS"] = True  # Lets "Export CSV" save files
             logger.info("Launching native Desktop GUI window...")
             window = webview.create_window(
                 title="JunkZero - Intelligent Disk Garbage Detector & Cleaner",
