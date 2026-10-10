@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### macOS
+- JunkZero now runs on Macs (macOS 11 or later). Releases include `JunkZero-macOS.zip` with `JunkZero.app` next to `JunkZero.exe`; from source, double-click `run.command`.
+- Quick Clean on a Mac covers app caches in `~/Library/Caches` (not the ones macOS keeps for itself), logs and crash reports, the temp folder, Xcode DerivedData, iOS Simulator caches and the npm cache.
+- macOS system folders, the private parts of `~/Library` (Mail, Messages, Keychains, iCloud Drive, iPhone backups) and the insides of apps and Photos libraries are protected; the home folder, Library, Documents, Desktop, Movies and the other personal folders can't be deleted as a whole.
+- Program Leftovers on a Mac finds folders in `~/Library/Application Support` of apps no longer in Applications.
+- Deleted items go to the Trash, folder buttons open Finder, Browse uses the Finder folder picker, and scheduled scans run through launchd.
+- Windows behavior is unchanged.
+
 ### Smarter results (all offline, no account or API key)
 - Smart Score: every result gets a 1-99 score with a Delete / Review / Keep label. Click it to see the reasons. Smart Select ticks only the items marked Delete.
 - JunkZero learns from your choices: kinds of items you delete score higher next time, and items you keep through repeated scans score lower. Cleanup History can forget what was learned.

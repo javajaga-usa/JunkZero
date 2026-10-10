@@ -110,3 +110,12 @@ test('category badges use the chart label and color slot, with a neutral fallbac
   assert.equal(JSON.stringify(context.categoryBadge('My Junk Rules')), JSON.stringify({ label: 'My rules', slot: 8 }));
   assert.equal(JSON.stringify(context.categoryBadge('Empty Folders')), JSON.stringify({ label: 'Empty folder', slot: 0 }));
 });
+
+test('macOS wording swaps Windows names and example paths, Windows text is untouched', () => {
+  assert.equal(context.platformText('Show in Windows Explorer', 'macos'), 'Show in Finder');
+  assert.equal(context.platformText('Move Selected to Recycle Bin', 'macos'), 'Move Selected to Trash');
+  assert.equal(context.platformText('Runs through Windows Task Scheduler.', 'macos'), 'Runs through macOS launchd.');
+  assert.equal(context.platformText('e.g. C:\\ or C:\\Users\\YourName\\Downloads', 'macos'), 'e.g. / or /Users/yourname/Downloads');
+  assert.equal(context.platformText('Move Selected to Recycle Bin', 'windows'), 'Move Selected to Recycle Bin');
+  assert.equal(context.platformText('Show in Windows Explorer', 'linux'), 'Show in Windows Explorer');
+});

@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel
 
+from app.engine import osinfo
+
 from app.config import (
+    MAC_LIBRARY_ALLOWED,
+    MAC_LIBRARY_KEEP_NAMES,
+    MAC_LIBRARY_KEEP_PREFIXES,
+    MAC_PACKAGE_EXTENSIONS,
+    MAC_SYSTEM_ALLOWED,
+    MAC_SYSTEM_ROOTS,
+    MAC_VOLUME_METADATA_DIRS,
     LARGE_FILE_BYTES_THRESHOLD,
     CAT_INSTALLERS,
     CAT_JAVA_BUILDS,
@@ -97,7 +106,7 @@ def build_item(
 
 
 def is_system_protected_path(path_str: str) -> bool:
-    """Check if path is inside a protected Windows OS or application critical path."""
+    """Check if path is inside a protected Windows or macOS system folder or application critical path."""
     normalized = ntpath.normpath(path_str).lower().replace("\\", "/")
     parts = normalized.split("/")
 
@@ -114,7 +123,58 @@ def is_system_protected_path(path_str: str) -> bool:
     if "programdata/microsoft" in normalized:
         return True
 
+    if parts[0] == "" and len(parts) > 1 and osinfo.is_macos() and _is_mac_protected(parts[1:]):
+        return True
+
     return False
+
+
+def _under(rel: List[str], allowed: str) -> bool:
+    """True if rel is the allowed folder or inside it."""
+    a = allowed.split("/")
+    return rel[:len(a)] == a
+
+
+def _leads_to(rel: List[str], allowed: str) -> bool:
+    """True if rel is a folder on the way to the allowed folder (or the folder itself)."""
+    a = allowed.split("/")
+    return len(rel) <= len(a) and a[:len(rel)] == rel
+
+
+def _is_mac_protected(rel: List[str]) -> bool:
+    """macOS rules for an absolute POSIX path, given as its lowercase parts after the leading "/"."""
+    rel = [p for p in rel if p]
+    if not rel:
+        return False
+    # /System, /Library, /Applications, /usr, /private... (but not the per-user temp folders)
+    if rel[0] in MAC_SYSTEM_ROOTS and not any(_under(rel, a) for a in MAC_SYSTEM_ALLOWED):
+        return True
+    # ~/Library: only caches, logs, app support and Xcode build data are looked at
+    inside = _library_parts(rel)
+    if inside is not None:
+        if not any(_under(inside, a) or _leads_to(inside, a) for a in MAC_LIBRARY_ALLOWED):
+            return True
+        if len(inside) >= 2 and inside[0] in ("caches", "application support"):
+            name = inside[1]
+            if name in MAC_LIBRARY_KEEP_NAMES or name.startswith(MAC_LIBRARY_KEEP_PREFIXES):
+                return True
+    if any(p in MAC_VOLUME_METADATA_DIRS for p in rel):
+        return True
+    # Inside an app or a Photos / Music library (the package itself can still be removed)
+    if any(p.endswith(MAC_PACKAGE_EXTENSIONS) for p in rel[:-1]):
+        return True
+    return False
+
+
+def _library_parts(rel: List[str]) -> Optional[List[str]]:
+    """The parts after "Library" if rel is in a user's Library folder (/Users/<name>/Library or
+    the current home folder's), else None."""
+    if len(rel) >= 3 and rel[0] == "users" and rel[2] == "library":
+        return rel[3:]
+    home = [p for p in os.environ.get("HOME", "").lower().split("/") if p]
+    if home and len(rel) > len(home) and rel[:len(home)] == home and rel[len(home)] == "library":
+        return rel[len(home) + 1:]
+    return None
 
 
 def _in_build_output_folder(path: str) -> bool:

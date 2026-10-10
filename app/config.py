@@ -101,6 +101,44 @@ PROTECTED_PATHS = [
     Path("C:/ProgramData"),
 ]
 
+# macOS: top-level system folders (paths starting with "/"). Nothing under them is scanned or
+# deleted, except the per-user temp folders listed in MAC_SYSTEM_ALLOWED.
+MAC_SYSTEM_ROOTS: Set[str] = {
+    "system", "library", "applications", "usr", "bin", "sbin", "opt", "cores", "dev",
+    "etc", "private", "var", "network",
+}
+MAC_SYSTEM_ALLOWED: List[str] = ["var/folders", "private/var/folders", "private/tmp"]
+
+# macOS: inside ~/Library only these folders are scanned (and the folders leading to them);
+# Mail, Messages, Keychains, Containers, iCloud Drive and the rest are left alone.
+MAC_LIBRARY_ALLOWED: List[str] = [
+    "caches", "logs", "application support",
+    "developer/xcode/deriveddata", "developer/coresimulator/caches",
+]
+# ...and inside those, folders that belong to macOS itself or hold irreplaceable data
+# (MobileSync holds iPhone and iPad backups)
+MAC_LIBRARY_KEEP_NAMES: Set[str] = {
+    "mobilesync", "addressbook", "callhistorydb", "callhistorytransactions", "clouddocs",
+    "knowledge", "syncservices", "fileprovider", "icloud", "facetime", "dock", "quick look",
+    "crashreporter", "accounts", "animoji", "diskimages", "apple", "cloudkit",
+}
+MAC_LIBRARY_KEEP_PREFIXES = ("com.apple.", "group.com.apple.")
+
+# macOS: folders the system keeps on every disk (Spotlight index, Trash, version history)
+MAC_VOLUME_METADATA_DIRS: Set[str] = {
+    ".spotlight-v100", ".fseventsd", ".documentrevisions-v100", ".trashes", ".trash",
+    ".mobilebackups", ".temporaryitems", ".vol",
+}
+
+# macOS: folders that Finder shows as a single file (apps, photo and music libraries).
+# What's inside them is never scanned or deleted on its own.
+MAC_PACKAGE_EXTENSIONS = (
+    ".app", ".photoslibrary", ".photolibrary", ".migratedphotolibrary", ".aplibrary",
+    ".musiclibrary", ".tvlibrary", ".imovielibrary", ".fcpbundle", ".logicx", ".band",
+    ".framework", ".bundle", ".plugin", ".kext", ".xcarchive", ".sparsebundle", ".pages",
+    ".numbers", ".key",
+)
+
 # Stale File Thresholds
 STALE_DAYS_THRESHOLD = 180
 LARGE_FILE_BYTES_THRESHOLD = 100 * 1024 * 1024  # 100 MB
@@ -139,7 +177,7 @@ class ScanOptions:
     include_duplicates: bool = False
     include_old_downloads: bool = False
     include_custom_rules: bool = True
-    # App data folders left behind by programs that are no longer installed (Windows only)
+    # App data folders left behind by programs that are no longer installed (Windows and macOS)
     include_leftovers: bool = False
     old_download_days: int = OLD_DOWNLOAD_DAYS
     # Folders treated as "Downloads" for the Old Downloads category

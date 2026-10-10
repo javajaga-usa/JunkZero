@@ -1,20 +1,23 @@
 """Find app data folders left behind by programs that are no longer installed.
 
-Uninstallers often leave their settings and caches in %APPDATA% and %LOCALAPPDATA%.
+Uninstallers often leave their settings and caches in %APPDATA% and %LOCALAPPDATA% on Windows,
+and apps dragged to the Trash on macOS leave theirs in ~/Library/Application Support.
 A folder there is reported only when all of these hold, so a program that is still in
 use is never flagged:
   * its name matches no installed program (name, publisher or install folder),
-  * it is not one of the shared folders Windows and common tools keep there,
+  * it is not one of the shared folders the system and common tools keep there,
   * nothing inside it has changed for a long time (180 days by default).
 If the list of installed programs can't be read, nothing is reported.
 """
 from __future__ import annotations
 import os
+import plistlib
 import re
 import time
 from dataclasses import dataclass
 from typing import Iterable, List, Mapping, Optional, Set
 
+from app.engine import osinfo
 from app.engine.classifier import is_system_protected_path
 
 LEFTOVER_MIN_DAYS = 180
@@ -75,9 +78,22 @@ class InstalledPrograms:
         return any(folder.startswith(word) for word in self.words)
 
 
-def _is_shared(name: str) -> bool:
+# macOS: folders in ~/Library/Application Support that macOS and command-line tools share
+_MAC_SHARED_FOLDERS: Set[str] = {
+    "addressbook", "animoji", "app store", "callhistorydb", "callhistorytransactions",
+    "clouddocs", "crashreporter", "diskimages", "dock", "facetime", "fileprovider", "icloud",
+    "knowledge", "mobilesync", "quick look", "syncservices", "ubiquity", "accounts", "contacts",
+    "networkserviceproxy", "siri", "spotlight", "familycircle", "cloudkit", "applemediaservices",
+    "photos", "music", "tv", "podcasts", "books", "safari", "mail", "messages", "notes", "maps",
+    "homebrew", "pypoetry", "virtualenv", "jupyter", "code", "jetbrains", "pip", "uv",
+}
+_MAC_SHARED_PREFIXES = ("com.apple.", "group.com.apple.", "apple")
+
+
+def _is_shared(name: str, extra: Set[str] = frozenset(), extra_prefixes: tuple = ()) -> bool:
     lower = name.lower()
-    return lower.startswith(".") or lower in _SHARED_FOLDERS or lower.startswith(_SHARED_PREFIXES)
+    return (lower.startswith(".") or lower in _SHARED_FOLDERS or lower.startswith(_SHARED_PREFIXES)
+            or lower in extra or (bool(extra_prefixes) and lower.startswith(extra_prefixes)))
 
 
 def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
@@ -104,7 +120,9 @@ def find_leftovers(
     installed: InstalledPrograms,
     min_days: int = LEFTOVER_MIN_DAYS,
     now: Optional[float] = None,
+    mac: bool = False,
 ) -> List[Leftover]:
+    """Leftover folders directly inside roots. mac=True also skips the folders macOS shares."""
     if not installed:
         return []
     now = time.time() if now is None else now
@@ -123,7 +141,8 @@ def find_leftovers(
                     continue
             except OSError:
                 continue
-            if _is_shared(entry.name) or installed.matches(entry.name) or is_system_protected_path(entry.path):
+            shared = _is_shared(entry.name, _MAC_SHARED_FOLDERS, _MAC_SHARED_PREFIXES) if mac else _is_shared(entry.name)
+            if shared or installed.matches(entry.name) or is_system_protected_path(entry.path):
                 continue
             changed = newest_change(entry.path)
             days = int((now - changed) / 86400) if changed > 0 else 0
@@ -200,3 +219,92 @@ def find_windows_leftovers() -> List[Leftover]:
     if not roots:
         return []
     return find_leftovers(roots, installed_programs())
+
+
+# ---------------------------------------------------------------- This machine (macOS)
+
+def _app_names(app_path: str) -> List[str]:
+    """An app's file name plus the name, executable and bundle id in its Info.plist."""
+    names = [os.path.splitext(os.path.basename(app_path))[0]]
+    try:
+        with open(os.path.join(app_path, "Contents", "Info.plist"), "rb") as f:
+            info = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return names
+    if isinstance(info, dict):
+        for key in ("CFBundleIdentifier", "CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"):
+            value = info.get(key)
+            if isinstance(value, str) and value.strip():
+                names.append(value.strip())
+    return names
+
+
+def _list_names(folder: str, suffix: str = "") -> List[str]:
+    """Names (without suffix) of the entries in folder that end with suffix."""
+    try:
+        return [os.path.splitext(e.name)[0] if suffix else e.name
+                for e in os.scandir(folder) if e.name.endswith(suffix) and not e.name.startswith(".")]
+    except OSError:
+        return []
+
+
+def mac_installed_programs(home: Optional[str] = None, root: str = "/") -> InstalledPrograms:
+    """Apps in /Applications (and the system's own apps, background services, frameworks and
+    Homebrew packages), matched against folder names. Empty if the app list can't be read."""
+    home = home if home is not None else os.path.expanduser("~")
+    r = lambda *parts: os.path.join(root, *parts)
+    app_dirs = [r("Applications"), r("Applications", "Utilities"), r("System", "Applications"),
+                r("System", "Applications", "Utilities"), r("System", "Library", "CoreServices")]
+    if home:
+        app_dirs.append(os.path.join(home, "Applications"))
+    names: List[str] = []
+    app_count = 0
+    for folder in app_dirs:
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.endswith(".app"):
+                app_count += 1
+                names.extend(_app_names(entry.path))
+            elif entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                # Suites keep their apps in a folder ("/Applications/Microsoft Office/...")
+                names.append(entry.name)
+                for inner in _list_names(entry.path, ".app"):
+                    app_count += 1
+                    names.extend(_app_names(os.path.join(entry.path, inner + ".app")))
+    # Without the list of apps most programs are unknown: report nothing
+    if app_count < 10:
+        return InstalledPrograms([])
+    launch_dirs = [r("System", "Library", "LaunchAgents"), r("System", "Library", "LaunchDaemons"),
+                   r("Library", "LaunchAgents"), r("Library", "LaunchDaemons")]
+    if home:
+        launch_dirs.append(os.path.join(home, "Library", "LaunchAgents"))
+    for folder in launch_dirs:
+        names.extend(_list_names(folder, ".plist"))
+    for folder in (r("System", "Library", "Frameworks"), r("System", "Library", "PrivateFrameworks"),
+                   r("Library", "Frameworks")):
+        names.extend(_list_names(folder, ".framework"))
+    for folder in (r("opt", "homebrew", "Cellar"), r("opt", "homebrew", "Caskroom"),
+                   r("usr", "local", "Cellar"), r("usr", "local", "Caskroom")):
+        names.extend(_list_names(folder))
+    return InstalledPrograms(names)
+
+
+def mac_app_data_roots(home: Optional[str] = None) -> List[str]:
+    home = home if home is not None else os.path.expanduser("~")
+    support = os.path.join(home, "Library", "Application Support") if home else ""
+    return [support] if support and os.path.isdir(support) else []
+
+
+def find_mac_leftovers() -> List[Leftover]:
+    roots = mac_app_data_roots()
+    if not roots:
+        return []
+    return find_leftovers(roots, mac_installed_programs(), mac=True)
+
+
+def find_program_leftovers() -> List[Leftover]:
+    """Leftovers on the system JunkZero is running on."""
+    return find_mac_leftovers() if osinfo.is_macos() else find_windows_leftovers()

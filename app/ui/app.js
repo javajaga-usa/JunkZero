@@ -1,3 +1,25 @@
+// Wording for the system the app runs on. The page is written for Windows; on macOS these
+// phrases are swapped (longest first, so "Windows Explorer" wins over shorter matches).
+const MAC_WORDING = [
+  ['Include Windows junk locations (temp, crash dumps, browser caches)', 'Include junk locations (temp, app caches, logs)'],
+  ['e.g. C:\\ or C:\\Users\\YourName\\Downloads', 'e.g. / or /Users/yourname/Downloads'],
+  ['C:\\Users\\YourName\\Downloads', '/Users/yourname/Downloads'],
+  ['C:\\Projects\\keep-this', '/Users/yourname/Projects/keep-this'],
+  ['C:\\Projects\\scratch', '/Users/yourname/Projects/scratch'],
+  ['Scan your temp folder, crash dumps and browser caches', 'Scan your temp folder, app caches, logs and Xcode build data'],
+  ['App data folders in AppData', 'App data folders in Library/Application Support'],
+  ['Windows Task Scheduler', 'macOS launchd'],
+  ['Windows Explorer', 'Finder'],
+  ['Recycle Bin', 'Trash'],
+];
+
+function platformText(text, platform) {
+  let out = String(text ?? '');
+  if (platform !== 'macos') return out;
+  MAC_WORDING.forEach(([from, to]) => { out = out.split(from).join(to); });
+  return out;
+}
+
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -165,6 +187,7 @@ const state = {
     categoryBytes: {},
   },
   drives: [],
+  platform: 'windows',    // 'windows', 'macos' or 'linux' (from /api/system/info)
   isScanning: false,
   eventSource: null,
   sortField: 'size',
@@ -426,6 +449,7 @@ function showToast(message, type = 'info') {
 
 // App Initialization
 async function initApp() {
+  await loadPlatform();
   lucide.createIcons();
   setupEventListeners();
   await loadAvailableDrives();
@@ -748,6 +772,34 @@ function setupEventListeners() {
   el.btnCloseLargest.addEventListener('click', () => el.largestModal.classList.add('hidden'));
   el.largestTabFolders.addEventListener('click', () => renderLargest('folders'));
   el.largestTabFiles.addEventListener('click', () => renderLargest('files'));
+}
+
+// Text in the current wording for this system (Recycle Bin or Trash, Explorer or Finder...)
+function t(text) {
+  return platformText(text, state.platform);
+}
+
+// Ask the server which system this is and reword the page to match
+async function loadPlatform() {
+  try {
+    const res = await fetch('/api/system/info');
+    const info = await res.json();
+    state.platform = info.platform || 'windows';
+  } catch (err) {
+    console.error('Failed to load system info:', err);
+  }
+  if (state.platform !== 'macos') return;
+  document.body.classList.add('platform-macos');
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = t(node.nodeValue);
+    if (text !== node.nodeValue) node.nodeValue = text;
+  }
+  document.querySelectorAll('[title], [placeholder]').forEach((node) => {
+    ['title', 'placeholder'].forEach((attr) => {
+      if (node.hasAttribute(attr)) node.setAttribute(attr, t(node.getAttribute(attr)));
+    });
+  });
 }
 
 // Drive Discovery
@@ -1176,7 +1228,7 @@ function renderTable() {
             <button class="action-icon-btn btn-inspect-hierarchy" title="Explore parent folder hierarchy" data-path="${escapeHtml(item.path)}">
               <i data-lucide="folder-tree"></i>
             </button>
-            <button class="action-icon-btn btn-open-folder" title="Open containing folder in Windows Explorer" data-path="${escapeHtml(item.path)}">
+            <button class="action-icon-btn btn-open-folder" title="${t('Open containing folder in Windows Explorer')}" data-path="${escapeHtml(item.path)}">
               <i data-lucide="folder"></i>
             </button>
             <button class="action-icon-btn ai-btn btn-inspect-ai" title="AI Inspection & Advice" data-path="${escapeHtml(item.path)}">
@@ -1565,7 +1617,7 @@ async function executeDeleteFolder(folderPath) {
 
     const result = await res.json();
     if (result.deleted_count > 0) {
-      const verb = result.mode === 'permanent' ? 'Permanently deleted' : 'Moved to Recycle Bin';
+      const verb = result.mode === 'permanent' ? 'Permanently deleted' : t('Moved to Recycle Bin');
       showToast(`${verb}: ${folderPath}`, 'success');
 
       // Purge any items from main scan that were inside this deleted folder
@@ -1605,7 +1657,7 @@ async function executeBatchDelete(items) {
       if (result.mode === 'permanent') {
         showToast(`Permanently deleted ${result.deleted_count} item(s) (freed ${result.freed_formatted})!`, 'success');
       } else {
-        showToast(`Moved ${result.deleted_count} item(s) (${result.freed_formatted}) to the Recycle Bin. Empty it to free the space.`, 'success');
+        showToast(t(`Moved ${result.deleted_count} item(s) (${result.freed_formatted}) to the Recycle Bin. Empty it to free the space.`), 'success');
       }
 
       const deletedPaths = new Set(items.map((i) => i.path));
@@ -1634,7 +1686,7 @@ function setDeleteMode(permanent) {
   el.modePermanent.setAttribute('aria-pressed', String(permanent));
   el.btnDeleteItems.innerHTML = permanent
     ? '<i data-lucide="trash-2"></i> Delete Selected Permanently'
-    : '<i data-lucide="trash-2"></i> Move Selected to Recycle Bin';
+    : t('<i data-lucide="trash-2"></i> Move Selected to Recycle Bin');
   lucide.createIcons();
 }
 
@@ -1651,13 +1703,13 @@ function requestDeleteConfirmation({ title, subtitle, count, size, onConfirm }) 
   el.confirmMode.classList.toggle('text-danger', permanent);
 
   if (permanent) {
-    el.confirmMode.textContent = 'Permanent (No Recycle Bin)';
+    el.confirmMode.textContent = t('Permanent (No Recycle Bin)');
     el.confirmWarningText.textContent = 'Selected files/folders will be PERMANENTLY erased from disk immediately. This cannot be undone.';
     el.btnExecuteDelete.innerHTML = '<i data-lucide="trash-2"></i> Permanently Delete Now';
   } else {
-    el.confirmMode.textContent = 'Recycle Bin';
-    el.confirmWarningText.textContent = 'Selected files/folders will be moved to the Recycle Bin. You can restore them from there until it is emptied.';
-    el.btnExecuteDelete.innerHTML = '<i data-lucide="recycle"></i> Move to Recycle Bin';
+    el.confirmMode.textContent = t('Recycle Bin');
+    el.confirmWarningText.textContent = t('Selected files/folders will be moved to the Recycle Bin. You can restore them from there until it is emptied.');
+    el.btnExecuteDelete.innerHTML = t('<i data-lucide="recycle"></i> Move to Recycle Bin');
   }
 
   // Permanent mode needs an explicit second confirmation before the button unlocks
@@ -1944,7 +1996,7 @@ function openByFolderModal() {
         <button class="action-icon-btn btn-folder-filter" title="Show only this folder's items in the table" data-folder="${escapeHtml(g.folder)}">
           <i data-lucide="filter"></i>
         </button>
-        <button class="action-icon-btn btn-folder-open" title="Show in Windows Explorer" data-path="${escapeHtml(g.folder)}">
+        <button class="action-icon-btn btn-folder-open" title="${t('Show in Windows Explorer')}" data-path="${escapeHtml(g.folder)}">
           <i data-lucide="folder"></i>
         </button>
       </div>
@@ -2013,7 +2065,7 @@ function renderHistory(history) {
   }
   el.historyList.innerHTML = history.map((h) => {
     const when = new Date(h.timestamp * 1000).toLocaleString();
-    const mode = h.mode === 'permanent' ? 'Permanently deleted' : 'Moved to Recycle Bin';
+    const mode = h.mode === 'permanent' ? 'Permanently deleted' : t('Moved to Recycle Bin');
     const extra = h.paths_truncated ? `<li>...and ${h.paths_truncated} more</li>` : '';
     return `
       <li>
@@ -2259,7 +2311,7 @@ function renderLargest(tab) {
           <button class="action-icon-btn btn-largest-inspect" title="Review in folder explorer" data-path="${escapeHtml(r.path)}">
             <i data-lucide="folder-tree"></i>
           </button>
-          <button class="action-icon-btn btn-largest-open" title="Show in Windows Explorer" data-path="${escapeHtml(r.path)}">
+          <button class="action-icon-btn btn-largest-open" title="${t('Show in Windows Explorer')}" data-path="${escapeHtml(r.path)}">
             <i data-lucide="folder"></i>
           </button>
         </div>

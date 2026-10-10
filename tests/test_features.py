@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import CAT_DUPLICATES, CAT_TEMP_JUNK, ScanOptions
-from app.engine import scheduler, storage
+from app.engine import osinfo, scheduler, storage
 from app.engine.exclusions import ExclusionMatcher
 from app.engine.locations import JunkLocation, windows_junk_locations
 from app.engine.scanner import FastScanner
@@ -203,6 +203,7 @@ def test_invalid_schedules_rejected(args):
 
 
 def test_save_schedule_registers_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(osinfo, "is_macos", lambda: False)  # Task Scheduler; launchd is in test_macos
     calls = []
     monkeypatch.setattr(scheduler, "_run_schtasks", calls.append)
     schedule = scheduler.save_schedule("weekly", "07:15", "SUN", [str(tmp_path)], False)

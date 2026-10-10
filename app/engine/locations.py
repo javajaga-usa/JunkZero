@@ -1,10 +1,11 @@
-"""Well-known Windows junk locations (temp folders, caches, crash dumps)."""
+"""Well-known junk locations (temp folders, caches, crash dumps) on Windows and macOS."""
 from __future__ import annotations
 import glob
 import os
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Mapping, Optional
 
+from app.engine import osinfo
 from app.engine.classifier import is_system_protected_path
 
 
@@ -81,6 +82,86 @@ def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[Junk
     return found
 
 
+def junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLocation]:
+    """The junk locations for the system JunkZero is running on."""
+    return mac_junk_locations(env) if osinfo.is_macos() else windows_junk_locations(env)
+
+
+# Friendlier names for well-known folders in ~/Library/Caches (lowercase folder name -> label)
+_MAC_CACHE_NAMES = {
+    "google": "Google Chrome and other Google apps",
+    "com.google.chrome": "Google Chrome",
+    "bravesoftware": "Brave",
+    "com.brave.browser": "Brave",
+    "com.microsoft.edgemac": "Microsoft Edge",
+    "firefox": "Firefox",
+    "mozilla": "Firefox",
+    "homebrew": "Homebrew downloads",
+    "pip": "Python pip",
+    "yarn": "Yarn",
+    "com.spotify.client": "Spotify",
+    "jetbrains": "JetBrains IDEs",
+}
+
+# (id, label, path relative to the home folder) of developer caches that tools rebuild
+_MAC_DEV_CACHES = [
+    ("xcode_derived_data", "Xcode build data (DerivedData)", "Library/Developer/Xcode/DerivedData"),
+    ("simulator_caches", "iOS Simulator caches", "Library/Developer/CoreSimulator/Caches"),
+    ("npm_cache", "npm download cache", ".npm/_cacache"),
+]
+
+
+def mac_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLocation]:
+    """Junk locations for the current macOS user.
+
+    Each app's folder in ~/Library/Caches is listed as one item (apps rebuild it), except
+    the ones macOS itself keeps there. Log files in ~/Library/Logs (including crash
+    reports) and files in the per-user temp folder are flagged one by one.
+    """
+    env = os.environ if env is None else env
+    home = env.get("HOME")
+    found: List[JunkLocation] = []
+    seen = set()
+
+    def add(loc: JunkLocation) -> None:
+        key = (os.path.normpath(loc.path).lower(), loc.pattern)
+        if key in seen or not os.path.isdir(loc.path) or is_system_protected_path(loc.path):
+            return
+        seen.add(key)
+        found.append(loc)
+
+    temp = env.get("TMPDIR")
+    if temp:
+        add(JunkLocation("user_temp", "User temp folder", os.path.normpath(temp)))
+
+    if not home:
+        return found
+
+    add(JunkLocation("mac_logs", "App logs and crash reports", os.path.join(home, "Library", "Logs")))
+
+    caches = os.path.join(home, "Library", "Caches")
+    try:
+        entries = sorted(os.scandir(caches), key=lambda e: e.name.lower())
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        name = _MAC_CACHE_NAMES.get(entry.name.lower(), entry.name)
+        add(JunkLocation(
+            f"mac_cache:{entry.name}".lower().replace(" ", "_"), f"App cache ({name})",
+            os.path.normpath(entry.path), whole_dir=True,
+        ))
+
+    for loc_id, label, rel in _MAC_DEV_CACHES:
+        add(JunkLocation(loc_id, label, os.path.normpath(os.path.join(home, rel)), whole_dir=True))
+
+    return found
+
+
 # Known Folder ID of the user's Downloads folder (it can be moved to another drive)
 _DOWNLOADS_GUID = "{374DE290-123F-4565-9164-39C4925E467B}"
 
@@ -121,8 +202,19 @@ _PERSONAL_FOLDER_NAMES = (
 )
 
 
+# macOS: folders in the home folder that are never deleted whole
+_MAC_PERSONAL_FOLDER_NAMES = (
+    "Desktop", "Documents", "Downloads", "Pictures", "Music", "Movies", "Public", "Library",
+    "Applications", "Sites", "iCloud Drive",
+    "Library/Caches", "Library/Logs", "Library/Application Support", "Library/Developer",
+    "Library/Developer/Xcode", "Library/Developer/CoreSimulator", "Library/Mobile Documents",
+)
+
+
 def _norm(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path)).rstrip("\\/")
+    norm = os.path.normcase(os.path.abspath(path)).rstrip("\\/")
+    # macOS disks ignore case by default, like Windows
+    return norm.lower() if osinfo.is_macos() else norm
 
 
 def _is_drive_root(path: str) -> bool:
@@ -143,6 +235,9 @@ def protected_user_folders(env: Optional[Mapping[str, str]] = None) -> set:
             folders.add(_norm(os.path.join(home, name)))
         for name in ("Local", "LocalLow", "Roaming"):
             folders.add(_norm(os.path.join(home, "AppData", name)))
+        if osinfo.is_macos():
+            for name in _MAC_PERSONAL_FOLDER_NAMES:
+                folders.add(_norm(os.path.join(home, *name.split("/"))))
     for key in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
         onedrive = env.get(key)
         if onedrive:
