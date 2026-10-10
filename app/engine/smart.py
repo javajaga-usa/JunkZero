@@ -185,6 +185,13 @@ class SmartScorer:
         elif item.category == CAT_LEFTOVERS:
             adjust(5, "the program that made it is no longer installed")
 
+        summary = getattr(item, "archive_summary", "")
+        if summary:
+            if getattr(item, "archive_clean", False):
+                adjust(15, f"looked inside: {summary}, nothing personal")
+            else:
+                adjust(5, f"looked inside: {summary}")
+
         if item.modified_timestamp > 0:
             age_days = (now - item.modified_timestamp) / DAY
             if age_days < 1:

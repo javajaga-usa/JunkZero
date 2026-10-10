@@ -10,6 +10,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from app.engine import osinfo
+from app.engine.archives import inspect_archive
 
 from app.config import (
     MAC_LIBRARY_ALLOWED,
@@ -64,6 +65,9 @@ class GarbageItem(BaseModel):
     score: int = 0
     score_reasons: List[str] = []
     recommendation: str = ""
+    # Setup archives: what was found inside, and whether it was only program files
+    archive_summary: str = ""
+    archive_clean: bool = False
 
 
 def format_size(bytes_val: int) -> str:
@@ -232,6 +236,8 @@ def classify_item(
     category: Optional[str] = None
     risk_level: str = RISK_REVIEW
     reason: str = ""
+    archive_summary: str = ""
+    archive_clean: bool = False
 
     # 2. Incomplete / Broken Downloads
     if options.include_broken_downloads and suffix in BROKEN_DOWNLOAD_EXTENSIONS:
@@ -277,19 +283,16 @@ def classify_item(
         risk_level = RISK_REVIEW
         reason = f"OS / Disc image file ({suffix.upper()})"
 
-    # 6. Setup Archives and Compressed Packages (.zip, .rar, .7z, .tar.gz, etc.)
+    # 6. Setup Archives (.zip, .tar.gz, ...): only when the listing inside is clearly a software
+    # package. The name alone never counts, because archives often hold personal files.
     elif options.include_installers and suffix in ARCHIVE_EXTENSIONS:
-        norm_path = path.lower().replace("\\", "/")
-        has_installer_kw = any(kw in lower_name for kw in INSTALLER_KEYWORDS)
-        is_in_download_temp = any(p in norm_path for p in ["download", "temp", "desktop"])
-
-        if has_installer_kw or is_in_download_temp:
+        verdict = inspect_archive(path, size_bytes)
+        if verdict.is_setup:
             category = CAT_INSTALLERS
             risk_level = RISK_REVIEW
-            if has_installer_kw:
-                reason = f"Setup / software archive package ({suffix.upper()})"
-            else:
-                reason = f"Downloaded archive package in temporary folder ({suffix.upper()})"
+            reason = f"Setup archive: {verdict.summary}"
+            archive_summary = verdict.summary
+            archive_clean = verdict.clean
 
     # 7. Setup / Installation Scripts (.bat, .cmd, .ps1, .sh)
     elif options.include_installers and suffix in SETUP_SCRIPT_EXTENSIONS:
@@ -346,7 +349,9 @@ def classify_item(
             risk_level=risk_level,
             reason=reason,
             is_directory=False,
-            selected=(risk_level == RISK_SAFE)
+            selected=(risk_level == RISK_SAFE),
+            archive_summary=archive_summary,
+            archive_clean=archive_clean,
         )
 
     return None

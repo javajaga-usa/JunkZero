@@ -17,6 +17,7 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility for W
   - **Open Enclosing Folder**: One-click jump directly to the file in Windows Explorer.
 - **🎯 Accurate Garbage Classification**:
   - **Installers & Setup Packages**: `.exe`, `.msi`, `.apk`, `.iso`, `.dmg`, `.pkg`.
+  - **Setup Archives**: a `.zip` or `.tar.gz` is listed only when JunkZero looks inside (without unpacking) and finds a setup program, installer package, disk image or portable app with nothing personal alongside. Archives with documents, photos, videos or other personal files are never listed, whatever their name, and neither are password-protected or unreadable ones (including `.rar` and `.7z`, which JunkZero can't look inside). The Smart Score reasons say what was found inside.
   - **Old Java & Build Artifacts**: Compiled `.class` files, standalone `.jar`s, `node_modules/`, `target/`, `__pycache__/`, `.obj`, `.pyc`. File types that are also used for real files (`.obj` 3D models, `.pdb` protein data, `.user`, `.orig`) are only marked Safe inside a build output folder (`bin`, `obj`, `build`, `Debug`...); elsewhere they are Review Recommended.
   - **Temporary & Cache Files**: `.tmp`, `.log`, `.dmp`, `thumbs.db`, crash dumps. Backup copies (`.bak`, `.old`) are listed as Review Recommended and never preselected.
   - **Broken Downloads**: Incomplete `.crdownload`, `.part`, `.download` files.

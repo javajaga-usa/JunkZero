@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Smarter setup archives
+- A `.zip` (or `.tar.gz`) is no longer treated as an installer because of its name or because it sits in Downloads. JunkZero reads the archive's file list, without unpacking it, and lists it under Installers only when it holds a setup program, installer package, disk image or portable app and nothing personal.
+- Archives with documents, photos, videos, spreadsheets or other personal files are never listed. Password-protected, damaged, `.rar` and `.7z` archives are never listed either.
+- Setup archives stay Review Recommended (never preselected). Their Smart Score says what was found inside, for example "looked inside: setup.exe inside, nothing personal", and the file inspector shows the same.
+
 ### macOS
 - JunkZero now runs on Macs (macOS 11 or later). Releases include `JunkZero-macOS.zip` with `JunkZero.app` next to `JunkZero.exe`; from source, double-click `run.command`.
 - Quick Clean on a Mac covers app caches in `~/Library/Caches` (not the ones macOS keeps for itself), logs and crash reports, the temp folder, Xcode DerivedData, iOS Simulator caches and the npm cache.
