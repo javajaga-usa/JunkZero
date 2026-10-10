@@ -49,6 +49,13 @@ function spaceBreakdown(categoryBytes) {
   })).filter((c) => c.bytes > 0);
 }
 
+// Short label and chart color slot for a category badge (slot 0 is neutral)
+function categoryBadge(category) {
+  const idx = SPACE_CATEGORIES.findIndex((c) => c.name === category);
+  if (idx >= 0) return { label: SPACE_CATEGORIES[idx].label, slot: idx + 1 };
+  return { label: category === 'Empty Folders' ? 'Empty folder' : String(category ?? ''), slot: 0 };
+}
+
 // Folder that holds an item (Windows or POSIX paths), as written in the item's path
 function parentFolder(path) {
   const text = String(path ?? '').replace(/[\\/]+$/, '');
@@ -319,6 +326,11 @@ const SCAN_OPTION_INPUTS = {
 };
 
 // Utilities
+function plural(count, word) {
+  const n = Number(count) || 0;
+  return `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+}
+
 function formatSize(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -335,8 +347,11 @@ function formatSize(bytes) {
 function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
-  toast.textContent = message;
+  const icon = { success: 'circle-check', error: 'circle-alert' }[type] || 'info';
+  toast.innerHTML = `<i data-lucide="${icon}" class="toast-icon"></i><span></span>`;
+  toast.querySelector('span').textContent = message;
   el.toastContainer.appendChild(toast);
+  lucide.createIcons({ root: toast });
   setTimeout(() => {
     toast.style.opacity = '0';
     setTimeout(() => toast.remove(), 200);
@@ -677,7 +692,8 @@ async function loadAvailableDrives() {
       const btn = document.createElement('button');
       btn.className = `drive-pill ${idx === 0 ? 'active' : ''}`;
       btn.dataset.path = d.drive;
-      btn.innerHTML = `<i data-lucide="hard-drive"></i> <strong>${d.drive}</strong> (${d.free_formatted} free)`;
+      btn.title = `${d.drive} (${d.free_formatted} free)`;
+      btn.innerHTML = `<i data-lucide="hard-drive"></i> <strong>${escapeHtml(d.drive)}</strong> <span class="drive-free">${escapeHtml(d.free_formatted)} free</span>`;
 
       btn.addEventListener('click', () => {
         document.querySelectorAll('.drive-pill').forEach((b) => b.classList.remove('active'));
@@ -839,40 +855,41 @@ function updateMetrics(stats) {
   el.scanMetricsRate.textContent = `${stats.garbage_count.toLocaleString()} found (${formatSize(stats.garbage_bytes)})`;
 
   el.statTotalGarbageSize.textContent = formatSize(stats.garbage_bytes);
-  el.statTotalGarbageCount.textContent = `${stats.garbage_count.toLocaleString()} items ready for review`;
+  el.statTotalGarbageCount.textContent = `${plural(stats.garbage_count, 'item')} ready for review`;
 
   const counts = stats.category_counts || {};
   const bytes = stats.category_bytes || {};
 
   const catInstallers = 'Installers, Setup Archives & OS Images';
   el.statInstallersSize.textContent = formatSize(bytes[catInstallers] || 0);
-  el.statInstallersCount.textContent = `${counts[catInstallers] || 0} files`;
+  el.statInstallersCount.textContent = plural(counts[catInstallers], 'file');
 
   const catJava = 'Old Java & Build Artifacts';
   el.statJavaSize.textContent = formatSize(bytes[catJava] || 0);
-  el.statJavaCount.textContent = `${counts[catJava] || 0} items`;
+  el.statJavaCount.textContent = plural(counts[catJava], 'item');
 
   const catTemp = 'Temporary & Cache Files';
   el.statTempSize.textContent = formatSize(bytes[catTemp] || 0);
-  el.statTempCount.textContent = `${counts[catTemp] || 0} files`;
+  el.statTempCount.textContent = plural(counts[catTemp], 'file');
 
   const catDownloads = 'Broken / Incomplete Downloads';
   el.statDownloadsSize.textContent = formatSize(bytes[catDownloads] || 0);
-  el.statDownloadsCount.textContent = `${counts[catDownloads] || 0} files`;
+  el.statDownloadsCount.textContent = plural(counts[catDownloads], 'file');
 
   el.statEmptyFoldersCount.textContent = (counts['Empty Folders'] || 0).toLocaleString();
 
   const catStale = 'Stale Large Files';
   el.statStaleSize.textContent = formatSize(bytes[catStale] || 0);
-  el.statStaleCount.textContent = `${counts[catStale] || 0} files`;
+  el.statStaleCount.textContent = plural(counts[catStale], 'file');
 
   const catDuplicates = 'Duplicate Files';
   el.statDuplicatesSize.textContent = formatSize(bytes[catDuplicates] || 0);
-  el.statDuplicatesCount.textContent = `${counts[catDuplicates] || 0} extra copies`;
+  const copies = counts[catDuplicates] || 0;
+  el.statDuplicatesCount.textContent = `${copies.toLocaleString()} extra ${copies === 1 ? 'copy' : 'copies'}`;
 
   const catOldDownloads = 'Old Downloads';
   el.statOldDownloadsSize.textContent = formatSize(bytes[catOldDownloads] || 0);
-  el.statOldDownloadsCount.textContent = `${counts[catOldDownloads] || 0} files`;
+  el.statOldDownloadsCount.textContent = plural(counts[catOldDownloads], 'file');
 
   renderSpaceBreakdown(bytes);
 }
@@ -975,11 +992,26 @@ function applyFiltersAndRender(renderFull = true) {
   });
 
   state.filteredItems = result;
+  updateViewIndicators();
   if (renderFull) {
     state.renderLimit = TABLE_PAGE_SIZE;
     renderTable();
   }
   updateSelectionSummary();
+}
+
+// Show the sorted column and its direction, and which category card is filtering the table
+function updateViewIndicators() {
+  document.querySelectorAll('th.sortable').forEach((th) => {
+    if (th.dataset.sort === state.sortField) {
+      th.setAttribute('aria-sort', state.sortAsc ? 'ascending' : 'descending');
+    } else {
+      th.removeAttribute('aria-sort');
+    }
+  });
+  document.querySelectorAll('.stat-card[data-category]').forEach((card) => {
+    card.classList.toggle('active', card.dataset.category === state.categoryFilter);
+  });
 }
 
 // Render Main File Manager Table
@@ -989,9 +1021,9 @@ function renderTable() {
       <tr class="empty-row">
         <td colspan="9">
           <div class="empty-state">
-            <i data-lucide="${state.isScanning ? 'loader' : 'sparkles'}" class="empty-icon ${state.isScanning ? 'spinner' : ''}"></i>
-            <h3>${state.isScanning ? 'Scanning in progress...' : 'No items match filter'}</h3>
-            <p>${state.isScanning ? 'Files will appear here as they are discovered.' : 'Try changing your search keywords or category filters.'}</p>
+            <div class="empty-icon-wrap">${state.isScanning ? '<div class="spinner spinner-lg"></div>' : '<i data-lucide="search-x" class="empty-icon"></i>'}</div>
+            <h3>${state.isScanning ? 'Scanning in progress...' : state.items.length ? 'No items match your filters' : 'No junk found'}</h3>
+            <p>${state.isScanning ? 'Files will appear here as they are discovered.' : state.items.length ? 'Try a different search, category or risk level.' : 'This location looks clean. Try another folder or turn on more categories.'}</p>
           </div>
         </td>
       </tr>
@@ -1004,6 +1036,7 @@ function renderTable() {
   const html = shown.map((item) => {
     const isChecked = state.selectedIds.has(item.id);
     const riskClass = item.risk_level === 'Safe' ? 'risk-safe' : item.risk_level === 'Caution' ? 'risk-caution' : 'risk-review';
+    const badge = categoryBadge(item.category);
 
     let typeIcon = 'file';
     let typeClass = '';
@@ -1046,9 +1079,9 @@ function renderTable() {
           </div>
         </td>
         <td>
-          <span class="category-badge">${escapeHtml(item.category)}</span>
+          <span class="category-badge" data-slot="${badge.slot}" title="${escapeHtml(item.category)}">${escapeHtml(badge.label)}</span>
         </td>
-        <td>
+        <td class="text-right">
           <span class="file-size-cell">${escapeHtml(item.size_formatted)}</span>
         </td>
         <td>
@@ -1265,7 +1298,7 @@ function renderHierarchyBreadcrumbs(breadcrumbs) {
       <button class="breadcrumb-pill ${isLast ? 'active' : ''}" data-path="${escapeHtml(b.path)}" title="${escapeHtml(b.path)}">
         ${escapeHtml(b.name)}
       </button>
-      ${!isLast ? '<span class="breadcrumb-sep">&gt;</span>' : ''}
+      ${!isLast ? '<i data-lucide="chevron-right" class="breadcrumb-sep"></i>' : ''}
     `;
   }).join('');
 
@@ -1572,7 +1605,7 @@ async function openAiInspector(path) {
 
       <div class="ai-detail-row">
         <span class="ai-detail-label">Full Path</span>
-        <span class="file-path-cell" style="max-width: 100%;">${escapeHtml(data.file_path)}</span>
+        <span class="file-path-cell path-wrap">${escapeHtml(data.file_path)}</span>
       </div>
     `;
     lucide.createIcons();

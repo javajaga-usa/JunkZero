@@ -66,3 +66,9 @@ test('junk by folder groups case-insensitively and ranks by size', () => {
     JSON.stringify([['C:\\Downloads', 100, 1], ['C:\\Temp', 15, 2], ['C:\\Empty', 0, 1]]));
   assert.equal(context.junkByFolder([{ path: 'C:\\x\\a', size_bytes: 1 }, { path: 'C:\\y\\b', size_bytes: 2 }], 1).length, 1);
 });
+
+test('category badges use the chart label and color slot, with a neutral fallback', () => {
+  assert.equal(JSON.stringify(context.categoryBadge('Temporary & Cache Files')), JSON.stringify({ label: 'Temp & cache', slot: 3 }));
+  assert.equal(JSON.stringify(context.categoryBadge('My Junk Rules')), JSON.stringify({ label: 'My rules', slot: 8 }));
+  assert.equal(JSON.stringify(context.categoryBadge('Empty Folders')), JSON.stringify({ label: 'Empty folder', slot: 0 }));
+});
