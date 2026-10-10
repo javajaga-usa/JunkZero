@@ -50,6 +50,11 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
 
 ## 🚀 Quick Start
 
+### Download (no Python needed)
+Get `JunkZero.exe` from the [latest release](https://github.com/javajaga-usa/JunkZero/releases/latest) and double-click it. It needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime, which Windows normally includes. The exe isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. See [CHANGELOG.md](CHANGELOG.md) for what's in each release.
+
+### Run from source
+
 ### 1. Requirements
 - Windows 10 / 11
 - Python 3.10+ (Tested on Python 3.13)
@@ -94,5 +99,12 @@ python -m app.main --mode server
 ```
 
 Settings (exclusions, junk rules, schedule, remembered scan options), cleanup history, the latest scan report and the results of recent scans (for "New since last scan") are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
+
+### Building the exe
+```powershell
+python -m pip install -r requirements.txt pyinstaller==6.11.1
+pyinstaller --noconfirm packaging/JunkZero.spec   # writes dist\JunkZero.exe
+```
+The Release workflow builds and smoke-tests the exe on every pull request. To publish a release, set `__version__` in `app/__init__.py`, add a matching section to `CHANGELOG.md`, and push a `v<version>` tag (or run the Release workflow by hand); the exe is attached to the GitHub release.
 
 Use the application on localhost. Native folder selection and Explorer integration require Windows. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.

@@ -66,9 +66,16 @@ def _pythonw() -> str:
     return str(windowless if windowless.exists() else exe)
 
 
-def schtasks_create_args(frequency: str, time_str: str, day: str, script_path: str, python_exe: str) -> List[str]:
-    args = ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/TR", f'"{python_exe}" "{script_path}"',
-            "/ST", time_str]
+def task_command(script_path: str) -> str:
+    """Command Task Scheduler runs. The packaged JunkZero.exe has no Python next to it,
+    so it runs itself in report mode instead of the launcher script."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --mode report'
+    return f'"{_pythonw()}" "{script_path}"'
+
+
+def schtasks_create_args(frequency: str, time_str: str, day: str, command: str) -> List[str]:
+    args = ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/TR", command, "/ST", time_str]
     if frequency == "daily":
         args += ["/SC", "DAILY"]
     else:
@@ -88,7 +95,7 @@ def save_schedule(frequency: str, time_str: str, day: str, paths: List[str], inc
     validate_schedule(frequency, time_str, day, paths, include_junk_locations)
     script = storage.data_dir() / "scheduled_scan.pyw"
     script.write_text(launcher_script(), encoding="utf-8")
-    _run_schtasks(schtasks_create_args(frequency, time_str, day, str(script), _pythonw()))
+    _run_schtasks(schtasks_create_args(frequency, time_str, day, task_command(str(script))))
     previous = get_schedule()
     storage.update_settings(schedule={
         "enabled": True, "frequency": frequency, "time": time_str, "day": day,

@@ -176,11 +176,18 @@ def test_failed_cleanup_is_not_recorded(tmp_path):
 # ------------------------------------------------------------- Scheduled reports
 
 def test_schtasks_arguments():
-    daily = scheduler.schtasks_create_args("daily", "08:30", "MON", r"C:\d\s.pyw", r"C:\py\pythonw.exe")
+    daily = scheduler.schtasks_create_args("daily", "08:30", "MON", '"C:\\py\\pythonw.exe" "C:\\d\\s.pyw"')
     assert daily[daily.index("/SC") + 1] == "DAILY"
     assert daily[daily.index("/TR") + 1] == '"C:\\py\\pythonw.exe" "C:\\d\\s.pyw"'
-    weekly = scheduler.schtasks_create_args("weekly", "08:30", "FRI", "s", "p")
+    weekly = scheduler.schtasks_create_args("weekly", "08:30", "FRI", "cmd")
     assert weekly[-3:] == ["WEEKLY", "/D", "FRI"]
+
+
+def test_task_command_for_packaged_exe(monkeypatch):
+    assert scheduler.task_command(r"C:\d\s.pyw").endswith('"C:\\d\\s.pyw"')
+    monkeypatch.setattr(scheduler.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(scheduler.sys, "executable", r"C:\Apps\JunkZero.exe")
+    assert scheduler.task_command(r"C:\d\s.pyw") == '"C:\\Apps\\JunkZero.exe" --mode report'
 
 
 @pytest.mark.parametrize("args", [
