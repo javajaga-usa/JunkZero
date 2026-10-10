@@ -23,6 +23,7 @@ from app.config import (
     RISK_SAFE,
     ScanOptions,
     SYSTEM_BLACKLIST_DIRS,
+    VCS_DIR_NAMES,
 )
 from app.engine.classifier import (
     GarbageItem,
@@ -203,6 +204,11 @@ class FastScanner:
                             has_content = True
                             continue
 
+                        # Version-control folders hold state the tool needs, even empty folders
+                        if name.lower() in VCS_DIR_NAMES:
+                            has_content = True
+                            continue
+
                         # User exclusions: never flagged, never descended into
                         if self._excluder.matches(path, name):
                             has_content = True
@@ -356,7 +362,8 @@ class FastScanner:
                 risk_level=RISK_SAFE,
                 reason=reason,
                 is_directory=True,
-                selected=True,
+                # Some apps expect their (empty) folders to exist, so these are never preselected
+                selected=False,
             ))
 
         return items

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -13,6 +14,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -34,6 +36,9 @@ logger = logging.getLogger("JunkZeroServer")
 
 # FastAPI App
 app = FastAPI(title="JunkZero API", version="1.0.0")
+# Only answer requests addressed to this machine, so a web page can't reach the API by
+# pointing its own domain name at 127.0.0.1 (DNS rebinding)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 # Global Scanner State
 current_scanner: Optional[FastScanner] = None
@@ -503,6 +508,18 @@ if UI_DIR.exists():
         return FileResponse(str(UI_DIR / "index.html"))
 
 
+def pick_port(preferred: int = 8000) -> int:
+    """The preferred port if it's free, otherwise any free port, so another program on 8000 isn't opened instead."""
+    for port in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return s.getsockname()[1]
+            except OSError:
+                continue
+    return preferred
+
+
 def start_server(host: str = "127.0.0.1", port: int = 8000):
     """Start uvicorn server."""
     uvicorn.run(app, host=host, port=port, log_level="info")
@@ -512,7 +529,8 @@ def main():
     """Main CLI entry point supporting both native Desktop GUI and Web mode."""
     import argparse
     parser = argparse.ArgumentParser(description="JunkZero - Intelligent Disk Cleaner")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind server (default: 8000)")
+    parser.add_argument("--port", type=int, default=None,
+                        help="Port to bind server (default: 8000, or a free port if 8000 is taken)")
     parser.add_argument("--mode", choices=["gui", "browser", "server", "report"], default="gui",
                         help="Launch mode: 'gui' (Native Desktop Window), 'browser' (Browser UI), 'server' (API only), "
                              "or 'report' (scan and save a report without deleting anything)")
@@ -532,7 +550,7 @@ def main():
               f"{report.get('total_bytes', 0)} bytes reclaimable. Nothing was deleted.")
         return
 
-    port = args.port
+    port = args.port if args.port is not None else pick_port(8000)
     server_url = f"http://127.0.0.1:{port}"
 
     if args.mode == "server":

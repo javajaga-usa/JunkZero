@@ -81,13 +81,18 @@ function junkByFolder(items, limit = 50) {
  * and Recycle Bin (default) or permanent deletion.
  */
 
-// Icons come from a CDN; without it (offline) the app must still work, just without icons
+// Icons are bundled in /static/vendor; if the script fails to load the app must still work, just without icons
 if (!window.lucide) window.lucide = { createIcons() {} };
+
+// The table shows this many rows at a time ("Show more" adds another page), so large scans stay responsive
+const TABLE_PAGE_SIZE = 500;
+const SEARCH_DELAY_MS = 200;
 
 // Global State
 const state = {
   items: [],              // All scanned GarbageItems
   filteredItems: [],      // Items currently visible after search & filter
+  renderLimit: TABLE_PAGE_SIZE, // Rows of filteredItems currently rendered in the table
   selectedIds: new Set(), // Set of selected item IDs in main table
   stats: {
     totalBytes: 0,
@@ -192,6 +197,7 @@ const el = {
   masterCheckbox: document.getElementById('masterCheckbox'),
   selectedCount: document.getElementById('selectedCount'),
   selectedSize: document.getElementById('selectedSize'),
+  hiddenSelectedNote: document.getElementById('hiddenSelectedNote'),
 
   // Folder Hierarchy Explorer Modal
   hierarchyModal: document.getElementById('hierarchyModal'),
@@ -347,6 +353,8 @@ async function initApp() {
 
 // Event Listeners
 function setupEventListeners() {
+  bindTableEvents();
+
   // Theme Toggle
   el.themeToggle.addEventListener('click', () => {
     const isDark = document.body.classList.toggle('dark-theme');
@@ -392,10 +400,13 @@ function setupEventListeners() {
   el.btnStopScan.addEventListener('click', stopScan);
 
   // Search & Filter Listeners
+  let searchTimer = null;
   el.searchInput.addEventListener('input', (e) => {
     state.searchQuery = e.target.value.toLowerCase().trim();
     el.clearSearch.classList.toggle('hidden', state.searchQuery.length === 0);
-    applyFiltersAndRender();
+    // Wait until typing pauses so large result lists aren't filtered on every keystroke
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => applyFiltersAndRender(), SEARCH_DELAY_MS);
   });
 
   el.clearSearch.addEventListener('click', () => {
@@ -473,7 +484,8 @@ function setupEventListeners() {
 
   // Primary Delete Selected Button
   el.btnDeleteItems.addEventListener('click', () => {
-    const selectedItems = state.items.filter((i) => state.selectedIds.has(i.id));
+    // Only ticked items the current filters show are deleted; hidden ones are left alone
+    const selectedItems = visibleSelectedItems();
     if (selectedItems.length === 0) return;
 
     const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
@@ -964,6 +976,7 @@ function applyFiltersAndRender(renderFull = true) {
 
   state.filteredItems = result;
   if (renderFull) {
+    state.renderLimit = TABLE_PAGE_SIZE;
     renderTable();
   }
   updateSelectionSummary();
@@ -987,7 +1000,8 @@ function renderTable() {
     return;
   }
 
-  const html = state.filteredItems.map((item) => {
+  const shown = state.filteredItems.slice(0, state.renderLimit);
+  const html = shown.map((item) => {
     const isChecked = state.selectedIds.has(item.id);
     const riskClass = item.risk_level === 'Safe' ? 'risk-safe' : item.risk_level === 'Caution' ? 'risk-caution' : 'risk-review';
 
@@ -1066,75 +1080,97 @@ function renderTable() {
     `;
   }).join('');
 
-  el.fileTableBody.innerHTML = html;
-  lucide.createIcons();
+  const remaining = state.filteredItems.length - shown.length;
+  const moreRow = remaining > 0 ? `
+      <tr class="more-row">
+        <td colspan="9">
+          <button type="button" class="btn btn-secondary btn-show-more">
+            Show ${Math.min(remaining, TABLE_PAGE_SIZE).toLocaleString()} more (${remaining.toLocaleString()} not shown yet)
+          </button>
+        </td>
+      </tr>` : '';
 
-  // Attach Checkbox Events
-  document.querySelectorAll('.row-checkbox').forEach((chk) => {
-    chk.addEventListener('change', (e) => {
-      const id = e.target.dataset.id;
-      if (e.target.checked) {
-        state.selectedIds.add(id);
-      } else {
-        state.selectedIds.delete(id);
-      }
-      const tr = e.target.closest('tr');
-      tr.classList.toggle('row-selected', e.target.checked);
-      updateSelectionSummary();
-    });
+  el.fileTableBody.innerHTML = html + moreRow;
+  lucide.createIcons({ root: el.fileTableBody });
+}
+
+// Table events are handled once on the table body (rows are re-rendered often)
+function bindTableEvents() {
+  el.fileTableBody.addEventListener('change', (e) => {
+    const chk = e.target.closest('.row-checkbox');
+    if (!chk) return;
+    const id = chk.dataset.id;
+    if (chk.checked) {
+      state.selectedIds.add(id);
+    } else {
+      state.selectedIds.delete(id);
+    }
+    chk.closest('tr').classList.toggle('row-selected', chk.checked);
+    updateSelectionSummary();
   });
 
-  // Attach Hierarchy Click on Name and Icon Button
-  document.querySelectorAll('.clickable-file-cell, .btn-inspect-hierarchy').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const path = btn.dataset.path;
-      openHierarchyModal(path);
-    });
-  });
+  el.fileTableBody.addEventListener('click', async (e) => {
+    if (e.target.closest('.btn-show-more')) {
+      state.renderLimit += TABLE_PAGE_SIZE;
+      renderTable();
+      return;
+    }
 
-  // Attach Folder Open Events
-  document.querySelectorAll('.btn-open-folder').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
+    const hierarchy = e.target.closest('.clickable-file-cell, .btn-inspect-hierarchy');
+    if (hierarchy) {
+      openHierarchyModal(hierarchy.dataset.path);
+      return;
+    }
+
+    const openFolder = e.target.closest('.btn-open-folder');
+    if (openFolder) {
       e.stopPropagation();
-      const path = btn.dataset.path;
       try {
         await fetch('/api/system/open-explorer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path }),
+          body: JSON.stringify({ path: openFolder.dataset.path }),
         });
       } catch (err) {
         showToast('Could not open folder in Explorer', 'error');
       }
-    });
-  });
+      return;
+    }
 
-  // Attach Exclude Events
-  document.querySelectorAll('.btn-exclude').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+    const exclude = e.target.closest('.btn-exclude');
+    if (exclude) {
       e.stopPropagation();
-      addExclusion(btn.dataset.path, { fromTable: true });
-    });
-  });
+      addExclusion(exclude.dataset.path, { fromTable: true });
+      return;
+    }
 
-  // Attach AI Inspect Events
-  document.querySelectorAll('.btn-inspect-ai').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+    const ai = e.target.closest('.btn-inspect-ai');
+    if (ai) {
       e.stopPropagation();
-      const path = btn.dataset.path;
-      openAiInspector(path);
-    });
+      openAiInspector(ai.dataset.path);
+    }
   });
+}
+
+// Ticked items that the current filters show (the ones "Delete Selected" removes)
+function visibleSelectedItems() {
+  return state.filteredItems.filter((i) => state.selectedIds.has(i.id));
 }
 
 // Update Footer Selection Summary
 function updateSelectionSummary() {
-  const selectedItems = state.items.filter((i) => state.selectedIds.has(i.id));
+  const selectedItems = visibleSelectedItems();
   const count = selectedItems.length;
   const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
 
   el.selectedCount.textContent = `${count.toLocaleString()} items`;
   el.selectedSize.textContent = formatSize(totalBytes);
+
+  const hiddenCount = state.items.reduce((n, i) => n + (state.selectedIds.has(i.id) ? 1 : 0), 0) - count;
+  el.hiddenSelectedNote.textContent = hiddenCount > 0
+    ? `(${hiddenCount.toLocaleString()} more ticked but hidden by filters, not deleted)`
+    : '';
+  el.hiddenSelectedNote.classList.toggle('hidden', hiddenCount <= 0);
 
   el.btnDeleteItems.disabled = count === 0;
 

@@ -25,7 +25,10 @@ from app.config import (
     SETUP_SCRIPT_EXTENSIONS,
     INSTALLER_KEYWORDS,
     JAVA_EXTENSIONS,
+    AMBIGUOUS_BUILD_EXTENSIONS,
+    BACKUP_EXTENSIONS,
     BUILD_EXTENSIONS,
+    BUILD_OUTPUT_FOLDER_NAMES,
     BUILD_DIR_NAMES,
     TEMP_EXTENSIONS,
     BROKEN_DOWNLOAD_EXTENSIONS,
@@ -110,6 +113,12 @@ def is_system_protected_path(path_str: str) -> bool:
     return False
 
 
+def _in_build_output_folder(path: str) -> bool:
+    """True if any parent folder is a typical build output folder (bin, obj, build, Debug...)."""
+    parents = ntpath.normpath(path).replace("\\", "/").lower().split("/")[:-1]
+    return any(p in BUILD_OUTPUT_FOLDER_NAMES for p in parents)
+
+
 def classify_item(
     path: str,
     name: str,
@@ -169,8 +178,12 @@ def classify_item(
     # 3. Temporary & Junk Files
     elif options.include_temp_junk and (suffix in TEMP_EXTENSIONS or lower_name in TEMP_EXTENSIONS):
         category = CAT_TEMP_JUNK
-        risk_level = RISK_SAFE
-        reason = f"Temporary/cache file ({suffix or lower_name})"
+        if suffix in BACKUP_EXTENSIONS:
+            risk_level = RISK_REVIEW
+            reason = f"Backup copy ({suffix}); check you have the original"
+        else:
+            risk_level = RISK_SAFE
+            reason = f"Temporary/cache file ({suffix or lower_name})"
 
     # 4. Old Java Programs & Build Artifacts (.class, loose .jar, .pyc, .obj)
     elif options.include_java_builds and (suffix in JAVA_EXTENSIONS or suffix in BUILD_EXTENSIONS or suffix == ".jar"):
@@ -178,6 +191,9 @@ def classify_item(
         if suffix == ".class":
             risk_level = RISK_SAFE
             reason = "Compiled Java class bytecode (.class)"
+        elif suffix in AMBIGUOUS_BUILD_EXTENSIONS and not _in_build_output_folder(path):
+            risk_level = RISK_REVIEW
+            reason = f"Possible build artifact ({suffix}), but this file type is also used for real files"
         elif suffix in BUILD_EXTENSIONS:
             risk_level = RISK_SAFE
             reason = f"Compiler/build intermediate artifact ({suffix})"

@@ -950,6 +950,16 @@ input[type="text"]:focus {
   color: var(--border-light);
 }
 
+.hidden-selected-note {
+  color: var(--color-warning);
+  font-size: 12px;
+}
+
+.more-row td {
+  text-align: center;
+  padding: 12px;
+}
+
 .safety-badge {
   display: flex;
   align-items: center;
