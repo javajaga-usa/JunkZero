@@ -1,0 +1,33 @@
+# Changelog
+
+## [1.0.0] - 2026-10-10
+
+The first release of JunkZero, a Windows app that finds junk files, shows you what they are, and moves the ones you pick to the Recycle Bin. It comes as a single `JunkZero.exe` that runs without installing Python.
+
+### Finding junk
+- Scans a folder or drive quickly and sorts what it finds into categories: installers, build leftovers (`node_modules`, `target`, `.class`, `__pycache__`), temp and log files, crash dumps, broken downloads, large files you haven't touched in six months, and empty folders.
+- Optional categories you can switch on: duplicate files (the newest copy is kept), Old Downloads (files sitting in Downloads for 90 days or more), and your own Junk Rules (patterns such as `*.bak2` or whole folders, listed under "My Junk Rules").
+- Quick Clean scans the usual junk spots in one click: your temp folder, app crash dumps, and Chrome, Edge, Brave and Firefox caches.
+- "New since last scan" marks items that weren't there the last time you scanned the same folder, with a "New only" button to show just those.
+
+### Seeing where the space goes
+- Summary cards and a space bar split the reclaimable space by category; click a segment to filter the table.
+- Junk by Folder groups results by the folder they're in, biggest first.
+- Largest Files & Folders shows the biggest things in a folder even when they aren't junk.
+- Search, sort and filter the results. Large scans stay responsive: the table shows 500 rows at a time with a "Show more" button.
+- AI Inspect explains what a file is and whether it's safe to remove, offline or with a Gemini API key.
+
+### Cleaning safely
+- Deleted items go to the Recycle Bin unless you switch to Permanent mode, which asks for an extra confirmation. Every launch starts in Recycle Bin mode.
+- Only items you can see and have ticked are deleted; anything hidden by a search or filter is left alone.
+- Windows system folders, your user profile, and folders like Documents, Desktop and Downloads can't be deleted as a whole.
+- Git, SVN and Mercurial folders are never scanned or deleted from, and empty folders are never ticked for you.
+- File types that are also used for real work (`.obj`, `.pdb`, `.bak`, `.old` and similar) are only marked safe inside build output folders.
+- Exclusions let you mark files, folders or patterns as "never flag".
+- Cleanup History records every cleanup, with a shortcut to the Recycle Bin.
+
+### Everyday use
+- Scheduled scans run daily or weekly through Windows Task Scheduler and only save a report; they never delete anything.
+- Export the results you're looking at to CSV.
+- Light and dark themes. Your target folder, scan options and theme are remembered.
+- Works fully offline, and the app's local server only answers requests from your own computer.

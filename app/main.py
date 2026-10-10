@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app import __version__
 from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
 from app.engine import changes, scheduler, storage
 from app.engine.ai_advisor import analyze_item
@@ -30,12 +31,18 @@ from app.engine.locations import downloads_folder, windows_junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
 from app.engine.space import largest_items
 
+# The packaged windowed exe has no console: give logging and uvicorn somewhere to write
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("JunkZeroServer")
 
 # FastAPI App
-app = FastAPI(title="JunkZero API", version="1.0.0")
+app = FastAPI(title="JunkZero API", version=__version__)
 # Only answer requests addressed to this machine, so a web page can't reach the API by
 # pointing its own domain name at 127.0.0.1 (DNS rebinding)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -529,6 +536,7 @@ def main():
     """Main CLI entry point supporting both native Desktop GUI and Web mode."""
     import argparse
     parser = argparse.ArgumentParser(description="JunkZero - Intelligent Disk Cleaner")
+    parser.add_argument("--version", action="version", version=f"JunkZero {__version__}")
     parser.add_argument("--port", type=int, default=None,
                         help="Port to bind server (default: 8000, or a free port if 8000 is taken)")
     parser.add_argument("--mode", choices=["gui", "browser", "server", "report"], default="gui",
