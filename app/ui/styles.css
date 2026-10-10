@@ -1407,6 +1407,7 @@ input[type="text"]:focus {
   --series-5: #d55181;
   --series-6: #008300;
   --series-7: #8b7cf6;
+  --series-8: #b0835a;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
@@ -1420,6 +1421,7 @@ input[type="text"]:focus {
   --series-5: #e87ba4;
   --series-6: #008300;
   --series-7: #7c6ae6;
+  --series-8: #8f6440;
 }
 .space-breakdown-header {
   display: flex;
@@ -1564,3 +1566,48 @@ input[type="text"]:focus {
 .largest-bar { height: 4px; border-radius: 2px; background: var(--border-color); overflow: hidden; }
 .largest-bar span { display: block; height: 100%; background: var(--color-primary); }
 .largest-list .list-empty { gap: 8px; }
+
+/* New since last scan */
+.new-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+}
+.btn-toggle[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border-color: var(--color-primary);
+}
+
+/* Folder filter chip */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+}
+.filter-chip svg { width: 14px; height: 14px; flex-shrink: 0; }
+.filter-chip #folderFilterText { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clear-chip-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.clear-chip-btn:hover { color: var(--text-primary); }

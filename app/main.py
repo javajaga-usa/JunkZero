@@ -18,10 +18,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
-from app.engine import scheduler, storage
+from app.engine import changes, scheduler, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
+from app.engine.exclusions import rule_too_broad
 from app.engine.inspector import inspect_path_hierarchy, FolderHierarchyView
 from app.engine.locations import downloads_folder, windows_junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
@@ -50,6 +51,7 @@ class ScanRequest(BaseModel):
     include_empty_folders: bool = True
     include_duplicates: bool = False
     include_old_downloads: bool = False
+    include_custom_rules: bool = True
     old_download_days: int = Field(default=OLD_DOWNLOAD_DAYS, ge=1)
     scan_junk_locations: bool = False
     min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
@@ -85,6 +87,10 @@ class ExclusionsRequest(BaseModel):
 
 class AddExclusionRequest(BaseModel):
     rule: str = Field(min_length=1)
+
+
+class JunkRulesRequest(BaseModel):
+    rules: List[str]
 
 
 class ScheduleRequest(BaseModel):
@@ -187,6 +193,8 @@ async def api_start_scan(req: ScanRequest):
         downloads_dirs=[d for d in [downloads_folder()] if d],
         scan_junk_locations=req.scan_junk_locations,
         exclusions=storage.get_exclusions(),
+        include_custom_rules=req.include_custom_rules,
+        custom_rules=storage.get_custom_rules(),
         junk_locations=windows_junk_locations(),
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
         stale_days=req.stale_days,
@@ -240,6 +248,11 @@ async def api_start_scan(req: ScanRequest):
                     "is_cancelled": scanner.stats.is_cancelled,
                 }
             }
+            if scanner.stats.is_completed:
+                try:
+                    completion_msg["changes"] = changes.compare_and_remember(scanner.options, scanner.garbage_items)
+                except OSError as e:
+                    logger.warning(f"Could not compare with the previous scan: {e}")
             loop.call_soon_threadsafe(session_queue.put_nowait, completion_msg)
 
     threading.Thread(target=run_worker, daemon=True).start()
@@ -379,6 +392,29 @@ def api_set_exclusions(req: ExclusionsRequest):
 @app.post("/api/exclusions/add")
 def api_add_exclusion(req: AddExclusionRequest):
     return {"rules": storage.set_exclusions(storage.get_exclusions() + [req.rule])}
+
+
+def _check_junk_rules(rules: List[str]) -> None:
+    broad = [r for r in rules if r.strip() and rule_too_broad(r)]
+    if broad:
+        raise HTTPException(status_code=400, detail=f"'{broad[0].strip()}' would flag everything. Use a narrower pattern such as render_*")
+
+
+@app.get("/api/custom-rules")
+def api_get_custom_rules():
+    return {"rules": storage.get_custom_rules()}
+
+
+@app.put("/api/custom-rules")
+def api_set_custom_rules(req: JunkRulesRequest):
+    _check_junk_rules(req.rules)
+    return {"rules": storage.set_custom_rules(req.rules)}
+
+
+@app.post("/api/custom-rules/add")
+def api_add_custom_rule(req: AddExclusionRequest):
+    _check_junk_rules([req.rule])
+    return {"rules": storage.set_custom_rules(storage.get_custom_rules() + [req.rule])}
 
 
 @app.get("/api/history")

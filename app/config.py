@@ -12,6 +12,7 @@ CAT_STALE_LARGE = "Stale Large Files"
 CAT_EMPTY_FOLDERS = "Empty Folders"
 CAT_DUPLICATES = "Duplicate Files"
 CAT_OLD_DOWNLOADS = "Old Downloads"
+CAT_CUSTOM_RULES = "My Junk Rules"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -97,6 +98,19 @@ DUPLICATE_MIN_BYTES = 1024 * 1024  # 1 MB
 # Files in the Downloads folder untouched for this many days are listed for review
 OLD_DOWNLOAD_DAYS = 90
 
+# The scan toggle that turns each category on (used to compare a scan with the previous one)
+CATEGORY_OPTIONS: Dict[str, str] = {
+    CAT_INSTALLERS: "include_installers",
+    CAT_JAVA_BUILDS: "include_java_builds",
+    CAT_TEMP_JUNK: "include_temp_junk",
+    CAT_BROKEN_DOWNLOADS: "include_broken_downloads",
+    CAT_STALE_LARGE: "include_stale_large",
+    CAT_EMPTY_FOLDERS: "include_empty_folders",
+    CAT_DUPLICATES: "include_duplicates",
+    CAT_OLD_DOWNLOADS: "include_old_downloads",
+    CAT_CUSTOM_RULES: "include_custom_rules",
+}
+
 
 @dataclass
 class ScanOptions:
@@ -110,6 +124,7 @@ class ScanOptions:
     include_empty_folders: bool = True
     include_duplicates: bool = False
     include_old_downloads: bool = False
+    include_custom_rules: bool = True
     old_download_days: int = OLD_DOWNLOAD_DAYS
     # Folders treated as "Downloads" for the Old Downloads category
     downloads_dirs: List[str] = field(default_factory=list)
@@ -121,6 +136,8 @@ class ScanOptions:
     extra_paths: List[str] = field(default_factory=list)
     # User exclusion rules: folder/file paths, or glob patterns such as "*.iso"
     exclusions: List[str] = field(default_factory=list)
+    # User junk rules (same syntax as exclusions): matches are flagged for review
+    custom_rules: List[str] = field(default_factory=list)
     # Known junk locations (app.engine.locations.JunkLocation) whose contents are flagged
     junk_locations: List[Any] = field(default_factory=list)
     # Also scan every junk location as its own root (target_path may then be empty)

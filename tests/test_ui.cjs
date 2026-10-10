@@ -39,3 +39,30 @@ test('old downloads take the next color slot without moving existing ones', () =
   assert.equal(JSON.stringify(parts.map((p) => [p.label, p.slot])),
     JSON.stringify([['Installers', 1], ['Old downloads', 7]]));
 });
+
+test('my junk rules take their own color slot after the existing ones', () => {
+  const parts = context.spaceBreakdown({ 'My Junk Rules': 10, 'Old Downloads': 10 });
+  assert.equal(JSON.stringify(parts.map((p) => [p.label, p.slot])),
+    JSON.stringify([['Old downloads', 7], ['My rules', 8]]));
+});
+
+test('parent folder handles Windows paths, drive roots and POSIX paths', () => {
+  assert.equal(context.parentFolder('C:\\Users\\me\\Temp\\a.tmp'), 'C:\\Users\\me\\Temp');
+  assert.equal(context.parentFolder('C:\\Users\\me\\node_modules\\'), 'C:\\Users\\me');
+  assert.equal(context.parentFolder('C:\\a.tmp'), 'C:\\');
+  assert.equal(context.parentFolder('/home/me/a.tmp'), '/home/me');
+  assert.equal(context.parentFolder('/a.tmp'), '/');
+  assert.equal(context.parentFolder('a.tmp'), '');
+});
+
+test('junk by folder groups case-insensitively and ranks by size', () => {
+  const groups = context.junkByFolder([
+    { path: 'C:\\Temp\\a.tmp', size_bytes: 10 },
+    { path: 'c:\\temp\\b.tmp', size_bytes: 5 },
+    { path: 'C:\\Downloads\\big.iso', size_bytes: 100 },
+    { path: 'C:\\Empty\\Gone', size_bytes: 0 },
+  ]);
+  assert.equal(JSON.stringify(groups.map((g) => [g.folder, g.bytes, g.count])),
+    JSON.stringify([['C:\\Downloads', 100, 1], ['C:\\Temp', 15, 2], ['C:\\Empty', 0, 1]]));
+  assert.equal(context.junkByFolder([{ path: 'C:\\x\\a', size_bytes: 1 }, { path: 'C:\\y\\b', size_bytes: 2 }], 1).length, 1);
+});
