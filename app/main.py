@@ -611,7 +611,7 @@ def main():
                 webview.settings["ALLOW_DOWNLOADS"] = True  # Lets "Export CSV" save files
             logger.info("Launching native Desktop GUI window...")
             window = webview.create_window(
-                title="JunkZero - Intelligent Disk Garbage Detector & Cleaner",
+                title="JunkZero",
                 url=server_url,
                 width=1320,
                 height=880,

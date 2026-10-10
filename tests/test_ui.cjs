@@ -104,3 +104,9 @@ test('CSV export includes the smart score and its reasons', () => {
   assert.ok(header.endsWith('"Smart Score","Recommendation","Why"'));
   assert.ok(row.endsWith(',88,"Delete","Starts at 80: rated Safe; +8: old"'));
 });
+
+test('category badges use the chart label and color slot, with a neutral fallback', () => {
+  assert.equal(JSON.stringify(context.categoryBadge('Temporary & Cache Files')), JSON.stringify({ label: 'Temp & cache', slot: 3 }));
+  assert.equal(JSON.stringify(context.categoryBadge('My Junk Rules')), JSON.stringify({ label: 'My rules', slot: 8 }));
+  assert.equal(JSON.stringify(context.categoryBadge('Empty Folders')), JSON.stringify({ label: 'Empty folder', slot: 0 }));
+});

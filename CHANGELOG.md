@@ -9,6 +9,13 @@
 - A plain-language summary after each scan says what can go now, what to look at first, and what to keep.
 - CSV exports include the score, label and reasons.
 
+### Look and feel
+- Redesigned interface in both themes: a compact header with the tools grouped together, one scan bar with the drives, folder and scan buttons on a single line, and short "Look for" chips that highlight when they are on (the full file types are in each chip's tooltip).
+- Summary cards are smaller and sit beside one large total, so the results table starts higher on the screen. Clicking a card highlights it while it filters the table.
+- The results table keeps fixed columns: sizes and dates no longer wrap, long names and paths are cut with "..." (hover for the full text), categories show a short label with the same color as the space bar, and the sorted column shows its direction.
+- Dialogs share one style (header icon, close button, footer), lists have clear rows, the folder explorer uses a breadcrumb path, and messages show an icon for success or errors.
+- The Inter font is now bundled with the app, so text looks the same offline and nothing is loaded from the internet. Native controls (dropdowns, time picker, scrollbars) follow the light or dark theme.
+
 ## [1.0.0] - 2026-10-10
 
 The first release of JunkZero, a Windows app that finds junk files, shows you what they are, and moves the ones you pick to the Recycle Bin. It comes as a single `JunkZero.exe` that runs without installing Python.
