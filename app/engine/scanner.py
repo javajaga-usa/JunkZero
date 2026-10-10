@@ -35,7 +35,8 @@ from app.engine.classifier import (
 )
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
-from app.engine.leftovers import find_windows_leftovers
+from app.engine import osinfo
+from app.engine.leftovers import find_program_leftovers
 from app.engine.smart import SmartScorer
 
 
@@ -63,7 +64,7 @@ class ScanStats:
 
 
 class FastScanner:
-    """Multi-threaded filesystem scanner optimized for Windows I/O."""
+    """Multi-threaded filesystem scanner."""
 
     def __init__(self, options: ScanOptions):
         self.options = options
@@ -140,8 +141,12 @@ class FastScanner:
         if size < self.options.min_file_size_bytes:
             return None
         # A file copied in recently keeps its old mtime, so also use the creation time
-        # (st_birthtime, or st_ctime on older Windows Pythons) and take whichever is newer.
+        # (st_birthtime on macOS and Windows, or st_ctime on older Windows Pythons) and take whichever is newer.
         created = getattr(stat, "st_birthtime", None) or stat.st_ctime
+        if osinfo.is_macos():
+            # macOS moves the creation date back when a copy keeps an old modified date, but
+            # the change time (st_ctime) still shows when the file was copied, moved or downloaded
+            created = max(created, stat.st_ctime)
         last_touched = max(stat.st_mtime, created)
         age_days = (time.time() - last_touched) / 86400.0
         if last_touched <= 0 or age_days < self.options.old_download_days:
@@ -318,7 +323,7 @@ class FastScanner:
 
     def _load_leftovers(self, roots: List[str]) -> List[GarbageItem]:
         """Find leftover folders; returns those outside every root (traversal finds the rest)."""
-        found = self.options.leftovers if self.options.leftovers is not None else find_windows_leftovers()
+        found = self.options.leftovers if self.options.leftovers is not None else find_program_leftovers()
         self._leftovers = {}
         for leftover in found:
             if self._excluder.matches(leftover.path, leftover.name):
@@ -542,8 +547,48 @@ class FastScanner:
         return self.garbage_items
 
 
+def _drive_info(path: str, label: str) -> Dict[str, any]:
+    usage = shutil.disk_usage(path)
+    return {
+        "drive": path,
+        "label": label,
+        "total_bytes": usage.total,
+        "total_formatted": format_size(usage.total),
+        "used_bytes": usage.used,
+        "used_formatted": format_size(usage.used),
+        "free_bytes": usage.free,
+        "free_formatted": format_size(usage.free),
+        "used_percent": round((usage.used / usage.total) * 100, 1) if usage.total > 0 else 0
+    }
+
+
+def get_mac_drives(volumes_dir: str = "/Volumes") -> List[Dict[str, any]]:
+    """The startup disk ("/") and other mounted disks in /Volumes (external drives, USB sticks)."""
+    drives = []
+    try:
+        drives.append(_drive_info("/", "Macintosh HD"))
+        root_dev = os.stat("/").st_dev
+    except OSError:
+        root_dev = None
+    try:
+        entries = sorted(os.scandir(volumes_dir), key=lambda e: e.name.lower())
+    except OSError:
+        entries = []
+    for entry in entries:
+        try:
+            # The startup disk also appears in /Volumes (as a link to "/"); skip it
+            if entry.name.startswith(".") or not entry.is_dir() or os.stat(entry.path).st_dev == root_dev:
+                continue
+            drives.append(_drive_info(entry.path, entry.name))
+        except OSError:
+            continue
+    return drives
+
+
 def get_available_drives() -> List[Dict[str, any]]:
-    """Retrieve list of accessible drives on Windows with disk usage statistics."""
+    """Retrieve list of accessible drives (Windows drive letters, or macOS disks) with disk usage statistics."""
+    if osinfo.is_macos():
+        return get_mac_drives()
     drives = []
     # Windows drive letters A-Z
     for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":

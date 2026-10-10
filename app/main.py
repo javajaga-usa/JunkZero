@@ -21,13 +21,13 @@ from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
-from app.engine import changes, scheduler, smart, storage
+from app.engine import changes, osinfo, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
 from app.engine.exclusions import rule_too_broad
 from app.engine.inspector import inspect_path_hierarchy, FolderHierarchyView
-from app.engine.locations import downloads_folder, windows_junk_locations
+from app.engine.locations import downloads_folder, junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
 from app.engine.space import largest_items
 
@@ -140,13 +140,43 @@ class ReportRequest(BaseModel):
 
 @app.get("/api/system/drives")
 def api_get_drives():
-    """Return available Windows drives with disk usage statistics."""
+    """Return available drives (Windows drive letters or macOS disks) with disk usage statistics."""
     return {"drives": get_available_drives()}
+
+
+@app.get("/api/system/info")
+def api_system_info():
+    """Which system this is, and what the UI calls its trash, file manager and scheduler."""
+    return {**osinfo.platform_terms(), "version": __version__}
+
+
+# AppleScript for the macOS folder picker; prints the chosen folder's POSIX path
+MAC_CHOOSE_FOLDER_SCRIPT = (
+    'POSIX path of (choose folder with prompt "Select a drive or folder to scan for garbage files")'
+)
+
+
+def reveal_command(path: str, is_file: bool) -> List[str]:
+    """Command that shows path in Finder (macOS) or Windows Explorer, selecting it if it's a file."""
+    if osinfo.is_macos():
+        return ["open", "-R", path] if is_file else ["open", path]
+    return ["explorer.exe", "/select,", path] if is_file else ["explorer.exe", path]
 
 
 @app.post("/api/system/browse-folder")
 def api_browse_folder():
-    """Open a native Windows directory picker and return the selected path."""
+    """Open a native directory picker (Finder on macOS, Windows otherwise) and return the selected path."""
+    if osinfo.is_macos():
+        try:
+            res = subprocess.run(["osascript", "-e", MAC_CHOOSE_FOLDER_SCRIPT], capture_output=True, text=True, timeout=300)
+            selected_path = res.stdout.strip()
+            if len(selected_path) > 1:
+                selected_path = selected_path.rstrip("/")
+            if selected_path and os.path.exists(selected_path):
+                return {"path": selected_path}
+        except Exception as e:
+            logger.warning(f"Native folder picker failed: {e}")
+        return {"path": ""}
     try:
         ps_script = (
             "Add-Type -AssemblyName System.Windows.Forms;"
@@ -169,16 +199,13 @@ def api_browse_folder():
 
 @app.post("/api/system/open-explorer")
 def api_open_explorer(req: OpenFolderRequest):
-    """Highlight the file or open its containing folder in Windows Explorer."""
+    """Highlight the file or open its containing folder in Windows Explorer or Finder."""
     path = os.path.abspath(req.path)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Path does not exist")
 
     try:
-        if os.path.isfile(path):
-            subprocess.Popen(['explorer.exe', '/select,', path])
-        else:
-            subprocess.Popen(['explorer.exe', path])
+        subprocess.Popen(reveal_command(path, os.path.isfile(path)))
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -211,7 +238,7 @@ async def api_start_scan(req: ScanRequest):
         custom_rules=storage.get_custom_rules(),
         include_leftovers=req.include_leftovers,
         learning=smart.load_learning(),
-        junk_locations=windows_junk_locations(),
+        junk_locations=junk_locations(),
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
         stale_days=req.stale_days,
         skip_system_dirs=req.skip_system_dirs,
@@ -398,13 +425,16 @@ def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
 
 @app.get("/api/system/junk-locations")
 def api_junk_locations():
-    """Known Windows junk locations (temp, caches, crash dumps) that exist for this user."""
-    return {"locations": [loc.to_dict() for loc in windows_junk_locations()]}
+    """Known junk locations (temp, caches, crash dumps, logs) that exist for this user."""
+    return {"locations": [loc.to_dict() for loc in junk_locations()]}
 
 
 @app.post("/api/system/open-recycle-bin")
 def api_open_recycle_bin():
-    """Open the Windows Recycle Bin so deleted items can be restored."""
+    """Open the Windows Recycle Bin (or the macOS Trash) so deleted items can be restored."""
+    if osinfo.is_macos():
+        subprocess.Popen(["open", os.path.expanduser("~/.Trash")])
+        return {"success": True}
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="The Recycle Bin can only be opened on Windows")
     subprocess.Popen(["explorer.exe", "shell:RecycleBinFolder"])
@@ -464,7 +494,7 @@ def api_clear_history():
 def api_get_schedule():
     return {
         "schedule": scheduler.get_schedule(),
-        "supported": os.name == "nt",
+        "supported": scheduler.scheduling_supported(),
         "last_report": scheduler.report_summary(storage.load_report()),
     }
 
@@ -565,7 +595,7 @@ def main():
     parser.add_argument("--path", action="append", default=[],
                         help="Folder to scan in report mode (repeatable; defaults to the saved schedule)")
     parser.add_argument("--no-junk-locations", action="store_true",
-                        help="In report mode, skip the Windows junk locations")
+                        help="In report mode, skip the junk locations (temp, caches, logs)")
     args = parser.parse_args()
 
     if args.mode == "report":

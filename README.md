@@ -1,7 +1,7 @@
 # JunkZero 🚀
 > **Intelligent, High-Performance Disk Garbage Detector & Cleaner with Modern GUI**
 
-JunkZero is a lightning-fast storage cleanup and disk optimization utility designed for Windows. It identifies, categorizes, and safely removes gigabytes of leftover clutter—such as APKs, software setup packages (`.exe`, `.msi`), compiled Java binaries (`.class`, `.jar`), development build caches (`node_modules`, `target/`, `__pycache__`), temporary crash logs, and broken browser downloads.
+JunkZero is a lightning-fast storage cleanup and disk optimization utility for Windows and macOS. It identifies, categorizes, and safely removes gigabytes of leftover clutter—such as APKs, software setup packages (`.exe`, `.msi`), compiled Java binaries (`.class`, `.jar`), development build caches (`node_modules`, `target/`, `__pycache__`), temporary crash logs, and broken browser downloads.
 
 ---
 
@@ -29,7 +29,7 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
 - **📂 Junk by Folder**: Groups the current results by the folder they are in, biggest first. Click a folder to show only its items in the table; clear the folder chip to see everything again.
 - **🧮 Smart Score**: Every result gets a 1-99 score for how sure JunkZero is that it's junk, with a Delete / Review / Keep label in its own column. Click a score to see why: each rule that moved it is listed (its risk level, category, age, whether it sits in Downloads or Desktop, and what you did with similar items before). **Smart Select** ticks only the items marked Delete. Scoring runs entirely offline; it never changes which items are ticked for you.
 - **📈 Learns From Your Choices**: When you delete items from the results, JunkZero remembers their kind (category and file type), and similar items score higher next time. Items you leave alone and that turn up again in a later scan count as kept (at most once a day) and score lower. Cleanup History shows how much has been learned, with a button to forget it.
-- **🧩 Program Leftovers** (opt-in, Windows): Finds folders in `AppData\Roaming` and `AppData\Local` left behind by programs you've uninstalled. A folder is listed only if its name matches nothing in the Windows list of installed programs or in Program Files, it isn't a shared folder (Microsoft, Packages, Temp, npm...), and nothing inside it has changed for 180 days. Leftovers are Review Recommended and never preselected; if the installed-programs list can't be read, nothing is reported.
+- **🧩 Program Leftovers** (opt-in): Finds folders in `AppData\Roaming` and `AppData\Local` (on a Mac, `~/Library/Application Support`) left behind by programs you've uninstalled. A folder is listed only if its name matches nothing in the Windows list of installed programs or in Program Files (on a Mac: the apps in Applications, their bundle ids, background services and Homebrew packages), it isn't a shared folder (Microsoft, Packages, Temp, npm...), and nothing inside it has changed for 180 days. Leftovers are Review Recommended and never preselected; if the installed-programs list can't be read, nothing is reported.
 - **💬 Scan Summary**: After a scan, a short summary says how much can go now with little risk, what's worth a look first (naming the biggest item), and what looks worth keeping, with a button to select the safe bets.
 - **📏 Largest Files & Folders**: A read-only view of the biggest folders and files in the target folder, so you can see where the space goes even when it isn't junk. Review or delete through the folder explorer, which keeps the usual confirmations. Protected system folders and your exclusions are not counted.
 - **💾 Remembered Settings**: The target folder, the "Scan For" toggles and the theme are restored the next time you open JunkZero. The delete mode is never remembered; every launch starts in Recycle Bin mode.
@@ -50,6 +50,16 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - Click the **AI Inspect** robot icon on any file to receive an instant analysis of its origin application, purpose, and safety verdict.
   - Works 100% offline with built-in heuristic database, or connects with `GEMINI_API_KEY` for deep contextual insights.
 
+## 🍎 On a Mac
+
+JunkZero runs on macOS 11 or later with the same screens, and swaps in the Mac's own places and names:
+
+- **Quick Clean** looks at each app's folder in `~/Library/Caches` (one item per app; the caches macOS keeps for itself, `com.apple.*`, are left alone), log files and crash reports in `~/Library/Logs`, your temp folder, Xcode's DerivedData, iOS Simulator caches and the npm cache.
+- **Protected**: `/System`, `/Library`, `/Applications`, `/usr`, `/private` and the other system folders are never scanned or deleted from. Inside `~/Library`, only Caches, Logs, Application Support and Xcode's build data are looked at, so Mail, Messages, Keychains, iCloud Drive and app containers are never touched, and neither are iPhone backups (`MobileSync`). What's inside apps and Photos or Music libraries isn't scanned on its own, and the Trash, Spotlight and other disk metadata folders are skipped. Your home folder, Library, Desktop, Documents, Downloads, Movies, Music and Pictures can't be deleted as a whole.
+- **Drives** are the startup disk (`/`) and any external disks in `/Volumes`.
+- Deleted items go to the **Trash**, the folder buttons open **Finder**, Browse uses the Finder folder picker, and **scheduled scans** run through launchd (a job in `~/Library/LaunchAgents`).
+- Settings and history are kept in `~/Library/Application Support/JunkZero`.
+
 ---
 
 ## 🚀 Quick Start
@@ -57,10 +67,12 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
 ### Download (no Python needed)
 Get `JunkZero.exe` from the [latest release](https://github.com/javajaga-usa/JunkZero/releases/latest) and double-click it. It needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime, which Windows normally includes. The exe isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. See [CHANGELOG.md](CHANGELOG.md) for what's in each release.
 
+On a Mac, download `JunkZero-macOS.zip` from the same release, unzip it and move `JunkZero.app` to Applications. The app isn't signed by Apple yet, so the first time macOS says it can't check it: open **System Settings → Privacy & Security** and choose **Open Anyway** (on older macOS, right-click the app and choose **Open**). The download is built for Apple silicon (M1 and later) Macs.
+
 ### Run from source
 
 ### 1. Requirements
-- Windows 10 / 11
+- Windows 10 / 11, or macOS 11 or later
 - Python 3.10+ (Tested on Python 3.13)
 
 ### 2. Install Dependencies
@@ -78,6 +90,8 @@ The launcher automatically uses `.venv` when present. Simply double-click:
 ```powershell
 run.bat
 ```
+On a Mac, set up the virtual environment with `python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`, then double-click `run.command` (or run `./run.command`).
+
 Or run from terminal:
 ```powershell
 # Launch Native Desktop Window (powered by Edge WebView2):
@@ -95,20 +109,20 @@ python -m pip install -r requirements-test.txt
 python -m pytest -q
 ```
 
-CI runs the test suite on Windows and Linux with Python 3.10 and 3.13, checks dependencies, compiles Python sources, and verifies JavaScript syntax and HTML escaping. Test dependencies omit the optional native GUI runtime.
+CI runs the test suite on Windows, macOS and Linux with Python 3.10 and 3.13, checks dependencies, compiles Python sources, and verifies JavaScript syntax and HTML escaping. Test dependencies omit the optional native GUI runtime.
 
 To run the API without opening a window:
 ```powershell
 python -m app.main --mode server
 ```
 
-Settings (exclusions, junk rules, schedule, remembered scan options), cleanup history, the latest scan report and the results of recent scans (for "New since last scan") are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
+Settings (exclusions, junk rules, schedule, remembered scan options), cleanup history, the latest scan report and the results of recent scans (for "New since last scan") are stored in `%APPDATA%\JunkZero` on Windows, `~/Library/Application Support/JunkZero` on a Mac (or `~/.junkzero` elsewhere; override with `JUNKZERO_DATA_DIR`).
 
 ### Building the exe
 ```powershell
 python -m pip install -r requirements.txt pyinstaller==6.11.1
 pyinstaller --noconfirm packaging/JunkZero.spec   # writes dist\JunkZero.exe
 ```
-The Release workflow builds and smoke-tests the exe on every pull request. To publish a release, set `__version__` in `app/__init__.py`, add a matching section to `CHANGELOG.md`, and push a `v<version>` tag (or run the Release workflow by hand); the exe is attached to the GitHub release.
+On a Mac the same command writes `dist/JunkZero.app`. The Release workflow builds and smoke-tests the exe and the Mac app on every pull request, and attaches both (`JunkZero.exe` and `JunkZero-macOS.zip`) to the release. To publish a release, set `__version__` in `app/__init__.py`, add a matching section to `CHANGELOG.md`, and push a `v<version>` tag (or run the Release workflow by hand); the files are attached to the GitHub release.
 
-Use the application on localhost. Native folder selection and Explorer integration require Windows. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.
+Use the application on localhost. Native folder selection and Explorer / Finder integration require Windows or macOS. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.

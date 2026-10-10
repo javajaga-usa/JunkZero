@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +23,8 @@ def data_dir() -> Path:
         base = Path(override)
     elif os.environ.get("APPDATA"):
         base = Path(os.environ["APPDATA"]) / "JunkZero"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "JunkZero"
     else:
         base = Path.home() / ".junkzero"
     base.mkdir(parents=True, exist_ok=True)

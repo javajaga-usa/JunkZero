@@ -1,6 +1,7 @@
-"""Scheduled, report-only scans via Windows Task Scheduler. Scheduled runs never delete anything."""
+"""Scheduled, report-only scans via Windows Task Scheduler or macOS launchd. Scheduled runs never delete anything."""
 from __future__ import annotations
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -9,11 +10,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import ScanOptions
-from app.engine import smart, storage
-from app.engine.locations import windows_junk_locations
+from app.engine import osinfo, smart, storage
+from app.engine.locations import junk_locations
 from app.engine.scanner import FastScanner
 
 TASK_NAME = "JunkZero Scheduled Scan"
+# macOS: the launchd job, saved as ~/Library/LaunchAgents/<label>.plist
+LAUNCHD_LABEL = "com.junkzero.scheduled-scan"
 REPORT_ITEMS_LIMIT = 5000
 WEEKDAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,7 +47,8 @@ def validate_schedule(frequency: str, time_str: str, day: str, paths: List[str],
     if frequency == "weekly" and day not in WEEKDAYS:
         raise ScheduleError("Day must be one of " + ", ".join(WEEKDAYS))
     if not paths and not include_junk_locations:
-        raise ScheduleError("Choose at least one folder or include the Windows junk locations")
+        raise ScheduleError("Choose at least one folder or include the "
+                            + ("junk locations" if osinfo.is_macos() else "Windows junk locations"))
     for p in paths:
         if not os.path.isdir(p):
             raise ScheduleError(f"Folder not found: {p}")
@@ -91,11 +95,68 @@ def _run_schtasks(args: List[str]) -> None:
         raise ScheduleError((res.stderr or res.stdout or "schtasks failed").strip())
 
 
+def scheduling_supported() -> bool:
+    return os.name == "nt" or osinfo.is_macos()
+
+
+def launchd_program_args(script_path: str) -> List[str]:
+    """What launchd runs: the packaged app in report mode, or Python with the launcher script."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--mode", "report"]
+    return [sys.executable, script_path]
+
+
+def launchd_plist(frequency: str, time_str: str, day: str, program_args: List[str]) -> bytes:
+    """A launchd job that runs the report at the chosen time (launchd weekdays: 0 = Sunday)."""
+    hour, minute = (int(x) for x in time_str.split(":"))
+    when: Dict[str, int] = {"Hour": hour, "Minute": minute}
+    if frequency == "weekly":
+        when["Weekday"] = (WEEKDAYS.index(day) + 1) % 7
+    return plistlib.dumps({
+        "Label": LAUNCHD_LABEL,
+        "ProgramArguments": program_args,
+        "StartCalendarInterval": when,
+        "ProcessType": "Background",
+        "LowPriorityIO": True,
+        "Nice": 10,
+    })
+
+
+def launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+
+
+def _launchctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["launchctl", *args], capture_output=True, text=True, timeout=30)
+
+
+def _install_launch_agent(plist: bytes) -> None:
+    path = launch_agent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _launchctl("unload", str(path))  # Replace an existing schedule; fails harmlessly if none
+    path.write_bytes(plist)
+    res = _launchctl("load", "-w", str(path))
+    if res.returncode != 0:
+        raise ScheduleError((res.stderr or res.stdout or "launchctl failed").strip())
+
+
+def _remove_launch_agent() -> None:
+    path = launch_agent_path()
+    if path.exists():
+        _launchctl("unload", "-w", str(path))
+        path.unlink()
+
+
 def save_schedule(frequency: str, time_str: str, day: str, paths: List[str], include_junk_locations: bool) -> Dict[str, Any]:
     validate_schedule(frequency, time_str, day, paths, include_junk_locations)
-    script = storage.data_dir() / "scheduled_scan.pyw"
-    script.write_text(launcher_script(), encoding="utf-8")
-    _run_schtasks(schtasks_create_args(frequency, time_str, day, task_command(str(script))))
+    if osinfo.is_macos():
+        script = storage.data_dir() / "scheduled_scan.py"
+        script.write_text(launcher_script(), encoding="utf-8")
+        _install_launch_agent(launchd_plist(frequency, time_str, day, launchd_program_args(str(script))))
+    else:
+        script = storage.data_dir() / "scheduled_scan.pyw"
+        script.write_text(launcher_script(), encoding="utf-8")
+        _run_schtasks(schtasks_create_args(frequency, time_str, day, task_command(str(script))))
     previous = get_schedule()
     storage.update_settings(schedule={
         "enabled": True, "frequency": frequency, "time": time_str, "day": day,
@@ -106,12 +167,15 @@ def save_schedule(frequency: str, time_str: str, day: str, paths: List[str], inc
 
 
 def delete_schedule() -> Dict[str, Any]:
-    try:
-        _run_schtasks(["schtasks", "/Delete", "/F", "/TN", TASK_NAME])
-    except ScheduleError as e:
-        # Already removed in Task Scheduler: just record it as off
-        if "cannot find" not in str(e).lower():
-            raise
+    if osinfo.is_macos():
+        _remove_launch_agent()
+    else:
+        try:
+            _run_schtasks(["schtasks", "/Delete", "/F", "/TN", TASK_NAME])
+        except ScheduleError as e:
+            # Already removed in Task Scheduler: just record it as off
+            if "cannot find" not in str(e).lower():
+                raise
     schedule = get_schedule()
     schedule["enabled"] = False
     storage.update_settings(schedule=schedule)
@@ -126,7 +190,7 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
         extra_paths=existing[1:],
         exclusions=storage.get_exclusions(),
         custom_rules=storage.get_custom_rules(),
-        junk_locations=windows_junk_locations(),
+        junk_locations=junk_locations(),
         scan_junk_locations=include_junk_locations,
         learning=smart.load_learning(),
     )
@@ -151,7 +215,7 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
 
 
 def run_scheduled_report() -> int:
-    """Entry point for Task Scheduler."""
+    """Entry point for Task Scheduler and launchd."""
     schedule = get_schedule()
     run_report(schedule["paths"], schedule["include_junk_locations"], source="scheduled")
     schedule["last_run"] = time.time()
