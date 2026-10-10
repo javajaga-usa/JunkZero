@@ -79,3 +79,36 @@ def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[Junk
                 ))
 
     return found
+
+
+# Known Folder ID of the user's Downloads folder (it can be moved to another drive)
+_DOWNLOADS_GUID = "{374DE290-123F-4565-9164-39C4925E467B}"
+
+
+def _registry_downloads() -> Optional[str]:
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, _DOWNLOADS_GUID)
+        return os.path.expandvars(value)
+    except OSError:
+        return None
+
+
+def downloads_folder(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """The current user's Downloads folder, or None if it can't be found."""
+    env = os.environ if env is None else env
+    candidates = [_registry_downloads()] if env is os.environ else []
+    home = env.get("USERPROFILE") or env.get("HOME")
+    if home:
+        candidates.append(os.path.join(home, "Downloads"))
+    for path in candidates:
+        if path and os.path.isdir(path) and not is_system_protected_path(path):
+            return os.path.normpath(path)
+    return None

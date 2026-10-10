@@ -22,6 +22,9 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility desig
   - **Stale Large Files**: Files ≥ 100MB unmodified for ≥ 180 days.
   - **Empty Folders**: Folders with no files at any depth (only the topmost folder of an empty tree is listed). Before deleting, JunkZero re-checks the folder and skips it if files have appeared since the scan.
   - **Duplicate Files** (opt-in): Files ≥ 1MB with identical contents. The newest copy is kept; the others are listed for review. Hard links are never counted as copies.
+  - **Old Downloads** (opt-in): Files in your Downloads folder that haven't been modified or added for 90 days or more. They are listed as "Review Recommended" and never preselected. Files that fit another category (installers, broken downloads) stay in that category.
+- **📏 Largest Files & Folders**: A read-only view of the biggest folders and files in the target folder, so you can see where the space goes even when it isn't junk. Review or delete through the folder explorer, which keeps the usual confirmations. Protected system folders and your exclusions are not counted.
+- **💾 Remembered Settings**: The target folder, the "Scan For" toggles and the theme are restored the next time you open JunkZero. The delete mode is never remembered; every launch starts in Recycle Bin mode.
 - **⚡ Quick Clean**: One click scans your temp folder, application crash dumps, and Chrome / Edge / Brave / Firefox caches. Browser cache folders are listed as single items (close the browser before deleting them). Locations under `C:\Windows` (Windows Update downloads, system temp) stay protected and are not offered.
 - **🙈 Exclusions**: Mark a file or folder as "never flag" from its row, or add paths and patterns such as `*.iso` in the Exclusions dialog. Excluded folders are not scanned at all.
 - **🕘 Cleanup History**: Every cleanup is logged with its date, delete mode, item list and space freed, with a shortcut to the Recycle Bin for restoring.
@@ -84,6 +87,6 @@ To run the API without opening a window:
 python -m app.main --mode server
 ```
 
-Settings (exclusions, schedule), cleanup history and the latest scan report are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
+Settings (exclusions, schedule, remembered scan options), cleanup history and the latest scan report are stored in `%APPDATA%\JunkZero` (or `~/.junkzero`; override with `JUNKZERO_DATA_DIR`).
 
 Use the application on localhost. Native folder selection and Explorer integration require Windows. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.

@@ -514,8 +514,13 @@ input[type="text"]:focus {
 /* Statistics Grid */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 14px;
+}
+
+/* Nine cards: the total spans two slots so both rows stay full */
+.stats-grid .stat-primary {
+  grid-column: span 2;
 }
 
 .stat-card {
@@ -566,6 +571,7 @@ input[type="text"]:focus {
 .cat-downloads { color: #ef4444; background: rgba(239, 68, 68, 0.12); }
 .cat-empty { color: #64748b; background: rgba(100, 116, 139, 0.14); }
 .cat-stale { color: #22c55e; background: rgba(34, 197, 94, 0.12); }
+.cat-old-downloads { color: #14b8a6; background: rgba(20, 184, 166, 0.12); }
 .cat-duplicates { color: #ec4899; background: rgba(236, 72, 153, 0.12); }
 
 .stat-content {
@@ -1400,6 +1406,7 @@ input[type="text"]:focus {
   --series-4: #c98500;
   --series-5: #d55181;
   --series-6: #008300;
+  --series-7: #8b7cf6;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
@@ -1412,6 +1419,7 @@ input[type="text"]:focus {
   --series-4: #eda100;
   --series-5: #e87ba4;
   --series-6: #008300;
+  --series-7: #7c6ae6;
 }
 .space-breakdown-header {
   display: flex;
@@ -1536,3 +1544,23 @@ input[type="text"]:focus {
   gap: 12px;
   font-size: 13px;
 }
+
+/* Largest Files & Folders */
+.largest-tabs {
+  display: inline-flex;
+  width: fit-content;
+  align-self: flex-start;
+  padding: 2px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+}
+.largest-tabs .mode-option { font-size: 12px; padding: 4px 12px; }
+.largest-tabs .mode-option.active { color: var(--text-primary); background: var(--bg-card); }
+.largest-list { max-height: 420px; }
+.largest-list li { align-items: center; }
+.largest-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.largest-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
+.largest-bar { height: 4px; border-radius: 2px; background: var(--border-color); overflow: hidden; }
+.largest-bar span { display: block; height: 100%; background: var(--color-primary); }
+.largest-list .list-empty { gap: 8px; }

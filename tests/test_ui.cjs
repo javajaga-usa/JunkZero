@@ -33,3 +33,9 @@ test('space breakdown keeps a fixed color slot per category and drops empty ones
     JSON.stringify([['Builds', 2, 25], ['Stale large', 6, 75]]));
   assert.equal(context.spaceBreakdown({}).length, 0);
 });
+
+test('old downloads take the next color slot without moving existing ones', () => {
+  const parts = context.spaceBreakdown({ 'Old Downloads': 50, 'Installers, Setup Archives & OS Images': 50 });
+  assert.equal(JSON.stringify(parts.map((p) => [p.label, p.slot])),
+    JSON.stringify([['Installers', 1], ['Old downloads', 7]]));
+});

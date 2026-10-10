@@ -11,6 +11,7 @@ CAT_BROKEN_DOWNLOADS = "Broken / Incomplete Downloads"
 CAT_STALE_LARGE = "Stale Large Files"
 CAT_EMPTY_FOLDERS = "Empty Folders"
 CAT_DUPLICATES = "Duplicate Files"
+CAT_OLD_DOWNLOADS = "Old Downloads"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -93,6 +94,9 @@ LARGE_FILE_BYTES_THRESHOLD = 100 * 1024 * 1024  # 100 MB
 # Duplicate detection only hashes files at least this big (smaller ones free little space)
 DUPLICATE_MIN_BYTES = 1024 * 1024  # 1 MB
 
+# Files in the Downloads folder untouched for this many days are listed for review
+OLD_DOWNLOAD_DAYS = 90
+
 
 @dataclass
 class ScanOptions:
@@ -105,6 +109,10 @@ class ScanOptions:
     include_stale_large: bool = True
     include_empty_folders: bool = True
     include_duplicates: bool = False
+    include_old_downloads: bool = False
+    old_download_days: int = OLD_DOWNLOAD_DAYS
+    # Folders treated as "Downloads" for the Old Downloads category
+    downloads_dirs: List[str] = field(default_factory=list)
     min_file_size_bytes: int = 0
     stale_days: int = STALE_DAYS_THRESHOLD
     skip_system_dirs: bool = True

@@ -97,8 +97,15 @@
           <input type="checkbox" id="optDuplicates" />
           <i data-lucide="copy"></i> Duplicates (&ge;1MB, slower)
         </label>
+        <label class="checkbox-tag" title="Files in your Downloads folder that haven't been modified for 90 days or more">
+          <input type="checkbox" id="optOldDownloads" />
+          <i data-lucide="calendar-x"></i> Old Downloads (90+ days)
+        </label>
 
         <div class="action-buttons-group">
+          <button id="btnLargest" class="btn btn-secondary" title="Show the biggest files and folders in the target folder (read-only)">
+            <i data-lucide="chart-column"></i> Largest Files
+          </button>
           <button id="btnScanJunk" class="btn btn-secondary" title="Scan your temp folder, crash dumps and browser caches">
             <i data-lucide="zap"></i> Quick Clean
           </button>
@@ -221,6 +228,17 @@
           <span class="stat-subtext" id="statDuplicatesCount">0 extra copies</span>
         </div>
       </div>
+
+      <div class="stat-card" data-category="Old Downloads">
+        <div class="stat-icon-wrapper cat-old-downloads">
+          <i data-lucide="calendar-x"></i>
+        </div>
+        <div class="stat-content">
+          <span class="stat-label">Old Downloads</span>
+          <h3 class="stat-value" id="statOldDownloadsSize">0.00 MB</h3>
+          <span class="stat-subtext" id="statOldDownloadsCount">0 files</span>
+        </div>
+      </div>
     </section>
 
     <!-- Where the reclaimable space is -->
@@ -254,6 +272,7 @@
               <option value="Stale Large Files">Stale Large Files (>100MB)</option>
               <option value="Empty Folders">Empty Folders (no files inside)</option>
               <option value="Duplicate Files">Duplicate Files (extra copies)</option>
+              <option value="Old Downloads">Old Downloads (untouched 90+ days)</option>
             </select>
 
             <select id="riskFilter" class="select-filter">
@@ -341,6 +360,37 @@
         </div>
       </footer>
     </main>
+
+    <!-- Largest Files & Folders Modal (read-only; deleting goes through the folder explorer) -->
+    <div id="largestModal" class="modal-overlay hidden">
+      <div class="modal-card modal-wide">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon warning"><i data-lucide="chart-column"></i></div>
+            <div>
+              <h3 class="modal-title">Largest Files &amp; Folders</h3>
+              <p class="modal-subtitle" id="largestSubtitle">Where the space goes in the target folder</p>
+            </div>
+          </div>
+          <button id="closeLargestModal" class="close-modal-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="largest-tabs" role="tablist">
+            <button type="button" id="largestTabFolders" class="mode-option active" role="tab" aria-selected="true">
+              <i data-lucide="folder"></i> Folders
+            </button>
+            <button type="button" id="largestTabFiles" class="mode-option" role="tab" aria-selected="false">
+              <i data-lucide="file"></i> Files
+            </button>
+          </div>
+          <ul id="largestList" class="simple-list largest-list"></ul>
+          <p class="confirm-note">Nothing here is deleted from this list. Use the folder button to review and delete in the folder explorer. Protected system folders and your exclusions are not counted.</p>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCloseLargest" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Folder Hierarchy & Multi-Level Parent Explorer Modal -->
     <div id="hierarchyModal" class="modal-overlay hidden">

@@ -9,7 +9,7 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -17,14 +17,15 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.config import ScanOptions
+from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
 from app.engine import scheduler, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
 from app.engine.inspector import inspect_path_hierarchy, FolderHierarchyView
-from app.engine.locations import windows_junk_locations
+from app.engine.locations import downloads_folder, windows_junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
+from app.engine.space import largest_items
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -48,6 +49,8 @@ class ScanRequest(BaseModel):
     include_stale_large: bool = True
     include_empty_folders: bool = True
     include_duplicates: bool = False
+    include_old_downloads: bool = False
+    old_download_days: int = Field(default=OLD_DOWNLOAD_DAYS, ge=1)
     scan_junk_locations: bool = False
     min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     stale_days: int = Field(default=180, ge=1)
@@ -90,6 +93,24 @@ class ScheduleRequest(BaseModel):
     day: str = "MON"
     paths: List[str] = Field(default_factory=list)
     include_junk_locations: bool = True
+
+
+class LargestItemsRequest(BaseModel):
+    path: str
+    file_limit: int = Field(default=50, ge=1, le=500)
+    folder_limit: int = Field(default=25, ge=1, le=200)
+
+
+SCAN_OPTION_KEYS = (
+    "include_installers", "include_java_builds", "include_temp_junk", "include_broken_downloads",
+    "include_stale_large", "include_empty_folders", "include_duplicates", "include_old_downloads",
+)
+
+
+class PreferencesRequest(BaseModel):
+    theme: Literal["dark", "light"] = "dark"
+    target_path: str = Field(default="", max_length=1024)
+    scan_options: Dict[str, bool] = Field(default_factory=dict)
 
 
 class ReportRequest(BaseModel):
@@ -161,6 +182,9 @@ async def api_start_scan(req: ScanRequest):
         include_stale_large=req.include_stale_large,
         include_empty_folders=req.include_empty_folders,
         include_duplicates=req.include_duplicates,
+        include_old_downloads=req.include_old_downloads,
+        old_download_days=req.old_download_days,
+        downloads_dirs=[d for d in [downloads_folder()] if d],
         scan_junk_locations=req.scan_junk_locations,
         exclusions=storage.get_exclusions(),
         junk_locations=windows_junk_locations(),
@@ -393,6 +417,35 @@ def api_delete_schedule():
     except scheduler.ScheduleError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"schedule": schedule}
+
+
+@app.post("/api/space/largest")
+def api_largest_items(req: LargestItemsRequest):
+    """The biggest files and folders under a path (read-only; nothing is deleted)."""
+    if not os.path.isdir(req.path):
+        raise HTTPException(status_code=400, detail=f"'{req.path}' is not a folder")
+    try:
+        return largest_items(req.path, req.file_limit, req.folder_limit, exclusions=storage.get_exclusions())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/system/downloads-folder")
+def api_downloads_folder():
+    return {"path": downloads_folder()}
+
+
+@app.get("/api/preferences")
+def api_get_preferences():
+    return {"preferences": storage.get_preferences()}
+
+
+@app.put("/api/preferences")
+def api_set_preferences(req: PreferencesRequest):
+    prefs = req.model_dump()
+    # Only known scan toggles are kept, so a stale or hand-edited file can't add options
+    prefs["scan_options"] = {k: v for k, v in req.scan_options.items() if k in SCAN_OPTION_KEYS}
+    return {"preferences": storage.set_preferences(prefs)}
 
 
 @app.get("/api/reports/latest")
