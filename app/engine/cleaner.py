@@ -11,6 +11,7 @@ import send2trash
 
 from app.config import CAT_EMPTY_FOLDERS, VCS_DIR_NAMES
 from app.engine.classifier import is_system_protected_path, format_size
+from app.engine.osinfo import is_hidden
 from app.engine import storage
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 
@@ -27,12 +28,15 @@ if not logger.handlers:
 
 
 def folder_has_files(dir_path: str) -> bool:
-    """Return True if the folder contains anything other than (empty) subfolders, at any depth."""
+    """Return True if the folder contains anything other than plain (empty) subfolders, at any depth.
+
+    Files count whether hidden or not, and so does any hidden subfolder, even an empty one."""
     for root, dirs, files in os.walk(dir_path, onerror=_raise):
         if files:
             return True
         for d in dirs:
-            if os.path.islink(os.path.join(root, d)):
+            path = os.path.join(root, d)
+            if os.path.islink(path) or is_hidden(d, os.lstat(path)):
                 return True
     return False
 

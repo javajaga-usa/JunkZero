@@ -77,6 +77,7 @@ class FastScanner:
         # path -> (has_non_folder_content, child_dir_paths). Insertion order is
         # parent-before-child because a child is only discovered by scanning its parent.
         self._dir_tree: Dict[str, tuple[bool, List[str]]] = {}
+        self._hidden_dirs: Set[str] = set()
         self._excluder = ExclusionMatcher(options.exclusions)
         self._junk_rules = ExclusionMatcher(options.custom_rules if options.include_custom_rules else [])
         # Junk locations: folders flagged as a single item, and folders whose files are flagged
@@ -233,6 +234,13 @@ class FastScanner:
                             with self._lock:
                                 self.stats.total_dirs_scanned += 1
 
+                            # A hidden subfolder (even an empty one) means this folder is not
+                            # empty, and is never reported as empty itself: apps create them on purpose
+                            if osinfo.is_hidden(name, stat):
+                                has_content = True
+                                with self._lock:
+                                    self._hidden_dirs.add(path)
+
                             # Windows junctions are not followed for emptiness purposes
                             is_junction = getattr(entry, "is_junction", None)
                             if is_junction and is_junction():
@@ -350,8 +358,9 @@ class FastScanner:
 
     def _find_empty_folders(self, root_paths: str | Iterable[str]) -> List[GarbageItem]:
         """
-        Return folders that contain no files at any depth, reporting only the topmost
-        folder of each empty tree. The scan roots themselves are never reported.
+        Return folders that contain nothing at any depth (hidden files and hidden subfolders
+        count as content), reporting only the topmost folder of each empty tree. The scan
+        roots and hidden folders themselves are never reported.
         """
         roots = {root_paths} if isinstance(root_paths, str) else set(root_paths)
         empty: Dict[str, bool] = {}
@@ -369,7 +378,7 @@ class FastScanner:
 
         items: List[GarbageItem] = []
         for dir_path, is_empty in empty.items():
-            if not is_empty or dir_path in roots:
+            if not is_empty or dir_path in roots or dir_path in self._hidden_dirs:
                 continue
             parent = parent_of.get(dir_path)
             if parent is None:

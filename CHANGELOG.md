@@ -17,6 +17,10 @@
 - A plain-language summary after each scan says what can go now, what to look at first, and what to keep.
 - CSV exports include the score, label and reasons.
 
+### Empty Folders
+- A folder that holds anything hidden is no longer listed as empty: dot-files and dot-folders, Windows hidden or system items, and items macOS Finder hides all count, at any depth. Hidden folders are never offered as empty themselves.
+- Just before deleting an empty folder, JunkZero checks again and skips it if a file or hidden folder appeared since the scan.
+
 ### Look and feel
 - Redesigned interface in both themes: a compact header with the tools grouped together, one scan bar with the drives, folder and scan buttons on a single line, and short "Look for" chips that highlight when they are on (the full file types are in each chip's tooltip).
 - Summary cards are smaller and sit beside one large total, so the results table starts higher on the screen. Clicking a card highlights it while it filters the table.
