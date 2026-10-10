@@ -3,12 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>JunkZero - Intelligent Disk Garbage Detector & Cleaner</title>
+  <title>JunkZero</title>
   <link rel="stylesheet" href="/static/styles.css" />
-  <!-- Google Fonts & Lucide Icons -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Fonts and icons are bundled so the app looks the same offline -->
+  <link rel="preload" href="/static/vendor/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
   <script src="/static/vendor/lucide-1.46.0.min.js"></script>
 </head>
 <body class="dark-theme">
@@ -16,32 +14,35 @@
     <!-- Top Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="logo-badge">
-          <i data-lucide="shield-alert" class="logo-icon"></i>
+        <div class="logo-badge" aria-hidden="true">
+          <i data-lucide="shield-check" class="logo-icon"></i>
         </div>
-        <div>
+        <div class="brand">
           <h1 class="app-title">JunkZero</h1>
-          <p class="app-subtitle">Intelligent Storage Optimization & Garbage Removal</p>
+          <p class="app-subtitle">Find junk files, review them, and free up space safely</p>
         </div>
       </div>
       <div class="header-right">
-        <button id="btnOpenJunkRules" class="btn btn-ghost btn-sm" title="Your own patterns and folders to flag as junk">
-          <i data-lucide="list-plus"></i> Junk Rules
-        </button>
-        <button id="btnOpenExclusions" class="btn btn-ghost btn-sm" title="Paths and patterns JunkZero never flags">
-          <i data-lucide="eye-off"></i> Exclusions
-        </button>
-        <button id="btnOpenHistory" class="btn btn-ghost btn-sm" title="What was cleaned, when, and how much space it freed">
-          <i data-lucide="history"></i> History
-        </button>
-        <button id="btnOpenSchedule" class="btn btn-ghost btn-sm" title="Scheduled scans that only report, never delete">
-          <i data-lucide="calendar-clock"></i> Schedule
-        </button>
-        <div class="status-pill" id="engineStatus">
+        <nav class="header-nav" aria-label="Tools">
+          <button id="btnOpenJunkRules" class="nav-btn" title="Your own patterns and folders to flag as junk">
+            <i data-lucide="list-plus"></i> Junk Rules
+          </button>
+          <button id="btnOpenExclusions" class="nav-btn" title="Paths and patterns JunkZero never flags">
+            <i data-lucide="eye-off"></i> Exclusions
+          </button>
+          <button id="btnOpenHistory" class="nav-btn" title="What was cleaned, when, and how much space it freed">
+            <i data-lucide="history"></i> History
+          </button>
+          <button id="btnOpenSchedule" class="nav-btn" title="Scheduled scans that only report, never delete">
+            <i data-lucide="calendar-clock"></i> Schedule
+          </button>
+        </nav>
+        <div class="header-divider" aria-hidden="true"></div>
+        <div class="status-pill" id="engineStatus" role="status">
           <span class="status-dot"></span>
           <span id="statusText">Engine Ready</span>
         </div>
-        <button id="themeToggle" class="icon-btn" title="Toggle Theme">
+        <button id="themeToggle" class="icon-btn" title="Switch between light and dark theme" aria-label="Switch theme">
           <i data-lucide="sun" id="themeIcon"></i>
         </button>
       </div>
@@ -49,61 +50,25 @@
 
     <!-- Scan Configuration Bar -->
     <section class="config-panel card">
-      <div class="panel-row">
-        <div class="drive-selector-group">
-          <label class="section-label"><i data-lucide="hard-drive"></i> Fast Drive Select:</label>
-          <div id="driveButtons" class="drive-buttons">
-            <!-- Dynamic Drive Buttons -->
-            <button class="drive-pill active" data-path="C:\">C: (Scanning...)</button>
+      <div class="scan-row">
+        <div class="target-group">
+          <label class="section-label" for="targetPathInput"><i data-lucide="hard-drive"></i> Scan location</label>
+          <div class="target-controls">
+            <div id="driveButtons" class="drive-buttons" aria-label="Drives">
+              <!-- Dynamic Drive Buttons -->
+              <button class="drive-pill active" data-path="C:\">C: (Scanning...)</button>
+            </div>
+            <div class="input-with-button path-field">
+              <div class="input-icon">
+                <i data-lucide="folder-search"></i>
+                <input type="text" id="targetPathInput" value="C:\" placeholder="e.g. C:\ or C:\Users\YourName\Downloads" spellcheck="false" />
+              </div>
+              <button id="btnBrowse" class="btn btn-secondary" title="Open native folder browser">
+                <i data-lucide="folder-open"></i> Browse
+              </button>
+            </div>
           </div>
         </div>
-
-        <div class="custom-path-group">
-          <label class="section-label"><i data-lucide="folder-search"></i> Target Directory or Drive:</label>
-          <div class="input-with-button">
-            <input type="text" id="targetPathInput" value="C:\" placeholder="e.g. C:\ or C:\Users\YourName\Downloads" />
-            <button id="btnBrowse" class="btn btn-secondary" title="Open native folder browser">
-              <i data-lucide="folder-open"></i> Browse...
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Detection Options Toggles -->
-      <div class="options-row">
-        <span class="section-label"><i data-lucide="sliders"></i> Scan For:</span>
-        <label class="checkbox-tag">
-          <input type="checkbox" id="optInstallers" checked />
-          <i data-lucide="package"></i> Setups, Archives & ISOs (.exe, .iso, .zip, .apk)
-        </label>
-        <label class="checkbox-tag">
-          <input type="checkbox" id="optJavaBuilds" checked />
-          <i data-lucide="coffee"></i> Old Java & Builds (.class, .jar, node_modules)
-        </label>
-        <label class="checkbox-tag">
-          <input type="checkbox" id="optTemp" checked />
-          <i data-lucide="trash-2"></i> Temp & Cache (.tmp, .log, .dmp)
-        </label>
-        <label class="checkbox-tag">
-          <input type="checkbox" id="optDownloads" checked />
-          <i data-lucide="download"></i> Broken Downloads (.crdownload, .part)
-        </label>
-        <label class="checkbox-tag">
-          <input type="checkbox" id="optStaleLarge" checked />
-          <i data-lucide="file-warning"></i> Stale Large (>100MB, >180d)
-        </label>
-        <label class="checkbox-tag">
-          <input type="checkbox" id="optEmptyFolders" checked />
-          <i data-lucide="folder-x"></i> Empty Folders (no files inside)
-        </label>
-        <label class="checkbox-tag" title="Compares file contents; slower on large drives">
-          <input type="checkbox" id="optDuplicates" />
-          <i data-lucide="copy"></i> Duplicates (&ge;1MB, slower)
-        </label>
-        <label class="checkbox-tag" title="Files in your Downloads folder that haven't been modified for 90 days or more">
-          <input type="checkbox" id="optOldDownloads" />
-          <i data-lucide="calendar-x"></i> Old Downloads (90+ days)
-        </label>
 
         <div class="action-buttons-group">
           <button id="btnLargest" class="btn btn-secondary" title="Show the biggest files and folders in the target folder (read-only)">
@@ -113,11 +78,50 @@
             <i data-lucide="zap"></i> Quick Clean
           </button>
           <button id="btnStartScan" class="btn btn-primary">
-            <i data-lucide="scan"></i> Start Deep Scan
+            <i data-lucide="scan-search"></i> Start Deep Scan
           </button>
           <button id="btnStopScan" class="btn btn-danger hidden">
             <i data-lucide="square"></i> Stop Scan
           </button>
+        </div>
+      </div>
+
+      <!-- Detection Options Toggles -->
+      <div class="options-row">
+        <span class="section-label"><i data-lucide="sliders-horizontal"></i> Look for</span>
+        <div class="option-chips">
+          <label class="checkbox-tag" title="Setups, archives and disk images: .exe, .msi, .iso, .zip, .apk">
+            <input type="checkbox" id="optInstallers" checked />
+            <i data-lucide="package"></i> Installers &amp; archives
+          </label>
+          <label class="checkbox-tag" title="Old Java and build output: .class, .jar, node_modules, bin and obj folders">
+            <input type="checkbox" id="optJavaBuilds" checked />
+            <i data-lucide="coffee"></i> Java &amp; build output
+          </label>
+          <label class="checkbox-tag" title="Temporary and cache files: .tmp, .log, .dmp">
+            <input type="checkbox" id="optTemp" checked />
+            <i data-lucide="trash-2"></i> Temp &amp; cache
+          </label>
+          <label class="checkbox-tag" title="Unfinished downloads: .crdownload, .part">
+            <input type="checkbox" id="optDownloads" checked />
+            <i data-lucide="download"></i> Broken downloads
+          </label>
+          <label class="checkbox-tag" title="Files over 100 MB that haven't been modified for 180 days">
+            <input type="checkbox" id="optStaleLarge" checked />
+            <i data-lucide="file-warning"></i> Stale large files
+          </label>
+          <label class="checkbox-tag" title="Folders with no files inside">
+            <input type="checkbox" id="optEmptyFolders" checked />
+            <i data-lucide="folder-x"></i> Empty folders
+          </label>
+          <label class="checkbox-tag" title="Identical files of 1 MB or more. Compares file contents, so it is slower on large drives">
+            <input type="checkbox" id="optDuplicates" />
+            <i data-lucide="copy"></i> Duplicates <span class="tag-hint">slower</span>
+          </label>
+          <label class="checkbox-tag" title="Files in your Downloads folder that haven't been modified for 90 days or more">
+            <input type="checkbox" id="optOldDownloads" />
+            <i data-lucide="calendar-x"></i> Old downloads <span class="tag-hint">90+ days</span>
+          </label>
         </div>
       </div>
 
@@ -130,9 +134,9 @@
           </div>
           <div class="progress-metrics">
             <span id="scanMetricsFiles">0 files scanned</span>
-            <span class="metric-divider">|</span>
+            <span class="metric-divider">&middot;</span>
             <span id="scanMetricsDirs">0 folders</span>
-            <span class="metric-divider">|</span>
+            <span class="metric-divider">&middot;</span>
             <span id="scanMetricsRate" class="text-highlight">0 found</span>
           </div>
         </div>
@@ -143,101 +147,103 @@
     </section>
 
     <!-- Storage Statistics Overview -->
-    <section class="stats-grid">
+    <section class="stats-grid" aria-label="Scan summary">
       <div class="stat-card stat-primary">
-        <div class="stat-icon-wrapper">
-          <i data-lucide="flame"></i>
+        <div class="stat-primary-head">
+          <div class="stat-icon-wrapper">
+            <i data-lucide="flame"></i>
+          </div>
+          <span class="stat-label">Total junk found</span>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Total Garbage Found</span>
           <h2 class="stat-value" id="statTotalGarbageSize">0.00 MB</h2>
           <span class="stat-subtext" id="statTotalGarbageCount">0 items ready for review</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Installers, Setup Archives &amp; OS Images">
+      <div class="stat-card" data-category="Installers, Setup Archives &amp; OS Images" title="Show only installers and archives">
         <div class="stat-icon-wrapper cat-installers">
           <i data-lucide="box"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Installers & APKs</span>
+          <span class="stat-label">Installers &amp; APKs</span>
           <h3 class="stat-value" id="statInstallersSize">0.00 MB</h3>
           <span class="stat-subtext" id="statInstallersCount">0 files</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Old Java & Build Artifacts">
+      <div class="stat-card" data-category="Old Java & Build Artifacts" title="Show only Java and build output">
         <div class="stat-icon-wrapper cat-java">
           <i data-lucide="terminal"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Java & Build Artifacts</span>
+          <span class="stat-label">Java &amp; builds</span>
           <h3 class="stat-value" id="statJavaSize">0.00 MB</h3>
           <span class="stat-subtext" id="statJavaCount">0 files / build dirs</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Temporary & Cache Files">
+      <div class="stat-card" data-category="Temporary & Cache Files" title="Show only temp and cache files">
         <div class="stat-icon-wrapper cat-temp">
           <i data-lucide="archive"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Temp & Cache Files</span>
+          <span class="stat-label">Temp &amp; cache</span>
           <h3 class="stat-value" id="statTempSize">0.00 MB</h3>
           <span class="stat-subtext" id="statTempCount">0 files</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Broken / Incomplete Downloads">
+      <div class="stat-card" data-category="Broken / Incomplete Downloads" title="Show only broken downloads">
         <div class="stat-icon-wrapper cat-downloads">
-          <i data-lucide="alert-octagon"></i>
+          <i data-lucide="octagon-alert"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Broken Downloads</span>
+          <span class="stat-label">Broken downloads</span>
           <h3 class="stat-value" id="statDownloadsSize">0.00 MB</h3>
           <span class="stat-subtext" id="statDownloadsCount">0 files</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Empty Folders">
+      <div class="stat-card" data-category="Empty Folders" title="Show only empty folders">
         <div class="stat-icon-wrapper cat-empty">
           <i data-lucide="folder-x"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Empty Folders</span>
+          <span class="stat-label">Empty folders</span>
           <h3 class="stat-value" id="statEmptyFoldersCount">0</h3>
           <span class="stat-subtext">folders with no files</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Stale Large Files">
+      <div class="stat-card" data-category="Stale Large Files" title="Show only stale large files">
         <div class="stat-icon-wrapper cat-stale">
           <i data-lucide="file-clock"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Stale Large Files</span>
+          <span class="stat-label">Stale large files</span>
           <h3 class="stat-value" id="statStaleSize">0.00 MB</h3>
           <span class="stat-subtext" id="statStaleCount">0 files</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Duplicate Files">
+      <div class="stat-card" data-category="Duplicate Files" title="Show only duplicate files">
         <div class="stat-icon-wrapper cat-duplicates">
           <i data-lucide="copy"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Duplicate Files</span>
+          <span class="stat-label">Duplicates</span>
           <h3 class="stat-value" id="statDuplicatesSize">0.00 MB</h3>
           <span class="stat-subtext" id="statDuplicatesCount">0 extra copies</span>
         </div>
       </div>
 
-      <div class="stat-card" data-category="Old Downloads">
+      <div class="stat-card" data-category="Old Downloads" title="Show only old downloads">
         <div class="stat-icon-wrapper cat-old-downloads">
           <i data-lucide="calendar-x"></i>
         </div>
         <div class="stat-content">
-          <span class="stat-label">Old Downloads</span>
+          <span class="stat-label">Old downloads</span>
           <h3 class="stat-value" id="statOldDownloadsSize">0.00 MB</h3>
           <span class="stat-subtext" id="statOldDownloadsCount">0 files</span>
         </div>
@@ -247,7 +253,7 @@
     <!-- Where the reclaimable space is -->
     <section id="spaceBreakdown" class="space-breakdown card hidden" aria-label="Reclaimable space by category">
       <div class="space-breakdown-header">
-        <span class="section-label"><i data-lucide="pie-chart"></i> Reclaimable space by category</span>
+        <span class="section-label"><i data-lucide="chart-pie"></i> Reclaimable space by category</span>
         <span id="spaceBreakdownTotal" class="space-breakdown-total"></span>
       </div>
       <div id="spaceBar" class="space-bar" role="img"></div>
@@ -261,28 +267,28 @@
         <div class="toolbar-left">
           <div class="search-box">
             <i data-lucide="search" class="search-icon"></i>
-            <input type="text" id="searchInput" placeholder="Search by name, path, or extension (.apk, .exe, .class)..." />
-            <button id="clearSearch" class="clear-btn hidden">&times;</button>
+            <input type="text" id="searchInput" placeholder="Search name, path or extension" spellcheck="false" />
+            <button id="clearSearch" class="clear-btn hidden" title="Clear search" aria-label="Clear search">&times;</button>
           </div>
 
           <div class="filter-dropdown-group">
-            <select id="categoryFilter" class="select-filter">
-              <option value="ALL">All Categories</option>
-              <option value="Installers, Setup Archives &amp; OS Images">Installers & Setup (.exe, .apk, .msi)</option>
-              <option value="Old Java & Build Artifacts">Old Java & Builds (.class, .jar, node_modules)</option>
-              <option value="Temporary & Cache Files">Temporary & Cache (.tmp, .log, .dmp)</option>
-              <option value="Broken / Incomplete Downloads">Broken Downloads (.crdownload, .part)</option>
-              <option value="Stale Large Files">Stale Large Files (>100MB)</option>
-              <option value="Empty Folders">Empty Folders (no files inside)</option>
-              <option value="Duplicate Files">Duplicate Files (extra copies)</option>
-              <option value="Old Downloads">Old Downloads (untouched 90+ days)</option>
-              <option value="My Junk Rules">My Junk Rules (your patterns)</option>
+            <select id="categoryFilter" class="select-filter" aria-label="Category">
+              <option value="ALL">All categories</option>
+              <option value="Installers, Setup Archives &amp; OS Images">Installers &amp; setup (.exe, .apk, .msi)</option>
+              <option value="Old Java & Build Artifacts">Java &amp; builds (.class, .jar, node_modules)</option>
+              <option value="Temporary & Cache Files">Temp &amp; cache (.tmp, .log, .dmp)</option>
+              <option value="Broken / Incomplete Downloads">Broken downloads (.crdownload, .part)</option>
+              <option value="Stale Large Files">Stale large files (&gt;100 MB)</option>
+              <option value="Empty Folders">Empty folders</option>
+              <option value="Duplicate Files">Duplicate files (extra copies)</option>
+              <option value="Old Downloads">Old downloads (untouched 90+ days)</option>
+              <option value="My Junk Rules">My junk rules (your patterns)</option>
             </select>
 
-            <select id="riskFilter" class="select-filter">
-              <option value="ALL">All Risk Levels</option>
-              <option value="Safe">Safe to Delete Only</option>
-              <option value="Review Recommended">Review Recommended</option>
+            <select id="riskFilter" class="select-filter" aria-label="Risk level">
+              <option value="ALL">All risk levels</option>
+              <option value="Safe">Safe to delete</option>
+              <option value="Review Recommended">Review recommended</option>
               <option value="Caution">Caution</option>
             </select>
           </div>
@@ -296,19 +302,19 @@
           </button>
           <span id="folderFilterChip" class="filter-chip hidden">
             <i data-lucide="folder"></i> <span id="folderFilterText"></span>
-            <button id="clearFolderFilter" class="clear-chip-btn" title="Show all folders">&times;</button>
+            <button id="clearFolderFilter" class="clear-chip-btn" title="Show all folders" aria-label="Show all folders">&times;</button>
           </span>
         </div>
 
         <div class="toolbar-right">
-          <div class="selection-presets">
-            <button id="btnSelectAllSafe" class="btn btn-ghost" title="Select all safe items (Temporary, crash dumps, .class, broken downloads)">
-              <i data-lucide="check-check"></i> Select All Safe
+          <div class="selection-presets" role="group" aria-label="Selection">
+            <button id="btnSelectAllSafe" class="btn btn-ghost" title="Select all safe items (temporary files, crash dumps, .class files, broken downloads)">
+              <i data-lucide="check-check"></i> Select Safe
             </button>
-            <button id="btnSelectAll" class="btn btn-ghost">
-              <i data-lucide="check-square"></i> Select All
+            <button id="btnSelectAll" class="btn btn-ghost" title="Select every item shown">
+              <i data-lucide="square-check"></i> Select All
             </button>
-            <button id="btnDeselectAll" class="btn btn-ghost">
+            <button id="btnDeselectAll" class="btn btn-ghost" title="Clear the selection">
               <i data-lucide="square"></i> Deselect
             </button>
           </div>
@@ -317,29 +323,33 @@
 
       <!-- File Manager Table -->
       <div class="table-container">
-        <table class="file-table" id="fileTable">
+        <table class="file-table results-table" id="fileTable">
+          <colgroup>
+            <col class="col-check" /><col class="col-icon" /><col class="col-name" /><col class="col-category" />
+            <col class="col-size" /><col class="col-modified" /><col class="col-risk" /><col class="col-path" /><col class="col-actions" />
+          </colgroup>
           <thead>
             <tr>
-              <th width="44">
+              <th>
                 <input type="checkbox" id="masterCheckbox" title="Select / Deselect all visible items" />
               </th>
-              <th width="32"></th>
-              <th class="sortable" data-sort="name">Name <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="category" width="180">Category <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="size" width="110">Size <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="modified" width="140">Modified <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="risk" width="130">Risk Level <i data-lucide="chevrons-up-down" class="sort-icon"></i></th>
+              <th></th>
+              <th class="sortable" data-sort="name">Name <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="category">Category <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable text-right" data-sort="size">Size <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="modified">Modified <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="risk">Risk <i data-lucide="chevron-down" class="sort-icon"></i></th>
               <th>Path</th>
-              <th width="120" class="text-right">Actions</th>
+              <th class="text-right">Actions</th>
             </tr>
           </thead>
           <tbody id="fileTableBody">
             <tr class="empty-row">
               <td colspan="9">
                 <div class="empty-state">
-                  <i data-lucide="sparkles" class="empty-icon"></i>
-                  <h3>No Scan Performed Yet</h3>
-                  <p>Select a drive or folder above and click <strong>"Start Deep Scan"</strong> to uncover garbage files.</p>
+                  <div class="empty-icon-wrap"><i data-lucide="sparkles" class="empty-icon"></i></div>
+                  <h3>No scan yet</h3>
+                  <p>Pick a drive or folder above and click <strong>Start Deep Scan</strong>. Nothing is deleted until you review the results and confirm.</p>
                 </div>
               </td>
             </tr>
@@ -351,19 +361,19 @@
       <footer class="action-footer">
         <div class="footer-left">
           <div class="selected-summary">
-            <span class="summary-label">Selected for Removal:</span>
+            <span class="summary-label">Selected</span>
             <strong id="selectedCount" class="summary-highlight">0 items</strong>
-            <span class="summary-divider">•</span>
+            <span class="summary-divider">&middot;</span>
             <strong id="selectedSize" class="summary-highlight">0.00 MB</strong>
             <span id="hiddenSelectedNote" class="hidden-selected-note hidden" title="Ticked items your filters are hiding are not deleted"></span>
-            <div class="delete-mode-toggle" role="group" aria-label="Delete mode">
-              <button type="button" id="modeRecycle" class="mode-option active" aria-pressed="true" title="Move deleted items to the Recycle Bin so they can be restored">
-                <i data-lucide="recycle"></i> Recycle Bin
-              </button>
-              <button type="button" id="modePermanent" class="mode-option" aria-pressed="false" title="Erase deleted items from disk immediately (cannot be undone)">
-                <i data-lucide="zap"></i> Permanent
-              </button>
-            </div>
+          </div>
+          <div class="delete-mode-toggle" role="group" aria-label="Delete mode">
+            <button type="button" id="modeRecycle" class="mode-option active" aria-pressed="true" title="Move deleted items to the Recycle Bin so they can be restored">
+              <i data-lucide="recycle"></i> Recycle Bin
+            </button>
+            <button type="button" id="modePermanent" class="mode-option" aria-pressed="false" title="Erase deleted items from disk immediately (cannot be undone)">
+              <i data-lucide="zap"></i> Permanent
+            </button>
           </div>
         </div>
 
@@ -383,13 +393,13 @@
       <div class="modal-card modal-wide">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="modal-icon warning"><i data-lucide="chart-column"></i></div>
+            <div class="modal-icon"><i data-lucide="chart-column"></i></div>
             <div>
               <h3 class="modal-title">Largest Files &amp; Folders</h3>
               <p class="modal-subtitle" id="largestSubtitle">Where the space goes in the target folder</p>
             </div>
           </div>
-          <button id="closeLargestModal" class="close-modal-btn">&times;</button>
+          <button id="closeLargestModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
           <div class="largest-tabs" role="tablist">
@@ -414,13 +424,13 @@
       <div class="modal-card modal-wide">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="modal-icon warning"><i data-lucide="folders"></i></div>
+            <div class="modal-icon"><i data-lucide="folders"></i></div>
             <div>
               <h3 class="modal-title">Junk by Folder</h3>
               <p class="modal-subtitle" id="byFolderSubtitle">Folders holding the most reclaimable space</p>
             </div>
           </div>
-          <button id="closeByFolderModal" class="close-modal-btn">&times;</button>
+          <button id="closeByFolderModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
           <ul id="byFolderList" class="simple-list largest-list"></ul>
@@ -437,13 +447,13 @@
       <div class="modal-card modal-hierarchy">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="hierarchy-badge-icon"><i data-lucide="folder-tree"></i></div>
+            <div class="modal-icon hierarchy-badge-icon"><i data-lucide="folder-tree"></i></div>
             <div>
-              <h3 class="modal-title" id="hierarchyModalTitle">Folder Hierarchy & Parent Explorer</h3>
-              <p class="modal-subtitle" id="hierarchyModalSubtitle">Explore folder levels and choose deletion scope</p>
+              <h3 class="modal-title" id="hierarchyModalTitle">Folder Explorer</h3>
+              <p class="modal-subtitle" id="hierarchyModalSubtitle">Browse folder levels and choose what to delete</p>
             </div>
           </div>
-          <button id="closeHierarchyModal" class="close-modal-btn">&times;</button>
+          <button id="closeHierarchyModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
 
         <!-- Breadcrumbs Navigation -->
@@ -466,7 +476,7 @@
             </div>
           </div>
           <div class="folder-header-actions">
-            <button id="btnDeleteThisFolder" class="btn btn-danger btn-sm" title="Delete this entire folder level">
+            <button id="btnDeleteThisFolder" class="btn btn-outline-danger btn-sm" title="Delete this entire folder level">
               <i data-lucide="trash-2"></i> Delete Entire Folder Level
             </button>
           </div>
@@ -514,13 +524,13 @@
       <div class="modal-card">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="ai-badge-icon"><i data-lucide="bot"></i></div>
+            <div class="modal-icon ai-badge-icon"><i data-lucide="bot"></i></div>
             <div>
-              <h3 class="modal-title">Intelligent File Inspector</h3>
-              <p class="modal-subtitle">Contextual analysis and safety verdict</p>
+              <h3 class="modal-title">File Inspector</h3>
+              <p class="modal-subtitle">What this item is and whether it is safe to delete</p>
             </div>
           </div>
-          <button id="closeAiModal" class="close-modal-btn">&times;</button>
+          <button id="closeAiModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
 
         <div class="modal-body" id="aiModalBody">
@@ -547,7 +557,7 @@
               <p class="modal-subtitle" id="confirmModalSubtitle">Items will be removed from disk immediately</p>
             </div>
           </div>
-          <button id="closeConfirmModal" class="close-modal-btn">&times;</button>
+          <button id="closeConfirmModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
 
         <div class="modal-body">
@@ -593,13 +603,13 @@
       <div class="modal-card">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="modal-icon warning"><i data-lucide="eye-off"></i></div>
+            <div class="modal-icon"><i data-lucide="eye-off"></i></div>
             <div>
               <h3 class="modal-title">Exclusions</h3>
               <p class="modal-subtitle">Never flag these folders, files or patterns</p>
             </div>
           </div>
-          <button id="closeExclusionsModal" class="close-modal-btn">&times;</button>
+          <button id="closeExclusionsModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
           <div class="input-with-button">
@@ -620,13 +630,13 @@
       <div class="modal-card">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="modal-icon warning"><i data-lucide="list-plus"></i></div>
+            <div class="modal-icon"><i data-lucide="list-plus"></i></div>
             <div>
               <h3 class="modal-title">Junk Rules</h3>
               <p class="modal-subtitle">Your own folders, files and patterns to flag as junk</p>
             </div>
           </div>
-          <button id="closeJunkRulesModal" class="close-modal-btn">&times;</button>
+          <button id="closeJunkRulesModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
           <div class="input-with-button">
@@ -647,13 +657,13 @@
       <div class="modal-card modal-wide">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="modal-icon warning"><i data-lucide="history"></i></div>
+            <div class="modal-icon"><i data-lucide="history"></i></div>
             <div>
               <h3 class="modal-title">Cleanup History</h3>
               <p class="modal-subtitle" id="historySummary">Nothing cleaned yet</p>
             </div>
           </div>
-          <button id="closeHistoryModal" class="close-modal-btn">&times;</button>
+          <button id="closeHistoryModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
           <ul id="historyList" class="simple-list history-list"></ul>
@@ -673,13 +683,13 @@
       <div class="modal-card modal-wide">
         <div class="modal-header">
           <div class="modal-title-group">
-            <div class="modal-icon warning"><i data-lucide="calendar-clock"></i></div>
+            <div class="modal-icon"><i data-lucide="calendar-clock"></i></div>
             <div>
               <h3 class="modal-title">Scheduled Scans</h3>
               <p class="modal-subtitle">Runs through Windows Task Scheduler. Scheduled scans only save a report; they never delete anything.</p>
             </div>
           </div>
-          <button id="closeScheduleModal" class="close-modal-btn">&times;</button>
+          <button id="closeScheduleModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
           <p id="scheduleStatus" class="schedule-status"></p>
