@@ -122,6 +122,10 @@
             <input type="checkbox" id="optOldDownloads" />
             <i data-lucide="calendar-x"></i> Old downloads <span class="tag-hint">90+ days</span>
           </label>
+          <label class="checkbox-tag" title="App data folders in AppData left behind by programs you have uninstalled, unchanged for 180 days or more">
+            <input type="checkbox" id="optLeftovers" />
+            <i data-lucide="package-x"></i> Program leftovers
+          </label>
         </div>
       </div>
 
@@ -260,6 +264,17 @@
       <ul id="spaceLegend" class="space-legend"></ul>
     </section>
 
+    <!-- Plain-language summary built from the smart scores -->
+    <section id="smartSummary" class="smart-summary card hidden" aria-label="Scan summary">
+      <div class="space-breakdown-header">
+        <span class="section-label"><i data-lucide="sparkles"></i> What JunkZero suggests</span>
+        <button id="btnSmartSelectSummary" class="btn btn-secondary btn-sm" title="Tick only the items marked Delete">
+          <i data-lucide="wand-sparkles"></i> Select the safe bets
+        </button>
+      </div>
+      <ul id="smartSummaryList" class="smart-summary-list"></ul>
+    </section>
+
     <!-- File Manager Section -->
     <main class="file-manager-section card">
       <!-- Table Controls Toolbar -->
@@ -283,6 +298,7 @@
               <option value="Duplicate Files">Duplicate files (extra copies)</option>
               <option value="Old Downloads">Old downloads (untouched 90+ days)</option>
               <option value="My Junk Rules">My junk rules (your patterns)</option>
+              <option value="Program Leftovers">Program leftovers (uninstalled apps)</option>
             </select>
 
             <select id="riskFilter" class="select-filter" aria-label="Risk level">
@@ -311,6 +327,9 @@
             <button id="btnSelectAllSafe" class="btn btn-ghost" title="Select all safe items (temporary files, crash dumps, .class files, broken downloads)">
               <i data-lucide="check-check"></i> Select Safe
             </button>
+            <button id="btnSmartSelect" class="btn btn-ghost" title="Tick only the items JunkZero is confident are junk (marked Delete)">
+              <i data-lucide="wand-sparkles"></i> Smart Select
+            </button>
             <button id="btnSelectAll" class="btn btn-ghost" title="Select every item shown">
               <i data-lucide="square-check"></i> Select All
             </button>
@@ -326,7 +345,7 @@
         <table class="file-table results-table" id="fileTable">
           <colgroup>
             <col class="col-check" /><col class="col-icon" /><col class="col-name" /><col class="col-category" />
-            <col class="col-size" /><col class="col-modified" /><col class="col-risk" /><col class="col-path" /><col class="col-actions" />
+            <col class="col-size" /><col class="col-modified" /><col class="col-risk" /><col class="col-score" /><col class="col-path" /><col class="col-actions" />
           </colgroup>
           <thead>
             <tr>
@@ -339,13 +358,14 @@
               <th class="sortable text-right" data-sort="size">Size <i data-lucide="chevron-down" class="sort-icon"></i></th>
               <th class="sortable" data-sort="modified">Modified <i data-lucide="chevron-down" class="sort-icon"></i></th>
               <th class="sortable" data-sort="risk">Risk <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="score" title="How sure JunkZero is that this is junk. Click a score to see why.">Smart score <i data-lucide="chevron-down" class="sort-icon"></i></th>
               <th>Path</th>
               <th class="text-right">Actions</th>
             </tr>
           </thead>
           <tbody id="fileTableBody">
             <tr class="empty-row">
-              <td colspan="9">
+              <td colspan="10">
                 <div class="empty-state">
                   <div class="empty-icon-wrap"><i data-lucide="sparkles" class="empty-icon"></i></div>
                   <h3>No scan yet</h3>
@@ -666,10 +686,12 @@
           <button id="closeHistoryModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
+          <p id="learningNote" class="learning-note"></p>
           <ul id="historyList" class="simple-list history-list"></ul>
         </div>
         <div class="modal-footer">
           <button id="btnClearHistory" class="btn btn-ghost">Clear history</button>
+          <button id="btnForgetLearning" class="btn btn-ghost" title="Smart scores stop using what you deleted and kept before">Forget learned choices</button>
           <button id="btnOpenRecycleBin" class="btn btn-secondary" title="Restore items moved to the Recycle Bin">
             <i data-lucide="recycle"></i> Open Recycle Bin
           </button>

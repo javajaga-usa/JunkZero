@@ -1,7 +1,7 @@
 """Configuration settings and garbage classification rules for JunkZero."""
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Set, Dict
+from typing import Any, Dict, List, Optional, Set
 
 # Category Constants
 CAT_INSTALLERS = "Installers, Setup Archives & OS Images"
@@ -13,6 +13,7 @@ CAT_EMPTY_FOLDERS = "Empty Folders"
 CAT_DUPLICATES = "Duplicate Files"
 CAT_OLD_DOWNLOADS = "Old Downloads"
 CAT_CUSTOM_RULES = "My Junk Rules"
+CAT_LEFTOVERS = "Program Leftovers"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -121,6 +122,7 @@ CATEGORY_OPTIONS: Dict[str, str] = {
     CAT_DUPLICATES: "include_duplicates",
     CAT_OLD_DOWNLOADS: "include_old_downloads",
     CAT_CUSTOM_RULES: "include_custom_rules",
+    CAT_LEFTOVERS: "include_leftovers",
 }
 
 
@@ -137,6 +139,8 @@ class ScanOptions:
     include_duplicates: bool = False
     include_old_downloads: bool = False
     include_custom_rules: bool = True
+    # App data folders left behind by programs that are no longer installed (Windows only)
+    include_leftovers: bool = False
     old_download_days: int = OLD_DOWNLOAD_DAYS
     # Folders treated as "Downloads" for the Old Downloads category
     downloads_dirs: List[str] = field(default_factory=list)
@@ -154,3 +158,8 @@ class ScanOptions:
     junk_locations: List[Any] = field(default_factory=list)
     # Also scan every junk location as its own root (target_path may then be empty)
     scan_junk_locations: bool = False
+    # Program leftover folders found before the scan (app.engine.leftovers.Leftover)
+    # None: look for them on this machine when the scan starts
+    leftovers: Optional[List[Any]] = None
+    # What the user deleted and kept before (app.engine.smart.load_learning), used for scores
+    learning: Dict[str, Any] = field(default_factory=dict)

@@ -16,6 +16,7 @@ from app.config import (
     CAT_CUSTOM_RULES,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
+    CAT_LEFTOVERS,
     CAT_OLD_DOWNLOADS,
     CAT_TEMP_JUNK,
     DUPLICATE_MIN_BYTES,
@@ -34,6 +35,8 @@ from app.engine.classifier import (
 )
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
+from app.engine.leftovers import find_windows_leftovers
+from app.engine.smart import SmartScorer
 
 
 def _norm_path(path: str) -> str:
@@ -85,6 +88,9 @@ class FastScanner:
         self._downloads_dirs = [_norm_path(p) for p in options.downloads_dirs if p]
         # Unflagged files large enough to be checked for duplicates after traversal
         self._dup_candidates: List[FileCandidate] = []
+        # Program leftover folders (path -> Leftover), found when the scan starts
+        self._leftovers: Dict[str, object] = {}
+        self._scorer = SmartScorer(options.learning)
 
     def cancel(self) -> None:
         """Cancel ongoing scan gracefully."""
@@ -227,6 +233,12 @@ class FastScanner:
                             if is_junction and is_junction():
                                 has_content = True
 
+                            leftover = self._leftovers.get(_norm_path(path)) if self._leftovers else None
+                            if leftover:
+                                has_content = True
+                                found_items.append(self._leftover_item(leftover))
+                                continue
+
                             # Check if the directory itself is a build artifact (e.g. node_modules, target, __pycache__)
                             # Known cache folders that apps rebuild are flagged as one item
                             location = self._dir_locations.get(_norm_path(path)) if self.options.include_temp_junk else None
@@ -297,8 +309,29 @@ class FastScanner:
 
         return found_items, subdirs
 
+    def _leftover_item(self, leftover) -> GarbageItem:
+        return build_item(
+            leftover.path, leftover.name, CAT_LEFTOVERS, self._calc_dir_size(leftover.path), leftover.last_changed,
+            RISK_REVIEW, f"App data from a program that is no longer installed; nothing changed for {leftover.days_unchanged} days",
+            is_dir=True, selected=False,
+        )
+
+    def _load_leftovers(self, roots: List[str]) -> List[GarbageItem]:
+        """Find leftover folders; returns those outside every root (traversal finds the rest)."""
+        found = self.options.leftovers if self.options.leftovers is not None else find_windows_leftovers()
+        self._leftovers = {}
+        for leftover in found:
+            if self._excluder.matches(leftover.path, leftover.name):
+                continue
+            if self.options.skip_system_dirs and is_system_protected_path(leftover.path):
+                continue
+            self._leftovers[_norm_path(leftover.path)] = leftover
+        return [self._leftover_item(l) for l in self._leftovers.values()
+                if not any(self._is_within(l.path, r) for r in roots)]
+
     def _record_item(self, item: GarbageItem) -> None:
         """Add a found item to results and stats, and notify the callback. Caller holds the lock."""
+        self._scorer.apply(item)
         self.garbage_items.append(item)
         self.stats.garbage_items_found += 1
         self.stats.total_garbage_bytes += item.size_bytes
@@ -454,6 +487,11 @@ class FastScanner:
         # Cache folders outside every root are flagged directly; inside a root, traversal finds them
         if self.options.scan_junk_locations and self.options.include_temp_junk:
             for item in self._outside_location_items(roots):
+                with self._lock:
+                    self._record_item(item)
+
+        if self.options.include_leftovers and not self._stop_event.is_set():
+            for item in self._load_leftovers(roots):
                 with self._lock:
                     self._record_item(item)
 

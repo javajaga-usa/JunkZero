@@ -45,6 +45,15 @@ def _write_json(name: str, value: Any) -> None:
     os.replace(tmp, path)
 
 
+def lock() -> threading.Lock:
+    """The lock guarding JunkZero's JSON files (for read-modify-write in other modules)."""
+    return _lock
+
+
+read_json = _read_json
+write_json = _write_json
+
+
 # ---------------------------------------------------------------- Settings
 
 def load_settings() -> Dict[str, Any]:
