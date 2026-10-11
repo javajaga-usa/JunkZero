@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-10-11
 
 ### Fixes from a full audit
 - The app token is no longer written into the page, where any program or other user account on the computer could fetch it. JunkZero's window gets it in its address instead, and reading the scan, history or reports now needs it too. `--mode server` prints the address to open.
