@@ -191,6 +191,11 @@ class SmartScorer:
                 adjust(15, f"looked inside: {summary}, nothing personal")
             else:
                 adjust(5, f"looked inside: {summary}")
+        evidence = getattr(item, "installer_evidence", "")
+        if evidence:
+            adjust(15, f"setup program: {evidence}")
+        elif getattr(item, "installer_weak", False):
+            adjust(-10, "only its name says setup; no installer fingerprint inside")
 
         if item.modified_timestamp > 0:
             age_days = (now - item.modified_timestamp) / DAY

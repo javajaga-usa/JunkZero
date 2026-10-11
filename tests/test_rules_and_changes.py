@@ -10,6 +10,7 @@ from app.engine import changes, scheduler, storage
 from app.engine.exclusions import ExclusionMatcher, rule_too_broad
 from app.engine.scanner import FastScanner
 from tests.helpers import api_client
+from exe_samples import make_exe
 
 client = api_client()
 
@@ -51,7 +52,7 @@ def test_junk_rules_flag_files_and_folders_for_review(tmp_path):
 
 
 def test_built_in_categories_and_exclusions_win_over_junk_rules(tmp_path):
-    (tmp_path / "setup.exe").write_bytes(b"x")
+    make_exe(tmp_path / "setup.exe", overlay=b"NullsoftInst")
     (tmp_path / "keep.bak2").write_bytes(b"x")
     items = _scan(target_path=str(tmp_path), custom_rules=["*.exe", "*.bak2"], exclusions=["keep.*"])
     assert [(i.name, i.category) for i in items] == [("setup.exe", CAT_INSTALLERS)]

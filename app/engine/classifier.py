@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from app.engine import osinfo
 from app.engine.archives import inspect_archive
+from app.engine.installers import inside_installed_program, inspect_exe, is_uninstaller_name, named_like_installer
 
 from app.config import (
     MAC_LIBRARY_ALLOWED,
@@ -75,6 +76,9 @@ class GarbageItem(BaseModel):
     personal: bool = False
     # Duplicates: the other copies of the same file (one must still exist when this one is deleted)
     duplicate_paths: List[str] = []
+    # Setup programs (.exe): the installer fingerprint found, or True when only the name suggests it
+    installer_evidence: str = ""
+    installer_weak: bool = False
 
 
 def format_size(bytes_val: int) -> str:
@@ -268,6 +272,8 @@ def classify_item(
     reason: str = ""
     archive_summary: str = ""
     archive_clean: bool = False
+    installer_evidence: str = ""
+    installer_weak: bool = False
 
     # 2. Incomplete / Broken Downloads
     if options.include_broken_downloads and suffix in BROKEN_DOWNLOAD_EXTENSIONS:
@@ -345,22 +351,23 @@ def classify_item(
             risk_level = RISK_REVIEW
             reason = f"Software installation package ({suffix.upper()})"
         elif suffix == ".exe":
+            # Only setup programs count: look for an installer builder's fingerprint inside.
+            # Portable apps, tools, games and uninstallers are left off the list.
             norm_path = path.lower().replace("\\", "/")
-            has_installer_kw = any(kw in lower_name for kw in INSTALLER_KEYWORDS)
             is_in_download_temp = any(p in norm_path for p in ["download", "temp", "desktop"])
-
-            if has_installer_kw and is_in_download_temp:
-                risk_level = RISK_REVIEW
-                reason = "Installer setup executable in downloads/temp"
-            elif has_installer_kw:
-                risk_level = RISK_REVIEW
-                reason = "Installer setup executable"
-            elif is_in_download_temp:
-                risk_level = RISK_REVIEW
-                reason = "Standalone executable stored in download/temp directory"
-            else:
-                risk_level = RISK_CAUTION
-                reason = "Executable file located in user directory"
+            category = None
+            if not is_uninstaller_name(name) and not inside_installed_program(path):
+                exe = inspect_exe(path)
+                if exe.is_installer:
+                    category = CAT_INSTALLERS
+                    risk_level = RISK_REVIEW
+                    reason = f"Setup program: {exe.evidence}"
+                    installer_evidence = exe.evidence
+                elif not exe.is_uninstaller and is_in_download_temp and named_like_installer(name):
+                    category = CAT_INSTALLERS
+                    risk_level = RISK_REVIEW
+                    reason = "Named like a setup program, but no installer fingerprint was found inside"
+                    installer_weak = True
 
     # 9. Stale Large Files
     elif options.include_stale_large and size_bytes >= LARGE_FILE_BYTES_THRESHOLD and age_days >= options.stale_days:
@@ -385,6 +392,8 @@ def classify_item(
             selected=(risk_level == RISK_SAFE),
             archive_summary=archive_summary,
             archive_clean=archive_clean,
+            installer_evidence=installer_evidence,
+            installer_weak=installer_weak,
         )
 
     return None
