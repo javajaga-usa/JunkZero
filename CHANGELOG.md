@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Only setup programs count as installers
+- An `.exe` is no longer listed just because it sits in Downloads, Desktop or temp, or anywhere in your user folder. JunkZero looks inside it and lists it only when it is a setup program: built with Inno Setup, NSIS, InstallShield, WiX, Squirrel, Advanced Installer and similar tools, or described as a setup or installer in its version info.
+- Portable apps, tools, games and uninstallers are left off the list, and so are programs in Program Files, AppData or a folder with the app's .dll files.
+- The Smart Score says what was found (for example "+15: setup program: built with Inno Setup"). An `.exe` only named like a setup file gets "-10: only its name says setup". The file inspector explains any `.exe` the same way.
+
 ### Smarter setup archives
 - A `.zip` (or `.tar.gz`) is no longer treated as an installer because of its name or because it sits in Downloads. JunkZero reads the archive's file list, without unpacking it, and lists it under Installers only when it holds a setup program, installer package, disk image or portable app and nothing personal.
 - Archives with documents, photos, videos, spreadsheets or other personal files are never listed. Password-protected, damaged, `.rar` and `.7z` archives are never listed either.
