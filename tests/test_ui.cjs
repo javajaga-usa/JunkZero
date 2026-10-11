@@ -119,3 +119,27 @@ test('macOS wording swaps Windows names and example paths, Windows text is untou
   assert.equal(context.platformText('Move Selected to Recycle Bin', 'windows'), 'Move Selected to Recycle Bin');
   assert.equal(context.platformText('Show in Windows Explorer', 'linux'), 'Show in Windows Explorer');
 });
+
+test('delete dialog lists personal, cloud and no-Recycle-Bin items before the details', () => {
+  const lines = context.deletePreviewLines({
+    count: 3, bytes_formatted: '3 KB', personal_count: 1, personal_examples: ['tax.pdf'],
+    cloud: { OneDrive: 2 }, no_recycle_count: 1, truncated: false, needs_typed_confirm: true,
+    top_folders: [{ folder: 'C:\\Users\\a\\Downloads', count: 3, bytes_formatted: '3 KB' }],
+    types: [{ type: '.pdf', count: 1 }, { type: '.tmp', count: 2 }],
+  }, 'Trash');
+  assert.equal(JSON.stringify(lines.map((l) => l.level)),
+    JSON.stringify(['warning', 'warning', 'info', 'info', 'info']));
+  assert.match(lines[0].text, /1 personal file .*tax\.pdf/);
+  assert.match(lines[1].text, /2 items in OneDrive/);
+  assert.match(lines[2].text, /without a Trash/);
+  assert.equal(lines[4].text, 'Types: .pdf 1, .tmp 2');
+});
+
+test('a large delete with nothing personal still explains why DELETE must be typed', () => {
+  const lines = context.deletePreviewLines({
+    count: 1200, bytes_formatted: '7 GB', personal_count: 0, cloud: {}, no_recycle_count: 0,
+    truncated: false, needs_typed_confirm: true, top_folders: [], types: [],
+  });
+  assert.equal(lines[0].level, 'warning');
+  assert.match(lines[0].text, /unusually large delete \(1,200 items, 7 GB\)/);
+});

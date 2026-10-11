@@ -28,9 +28,15 @@ INSTALLER_EXTENSIONS: Set[str] = {
 
 # OS ISO Disks and Virtual Machine Images
 DISK_IMAGE_EXTENSIONS: Set[str] = {
-    ".iso", ".img", ".vhd", ".vhdx", ".vmdk", ".qcow2", ".wim", ".esd",
+    ".iso", ".img", ".wim", ".esd",
     ".toast", ".nrg", ".cue", ".bin", ".mdf"
 }
+
+# Virtual machine disks hold a whole computer's files: only ever listed as Caution
+VM_DISK_EXTENSIONS: Set[str] = {".vhd", ".vhdx", ".avhdx", ".vmdk", ".qcow2", ".vdi", ".hdd"}
+
+# Backup images made by backup tools (Acronis, Macrium, Veeam, Windows Backup): never flagged
+BACKUP_IMAGE_EXTENSIONS: Set[str] = {".tib", ".tibx", ".mrimg", ".mrbak", ".vbk", ".vib", ".vrb", ".bkf"}
 
 # Setup and Compressed Archive Files
 ARCHIVE_EXTENSIONS: Set[str] = {
@@ -85,6 +91,18 @@ BROKEN_DOWNLOAD_EXTENSIONS: Set[str] = {
 # Version-control folders: never scanned, never flagged, never deleted from inside.
 # (Git keeps empty folders such as .git/refs/heads that it needs to recognise the repo.)
 VCS_DIR_NAMES: Set[str] = {".git", ".svn", ".hg", ".bzr"}
+
+# Backup folders (Windows File History and system images, Time Machine): never scanned or deleted from
+BACKUP_DIR_NAMES: Set[str] = {"filehistory", "windowsimagebackup", "backups.backupdb"}
+BACKUP_DIR_SUFFIXES = (".backupbundle", ".sparsebundle")
+
+# Where JunkZero sets deleted items aside on drives that have no Recycle Bin (USB sticks, network shares)
+HOLDING_DIR_NAME = ".JunkZero-holding"
+HOLDING_DAYS = 7
+
+# Deletes this big need the user to type DELETE to confirm
+LARGE_DELETE_BYTES = 5 * 1024 ** 3
+LARGE_DELETE_ITEMS = 1000
 
 # System Protection Blacklist (Never scan into or delete from these folders)
 SYSTEM_BLACKLIST_DIRS: Set[str] = {
@@ -201,3 +219,5 @@ class ScanOptions:
     leftovers: Optional[List[Any]] = None
     # What the user deleted and kept before (app.engine.smart.load_learning), used for scores
     learning: Dict[str, Any] = field(default_factory=dict)
+    # Cloud-sync folders as (folder, provider) (app.engine.safeguards.cloud_folders); None: find them
+    cloud_folders: Optional[List[Any]] = None

@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from app.config import (
+    BACKUP_DIR_NAMES,
+    BACKUP_DIR_SUFFIXES,
     BUILD_DIR_NAMES,
+    HOLDING_DIR_NAME,
     CAT_CUSTOM_RULES,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
@@ -20,6 +23,7 @@ from app.config import (
     CAT_OLD_DOWNLOADS,
     CAT_TEMP_JUNK,
     DUPLICATE_MIN_BYTES,
+    RISK_CAUTION,
     RISK_REVIEW,
     RISK_SAFE,
     ScanOptions,
@@ -33,10 +37,11 @@ from app.engine.classifier import (
     format_size,
     is_system_protected_path,
 )
-from app.engine.duplicates import FileCandidate, find_duplicate_groups, pick_keeper
+from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_reason, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
 from app.engine import osinfo
 from app.engine.leftovers import find_program_leftovers
+from app.engine.safeguards import Safeguards
 from app.engine.smart import SmartScorer
 
 
@@ -93,6 +98,7 @@ class FastScanner:
         # Program leftover folders (path -> Leftover), found when the scan starts
         self._leftovers: Dict[str, object] = {}
         self._scorer = SmartScorer(options.learning)
+        self._safeguards = Safeguards(options.cloud_folders)
 
     def cancel(self) -> None:
         """Cancel ongoing scan gracefully."""
@@ -216,8 +222,12 @@ class FastScanner:
                             has_content = True
                             continue
 
-                        # Version-control folders hold state the tool needs, even empty folders
-                        if name.lower() in VCS_DIR_NAMES:
+                        # Version-control folders hold state the tool needs, even empty folders.
+                        # Backup folders are a safety net, and JunkZero's own holding folder keeps
+                        # items set aside on drives without a Recycle Bin.
+                        lower = name.lower()
+                        if lower in VCS_DIR_NAMES or lower in BACKUP_DIR_NAMES or \
+                                lower.endswith(BACKUP_DIR_SUFFIXES) or name == HOLDING_DIR_NAME:
                             has_content = True
                             continue
 
@@ -288,6 +298,11 @@ class FastScanner:
                             with self._lock:
                                 self.stats.total_files_scanned += 1
 
+                            # Cloud files kept only online free no space here, and opening them
+                            # (to look inside or compare) would download them: never listed
+                            if osinfo.is_online_only(stat):
+                                continue
+
                             size = stat.st_size
                             item = self._location_item(path, name, size, mtime, file_locations) if file_locations else None
                             if item is None:
@@ -345,6 +360,7 @@ class FastScanner:
     def _record_item(self, item: GarbageItem) -> None:
         """Add a found item to results and stats, and notify the callback. Caller holds the lock."""
         self._scorer.apply(item)
+        self._safeguards.apply(item)
         self.garbage_items.append(item)
         self.stats.garbage_items_found += 1
         self.stats.total_garbage_bytes += item.size_bytes
@@ -457,14 +473,17 @@ class FastScanner:
         """Flag every copy but the newest in each group of identical files."""
         items: List[GarbageItem] = []
         for group in find_duplicate_groups(self._dup_candidates, self._stop_event):
-            keep = pick_keeper(group)
+            keep = pick_keeper(group, self._safeguards.cloud)
             for c in group:
                 if c is keep:
                     continue
-                items.append(build_item(
+                item = build_item(
                     c.path, c.name, CAT_DUPLICATES, c.size, c.mtime, RISK_REVIEW,
-                    f"Identical copy of {keep.path} (newest copy is kept)", selected=False,
-                ))
+                    f"Identical copy of {keep.path} ({keeper_reason(keep, group, self._safeguards.cloud)})",
+                    selected=False,
+                )
+                item.duplicate_paths = [o.path for o in group if o is not c]
+                items.append(item)
         return items
 
     def run_scan(self) -> List[GarbageItem]:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -11,17 +12,18 @@ import threading
 import webbrowser
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import urlparse
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
-from app.engine import changes, osinfo, scheduler, smart, storage
+from app.engine import changes, deletecheck, osinfo, recycle, safeguards, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
@@ -46,6 +48,24 @@ app = FastAPI(title="JunkZero API", version=__version__)
 # Only answer requests addressed to this machine, so a web page can't reach the API by
 # pointing its own domain name at 127.0.0.1 (DNS rebinding)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+
+# A secret made fresh at every launch and handed only to JunkZero's own page. Every request
+# that changes something must carry it, so another web page open in the browser can't make
+# JunkZero delete files (it can send requests to 127.0.0.1, but can't read the secret).
+API_TOKEN = secrets.token_urlsafe(32)
+TOKEN_HEADER = "X-JunkZero-Token"
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def require_app_token(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.method not in _SAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin is not None and urlparse(origin).netloc != request.headers.get("host"):
+            return JSONResponse({"detail": "Requests from other web pages are not allowed"}, status_code=403)
+        if not secrets.compare_digest(request.headers.get(TOKEN_HEADER, ""), API_TOKEN):
+            return JSONResponse({"detail": "Missing or wrong JunkZero app token"}, status_code=403)
+    return await call_next(request)
 
 # Global Scanner State
 current_scanner: Optional[FastScanner] = None
@@ -75,6 +95,25 @@ class ScanRequest(BaseModel):
 class CleanRequest(BaseModel):
     items: List[Dict[str, Any]]
     permanent: bool = False
+    # "DELETE", when the confirm dialog asked the user to type it
+    confirm_text: str = ""
+
+
+class DeletePathsRequest(BaseModel):
+    paths: List[str]
+    permanent: bool = False
+    confirm_text: str = ""
+
+
+class DeletePreviewRequest(BaseModel):
+    paths: List[str]
+    # "scan": items from the scan results; "explorer": files and folders picked in Folder Explorer
+    source: Literal["scan", "explorer"] = "scan"
+    permanent: bool = False
+
+
+class RestoreRequest(BaseModel):
+    timestamp: float
 
 
 class InspectPathRequest(BaseModel):
@@ -84,6 +123,7 @@ class InspectPathRequest(BaseModel):
 class DeleteFolderRequest(BaseModel):
     path: str
     permanent: bool = False
+    confirm_text: str = ""
 
 
 class OpenFolderRequest(BaseModel):
@@ -358,16 +398,78 @@ def api_scan_status():
         }
 
 
+def _key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def scan_results() -> Dict[str, Dict[str, Any]]:
+    """Items JunkZero itself listed (the current scan, then the latest scheduled report), by path.
+    Only these can be deleted through /api/clean."""
+    found: Dict[str, Dict[str, Any]] = {}
+    report = storage.load_report() or {}
+    for item in report.get("items") or []:
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            found[_key(item["path"])] = item
+    scanner = current_scanner
+    if scanner is not None:
+        for item in list(scanner.garbage_items):
+            found[_key(item.path)] = item.model_dump()
+    return found
+
+
+def _explorer_entries(paths: List[str]) -> List[Dict[str, Any]]:
+    return [{"path": p, "is_directory": os.path.isdir(p), "size_bytes": 0} for p in paths if isinstance(p, str) and p]
+
+
+def _check_confirmation(summary: Dict[str, Any], confirm_text: str) -> None:
+    if not deletecheck.confirmed(summary, confirm_text):
+        raise HTTPException(status_code=400, detail=f"Type {deletecheck.CONFIRM_WORD} to confirm this delete")
+
+
+def _with_errors(result: CleanResult, errors: List[Dict[str, str]]) -> CleanResult:
+    if errors:
+        result.total_requested += len(errors)
+        result.failed_count += len(errors)
+        result.errors.extend(errors)
+    return result
+
+
+@app.post("/api/delete-preview")
+def api_delete_preview(req: DeletePreviewRequest):
+    """What a delete would remove: counts, top folders, file types, personal and cloud files,
+    items on drives without a Recycle Bin, and whether the user must type DELETE."""
+    cloud = safeguards.cloud_folders()
+    if req.source == "scan":
+        index = scan_results()
+        entries = [index[_key(p)] for p in req.paths if isinstance(p, str) and _key(p) in index]
+        return deletecheck.summarize(entries, req.permanent, cloud)
+    return deletecheck.summarize(_explorer_entries(req.paths), req.permanent, cloud, look_inside=True)
+
+
 @app.post("/api/clean")
 def api_clean_items(req: CleanRequest) -> CleanResult:
-    """Safely delete the selected garbage items (Recycle Bin default or permanent)."""
+    """Safely delete the selected garbage items (Recycle Bin default or permanent).
+    Only items from JunkZero's own scan results are accepted; what they are (category, size,
+    other copies of a duplicate) comes from those results, not from the request."""
     if not req.items:
         raise HTTPException(status_code=400, detail="No items provided for deletion")
 
-    result = delete_items(req.items, permanent=req.permanent)
-    _record_history(result, [str(i.get("path", "")) for i in req.items], "scan results")
+    index = scan_results()
+    items: List[Dict[str, Any]] = []
+    unknown: List[Dict[str, str]] = []
+    for requested in req.items:
+        path = requested.get("path") if isinstance(requested, dict) else None
+        item = index.get(_key(path)) if isinstance(path, str) and path else None
+        if item is None:
+            unknown.append({"path": str(path), "error": "Not in the latest scan results; scan again first"})
+        else:
+            items.append(item)
+
+    _check_confirmation(deletecheck.summarize(items, req.permanent, safeguards.cloud_folders()), req.confirm_text)
+    result = _with_errors(delete_items(items, permanent=req.permanent), unknown)
+    _record_history(result, [i["path"] for i in items], "scan results")
     try:
-        smart.learn_deleted(req.items, [e.get("path", "") for e in result.errors])
+        smart.learn_deleted(items, [e.get("path", "") for e in result.errors])
     except OSError as e:
         logger.warning(f"Could not save what was learned from this cleanup: {e}")
     return result
@@ -418,8 +520,23 @@ def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
         raise HTTPException(status_code=404, detail="Folder not found")
     if not os.path.isdir(req.path):
         raise HTTPException(status_code=400, detail="Path does not exist")
+    _check_confirmation(deletecheck.summarize(
+        _explorer_entries([req.path]), req.permanent, safeguards.cloud_folders(), look_inside=True), req.confirm_text)
     result = delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent)
     _record_history(result, [req.path], "folder explorer")
+    return result
+
+
+@app.post("/api/filesystem/delete-paths")
+def api_delete_paths(req: DeletePathsRequest) -> CleanResult:
+    """Delete files and folders picked in Folder Explorer (Recycle Bin by default, or permanently)."""
+    if not req.paths:
+        raise HTTPException(status_code=400, detail="No items provided for deletion")
+    entries = _explorer_entries(req.paths)
+    _check_confirmation(deletecheck.summarize(
+        entries, req.permanent, safeguards.cloud_folders(), look_inside=True), req.confirm_text)
+    result = delete_items(entries, permanent=req.permanent)
+    _record_history(result, [e["path"] for e in entries], "folder explorer")
     return result
 
 
@@ -482,6 +599,18 @@ def api_add_custom_rule(req: AddExclusionRequest):
 @app.get("/api/history")
 def api_get_history():
     return {"history": storage.load_history()}
+
+
+@app.post("/api/history/restore")
+def api_restore_cleanup(req: RestoreRequest):
+    """Put back the items of one cleanup from the Recycle Bin / Trash or JunkZero's holding folder."""
+    record = storage.find_cleanup(req.timestamp)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Cleanup not found in history")
+    outcome = recycle.restore_cleanup(record)
+    if outcome["restored"]:
+        storage.mark_restored(req.timestamp, outcome["restored"])
+    return {**outcome, "history": storage.load_history()}
 
 
 @app.delete("/api/history")
@@ -562,7 +691,18 @@ if UI_DIR.exists():
 
     @app.get("/")
     def serve_index():
-        return FileResponse(str(UI_DIR / "index.html"))
+        # The page gets this launch's app token (see require_app_token)
+        html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+        meta = f'<meta name="junkzero-token" content="{API_TOKEN}">'
+        return HTMLResponse(html.replace("<head>", "<head>\n  " + meta, 1),
+                            headers={"Cache-Control": "no-store"})
+
+
+def _purge_holding() -> None:
+    try:
+        recycle.purge_holding()
+    except OSError as e:
+        logger.warning(f"Could not clear old items from the holding folder: {e}")
 
 
 def pick_port(preferred: int = 8000) -> int:
@@ -607,6 +747,9 @@ def main():
         print(f"Report saved: {report.get('item_count', 0)} items, "
               f"{report.get('total_bytes', 0)} bytes reclaimable. Nothing was deleted.")
         return
+
+    # Items set aside on drives without a Recycle Bin are kept for a week
+    threading.Thread(target=_purge_holding, daemon=True).start()
 
     port = args.port if args.port is not None else pick_port(8000)
     server_url = f"http://127.0.0.1:{port}"

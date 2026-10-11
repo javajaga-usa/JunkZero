@@ -122,12 +122,35 @@ def record_cleanup(result: Dict[str, Any], paths: List[str], source: str) -> Dic
         "freed_bytes": result.get("freed_bytes", 0),
         "paths": deleted[:HISTORY_PATHS_LIMIT],
         "paths_truncated": max(0, len(deleted) - HISTORY_PATHS_LIMIT),
+        "started_at": result.get("started_at") or time.time(),
+        # Items set aside on drives without a Recycle Bin (original -> holding folder path)
+        "held": {p: d for p, d in (result.get("held") or {}).items() if p in deleted[:HISTORY_PATHS_LIMIT]},
+        "restored": [],
     }
     with _lock:
         history = load_history()
         history.insert(0, record)
         _write_json("history.json", history[:HISTORY_LIMIT])
     return record
+
+
+def find_cleanup(timestamp: float) -> Optional[Dict[str, Any]]:
+    for record in load_history():
+        if record.get("timestamp") == timestamp:
+            return record
+    return None
+
+
+def mark_restored(timestamp: float, paths: List[str]) -> Optional[Dict[str, Any]]:
+    """Remember which items of a cleanup were put back, and return the updated record."""
+    with _lock:
+        history = load_history()
+        for record in history:
+            if record.get("timestamp") == timestamp:
+                record["restored"] = sorted(set(record.get("restored") or []) | set(paths))
+                _write_json("history.json", history)
+                return record
+    return None
 
 
 def clear_history() -> None:

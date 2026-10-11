@@ -6,7 +6,8 @@ A folder there is reported only when all of these hold, so a program that is sti
 use is never flagged:
   * its name matches no installed program (name, publisher or install folder),
   * it is not one of the shared folders the system and common tools keep there,
-  * nothing inside it has changed for a long time (180 days by default).
+  * nothing inside it has changed for a long time (180 days by default),
+  * nothing inside it is a personal file (documents, photos, videos, game saves).
 If the list of installed programs can't be read, nothing is reported.
 """
 from __future__ import annotations
@@ -115,6 +116,24 @@ def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
     return newest
 
 
+# Entries looked at per folder for personal files; a bigger folder is not offered (it can't be checked fully)
+_PERSONAL_WALK_LIMIT = 20000
+
+
+def holds_personal_files(path: str, limit: int = _PERSONAL_WALK_LIMIT) -> bool:
+    """True if the folder holds documents, photos, saves or other personal files (or is too big to check)."""
+    from app.engine.safeguards import is_personal_file
+    seen = 0
+    for _, dirs, files in os.walk(path):
+        for name in files:
+            if is_personal_file(name):
+                return True
+        seen += len(dirs) + len(files)
+        if seen > limit:
+            return True
+    return False
+
+
 def find_leftovers(
     roots: Iterable[str],
     installed: InstalledPrograms,
@@ -147,6 +166,9 @@ def find_leftovers(
             changed = newest_change(entry.path)
             days = int((now - changed) / 86400) if changed > 0 else 0
             if changed <= 0 or days < min_days:
+                continue
+            # Game saves, notes, recordings or exports inside: left out entirely
+            if holds_personal_files(entry.path):
                 continue
             found.append(Leftover(entry.path, entry.name, changed, days))
     return found

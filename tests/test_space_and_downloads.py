@@ -2,16 +2,15 @@
 import os
 import time
 
-from fastapi.testclient import TestClient
-
 from app import main
 from app.config import CAT_INSTALLERS, CAT_OLD_DOWNLOADS, ScanOptions
 from app.engine.locations import downloads_folder
 from app.engine.scanner import FastScanner
 from app.engine.space import largest_items
 from app.main import app
+from tests.helpers import api_client
 
-client = TestClient(app, base_url="http://127.0.0.1")
+client = api_client()
 DAY = 86400
 
 

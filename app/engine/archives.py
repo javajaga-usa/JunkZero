@@ -20,7 +20,7 @@ MAX_COMPRESSED_TAR_BYTES = 512 * 1024 ** 2  # Listing a .tar.gz means decompress
 MAX_OTHER_SHARE = 0.10                      # Unrecognized files allowed next to setup files
 
 # Files that by themselves make an archive a software package
-SETUP_EXTENSIONS = (INSTALLER_EXTENSIONS | {".mpkg", ".xapk", ".iso", ".img", ".vhd", ".vhdx", ".wim", ".esd"}) - {".exe"}
+SETUP_EXTENSIONS = (INSTALLER_EXTENSIONS | {".mpkg", ".xapk", ".iso", ".img", ".wim", ".esd"}) - {".exe"}
 SETUP_SCRIPT_NAMES = {"setup", "install", "installer", "install-sh", "uninstall"}
 SETUP_SCRIPT_EXTENSIONS = {".bat", ".cmd", ".ps1", ".sh", ".command", ""}
 

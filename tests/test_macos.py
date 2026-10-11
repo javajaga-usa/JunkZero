@@ -14,6 +14,7 @@ from app.engine.classifier import is_system_protected_path
 from app.engine.leftovers import find_leftovers, mac_installed_programs
 from app.engine.locations import is_protected_user_folder, junk_locations, mac_junk_locations
 from app.engine.scanner import FastScanner, get_mac_drives
+from tests.helpers import api_client
 
 DAY = 86400
 
@@ -228,13 +229,12 @@ def test_get_available_drives_uses_mac_disks_on_mac(mac, monkeypatch):
 
 
 def test_finder_reveal_and_trash_on_mac(mac, monkeypatch, tmp_path):
-    from fastapi.testclient import TestClient
     from app import main
     launched = []
     monkeypatch.setattr(main.subprocess, "Popen", lambda args: launched.append(args))
     f = tmp_path / "a.tmp"
     f.write_text("x")
-    client = TestClient(main.app, base_url="http://127.0.0.1")
+    client = api_client()
     assert client.post("/api/system/open-explorer", json={"path": str(f)}).status_code == 200
     assert client.post("/api/system/open-explorer", json={"path": str(tmp_path)}).status_code == 200
     assert client.post("/api/system/open-recycle-bin").status_code == 200
@@ -245,14 +245,13 @@ def test_finder_reveal_and_trash_on_mac(mac, monkeypatch, tmp_path):
 
 
 def test_mac_folder_picker_returns_the_chosen_folder(mac, monkeypatch, tmp_path):
-    from fastapi.testclient import TestClient
     from app import main
 
     class Done:
         stdout = str(tmp_path) + "/\n"
     calls = []
     monkeypatch.setattr(main.subprocess, "run", lambda args, **kw: calls.append(args) or Done())
-    assert TestClient(main.app, base_url="http://127.0.0.1").post("/api/system/browse-folder").json() == {"path": str(tmp_path)}
+    assert api_client().post("/api/system/browse-folder").json() == {"path": str(tmp_path)}
     assert calls[0][0] == "osascript"
 
 

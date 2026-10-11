@@ -3,7 +3,6 @@ import socket
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.config import CAT_EMPTY_FOLDERS, RISK_REVIEW, RISK_SAFE, ScanOptions
 from app.engine.classifier import classify_item
@@ -12,6 +11,7 @@ from app.engine.inspector import inspect_path_hierarchy
 from app.engine.locations import is_protected_user_folder
 from app.engine.scanner import FastScanner
 from app.main import app, pick_port
+from tests.helpers import api_client
 
 
 def _scan(path, **kwargs):
@@ -89,7 +89,7 @@ def test_personal_folders_are_protected(tmp_path, monkeypatch):
     ("C:/Users/a/thesis.docx.bak", RISK_REVIEW),
     ("C:/Users/a/settings.old", RISK_REVIEW),
     ("C:/Users/a/App.csproj.user", RISK_REVIEW),
-    ("C:/Users/a/cache.tmp", RISK_SAFE),
+    ("C:/Users/a/AppData/Local/Temp/cache.tmp", RISK_SAFE),
     ("C:/Users/a/Main.class", RISK_SAFE),
 ])
 def test_ambiguous_file_types_need_review(path, risk):
@@ -99,7 +99,7 @@ def test_ambiguous_file_types_need_review(path, risk):
 
 
 def test_api_rejects_unknown_host_header():
-    client = TestClient(app, base_url="http://127.0.0.1")
+    client = api_client()
     assert client.get("/api/history").status_code == 200
     assert client.get("/api/history", headers={"host": "attacker.example:8000"}).status_code == 400
 

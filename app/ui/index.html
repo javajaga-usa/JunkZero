@@ -601,6 +601,13 @@
             </div>
           </div>
 
+          <ul id="confirmChecks" class="confirm-checks hidden" aria-live="polite"></ul>
+
+          <label id="confirmTyped" class="typed-confirm hidden">
+            <span>This delete needs a second look. Type <strong>DELETE</strong> to confirm.</span>
+            <input type="text" id="confirmTypedInput" autocomplete="off" spellcheck="false" placeholder="DELETE" />
+          </label>
+
           <label id="confirmPermanentAck" class="permanent-ack hidden">
             <input type="checkbox" id="confirmPermanentAckInput" />
             I understand these items cannot be restored from the Recycle Bin

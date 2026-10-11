@@ -3,7 +3,6 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import main
 from app.config import (
@@ -14,8 +13,9 @@ from app.engine import changes, smart
 from app.engine.classifier import build_item
 from app.engine.leftovers import InstalledPrograms, Leftover, find_leftovers, installed_programs
 from app.engine.scanner import FastScanner
+from tests.helpers import api_client, offer
 
-client = TestClient(main.app, base_url="http://127.0.0.1")
+client = api_client()
 NOW = 1_800_000_000.0
 DAY = 86400
 
@@ -109,6 +109,7 @@ def test_rescanning_learns_what_was_kept(tmp_path):
 def test_clean_endpoint_learns_and_learning_can_be_forgotten(tmp_path):
     junk = tmp_path / "old.bak2"
     junk.write_text("x")
+    offer([junk, tmp_path / "missing.bak2"])
     res = client.post("/api/clean", json={"permanent": True, "items": [
         {"path": str(junk), "name": junk.name, "category": CAT_TEMP_JUNK, "size_bytes": 1},
         {"path": str(tmp_path / "missing.bak2"), "name": "missing.bak2", "category": CAT_TEMP_JUNK, "size_bytes": 1},

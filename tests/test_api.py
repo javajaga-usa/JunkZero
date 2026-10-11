@@ -1,7 +1,7 @@
-from fastapi.testclient import TestClient
 from app.main import app
+from tests.helpers import api_client
 
-client = TestClient(app, base_url="http://127.0.0.1")
+client = api_client()
 
 
 def test_static_ui_is_served():
