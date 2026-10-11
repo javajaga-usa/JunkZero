@@ -45,7 +45,8 @@ def summarize(
     walk_limit: int = WALK_LIMIT,
 ) -> Dict[str, Any]:
     """Summary of entries ({path, size_bytes, is_directory}). look_inside=True counts the files
-    inside folders (Folder Explorer); scan results are counted as the items listed."""
+    inside folders (Folder Explorer); scan results are counted as the items listed, except
+    folders marked look_inside (ones the scan was not sure about)."""
     cloud = list(cloud)
     count = 0
     total = 0
@@ -85,7 +86,7 @@ def summarize(
             providers[provider] += 1
         if not permanent and os.path.lexists(path) and not has_bin(path):
             no_recycle += 1
-        if is_dir and look_inside:
+        if is_dir and (look_inside or entry.get("look_inside")):
             files, stopped = _walk(path, max(1, walk_limit - count))
             truncated = truncated or stopped
             for fp, size in files:

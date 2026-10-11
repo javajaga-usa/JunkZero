@@ -30,7 +30,9 @@ def test_duplicates_flag_every_copy_but_the_newest(tmp_path):
     for p in (old, new):
         p.parent.mkdir(exist_ok=True)
         p.write_bytes(data)
-    other.write_bytes(data[:-1] + b"X")  # same size, different content
+    # Same size, different content. Flipping a byte always differs; replacing the last byte with
+    # b"X" matched the original once in 256 runs, which made this test fail now and then.
+    other.write_bytes(data[:-1] + bytes([data[-1] ^ 0xFF]))
     os.utime(old, (time.time() - 1000, time.time() - 1000))
 
     items = _scan(target_path=str(tmp_path), include_duplicates=True)

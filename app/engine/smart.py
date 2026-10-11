@@ -227,9 +227,17 @@ class SmartScorer:
         elif times_kept == 1:
             adjust(-10, "you kept this after the last scan")
 
-        return max(1, min(99, score)), reasons
+        score = max(1, min(99, score))
+        # Only Safe items can be marked Delete: bonuses and learning never outrank the rating
+        if item.risk_level != RISK_SAFE and score >= SCORE_DELETE:
+            score = SCORE_DELETE - 1
+            reasons.append(f"Capped at {score}: rated {item.risk_level}, so never marked Delete")
+        return score, reasons
 
     def apply(self, item: Any) -> Any:
         item.score, item.score_reasons = self.score(item)
         item.recommendation = recommendation(item.score)
+        # Pre-ticked only when also marked Delete
+        if item.score < SCORE_DELETE:
+            item.selected = False
         return item

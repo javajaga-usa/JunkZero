@@ -205,8 +205,18 @@ if (!window.lucide) window.lucide = { createIcons() {} };
 const TABLE_PAGE_SIZE = 500;
 const SEARCH_DELAY_MS = 200;
 
-// Every request that changes something carries this launch's app token (the server refuses it otherwise)
-const APP_TOKEN = document.querySelector('meta[name="junkzero-token"]')?.content || '';
+// Every API request carries this launch's app token (the server refuses it otherwise). JunkZero
+// opens its window at /#token=..., so the token never sits in the page itself. It is kept for
+// this window only, so a reload still works, and taken out of the address bar.
+const APP_TOKEN = (() => {
+  let token = new URLSearchParams(location.hash.slice(1)).get('token') || '';
+  try {
+    if (token) sessionStorage.setItem('junkzero-token', token);
+    else token = sessionStorage.getItem('junkzero-token') || '';
+  } catch { /* storage blocked: the token still works until the page is reloaded */ }
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  return token;
+})();
 const nativeFetch = window.fetch.bind(window);
 window.fetch = (input, init = {}) => {
   const url = typeof input === 'string' ? input : input.url;
@@ -499,6 +509,9 @@ async function initApp() {
   await loadPlatform();
   lucide.createIcons();
   setupEventListeners();
+  if (!APP_TOKEN) {
+    showToast('This page was opened without JunkZero. Start JunkZero to scan and clean.', 'error');
+  }
   await loadAvailableDrives();
   await loadPreferences();
 }
@@ -607,7 +620,8 @@ function setupEventListeners() {
   el.btnSelectAllSafe.addEventListener('click', () => {
     state.selectedIds.clear();
     state.items.forEach((i) => {
-      if (i.risk_level === 'Safe') state.selectedIds.add(i.id);
+      // Only what the server itself ticked: Safe and marked Delete (empty folders stay unticked)
+      if (i.risk_level === 'Safe' && i.selected && scoreBand(i.score || 0) === 'delete') state.selectedIds.add(i.id);
     });
     renderTable();
     updateSelectionSummary();
@@ -939,7 +953,7 @@ async function startScan({ junkOnly = false } = {}) {
       throw new Error(err.detail || 'Scan failed to start');
     }
 
-    state.eventSource = new EventSource('/api/scan/stream');
+    state.eventSource = new EventSource(`/api/scan/stream?token=${encodeURIComponent(APP_TOKEN)}`);
     let updateThrottleTimer = null;
     let latestStats = null;
 

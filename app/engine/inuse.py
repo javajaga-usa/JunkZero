@@ -42,13 +42,16 @@ def _windows_file_in_use(path: str) -> bool:
     return False
 
 
-def _lsof_open_files() -> Set[str]:
+def _lsof_open_files() -> Optional[Set[str]]:
+    """The files open in the user's programs, or None if lsof couldn't tell."""
     try:
         out = subprocess.run(["lsof", "-w", "-Fn", "-u", str(os.getuid())],
                              capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
-        return set()
-    return {line[1:] for line in out.splitlines() if line.startswith("n/")}
+        return None
+    found = {line[1:] for line in out.splitlines() if line.startswith("n/")}
+    # Every running program has files open, so an empty answer means lsof failed
+    return found or None
 
 
 def _proc_open_files() -> Set[str]:
@@ -81,13 +84,18 @@ def _norm(path: str) -> str:
 class OpenFileCheck:
     """Built once per cleanup (listing open files is slow); reason() per item."""
 
-    def __init__(self, open_files: Optional[Set[str]] = None):
-        if open_files is None and not osinfo.is_windows():
+    def __init__(self, open_files: Optional[Set[str]] = None, checked: bool = True):
+        if open_files is None and checked and not osinfo.is_windows():
             open_files = _lsof_open_files() if osinfo.is_macos() else _proc_open_files()
+            checked = open_files is not None
+        # When the open files couldn't be listed nothing is deleted: unsure means keep
+        self.checked = checked
         self._open = {_norm(p) for p in (open_files or ())}
 
     def reason(self, path: str, is_dir: bool) -> Optional[str]:
         """Why the item is in use, or None if it can be deleted."""
+        if not self.checked:
+            return "JunkZero couldn't check which files are open"
         if not is_dir and office_lock_file(path):
             return "open in Office or LibreOffice"
         norm = _norm(path)

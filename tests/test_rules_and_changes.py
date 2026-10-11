@@ -1,5 +1,6 @@
 """User junk rules and "new since last scan"."""
 import os
+import threading
 import time
 
 import pytest
@@ -79,13 +80,11 @@ def test_scan_api_and_scheduled_reports_use_junk_rules(tmp_path, monkeypatch):
     report = scheduler.run_report([str(tmp_path)], include_junk_locations=False)
     assert [i["category"] for i in report["items"]] == [CAT_CUSTOM_RULES]
 
-    seen = {}
-    monkeypatch.setattr(main.FastScanner, "run_scan", lambda self: seen.update(opts=self.options) or [])
+    seen, started = {}, threading.Event()
+    monkeypatch.setattr(main.FastScanner, "run_scan", lambda self: seen.update(opts=self.options) or started.set() or [])
     client.post("/api/scan/start", json={"target_path": str(tmp_path), "include_custom_rules": False})
-    for _ in range(50):
-        if "opts" in seen:
-            break
-        time.sleep(0.02)
+    # The scan runs on its own thread, which a busy CI machine may start late
+    assert started.wait(10)
     assert (seen["opts"].custom_rules, seen["opts"].include_custom_rules) == (["*.bak2"], False)
 
 

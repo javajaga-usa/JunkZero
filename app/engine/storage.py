@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -13,7 +14,71 @@ HISTORY_PATHS_LIMIT = 500    # Paths stored per cleanup record
 SCAN_MEMORY_LIMIT = 20       # Scan targets remembered for "new since last scan"
 SCAN_MEMORY_PATHS_LIMIT = 50000  # Flagged paths remembered per target
 
-_lock = threading.Lock()
+
+
+class _DataLock:
+    """Guards JunkZero's JSON files against other threads and against other JunkZero processes
+    (a scheduled report can run while the app is open), so neither loses the other's changes."""
+
+    def __init__(self):
+        self._thread_lock = threading.RLock()
+        self._depth = 0
+        self._file = None
+
+    def __enter__(self):
+        self._thread_lock.acquire()
+        self._depth += 1
+        if self._depth == 1:
+            try:
+                self._file = open(data_dir() / ".lock", "a+b")
+                _lock_file(self._file)
+            except OSError:
+                # Locking is a courtesy between processes; never stop JunkZero saving its data
+                if self._file is not None:
+                    self._file.close()
+                self._file = None
+        return self
+
+    def __exit__(self, *exc):
+        self._depth -= 1
+        if self._depth == 0 and self._file is not None:
+            try:
+                _unlock_file(self._file)
+            except OSError:
+                pass
+            self._file.close()
+            self._file = None
+        self._thread_lock.release()
+        return False
+
+
+if os.name == "nt":
+    import msvcrt
+
+    def _lock_file(f) -> None:
+        f.seek(0)
+        for _ in range(100):  # LK_LOCK itself only retries for 10 seconds
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise OSError("JunkZero's data files are busy")
+
+    def _unlock_file(f) -> None:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_file(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+
+    def _unlock_file(f) -> None:
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+_lock = _DataLock()
 
 
 def data_dir() -> Path:
@@ -36,19 +101,42 @@ def _read_json(name: str, default: Any) -> Any:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Keep a damaged file aside instead of letting the next save wipe what was in it
+        try:
+            os.replace(path, path.with_name(f"{path.name}.damaged-{int(time.time())}"))
+        except OSError:
+            pass
+        return default
+    except OSError:
         return default
 
 
 def _write_json(name: str, value: Any) -> None:
     path = data_dir() / name
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(value, f, indent=2)
-    os.replace(tmp, path)
+    # A temp file of its own per write, so two writers never mix their halves
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2)
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows refuses while another program (an antivirus scan) has the file open
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
-def lock() -> threading.Lock:
+def lock() -> _DataLock:
     """The lock guarding JunkZero's JSON files (for read-modify-write in other modules)."""
     return _lock
 
@@ -74,7 +162,7 @@ def update_settings(**changes: Any) -> Dict[str, Any]:
 
 def get_exclusions() -> List[str]:
     rules = load_settings().get("exclusions", [])
-    return [r for r in rules if isinstance(r, str) and r.strip()]
+    return [r for r in rules if isinstance(r, str) and r.strip()] if isinstance(rules, list) else []
 
 
 def _clean_rules(rules: List[str]) -> List[str]:
@@ -94,7 +182,7 @@ def set_exclusions(rules: List[str]) -> List[str]:
 
 def get_custom_rules() -> List[str]:
     rules = load_settings().get("custom_rules", [])
-    return [r for r in rules if isinstance(r, str) and r.strip()]
+    return [r for r in rules if isinstance(r, str) and r.strip()] if isinstance(rules, list) else []
 
 
 def set_custom_rules(rules: List[str]) -> List[str]:
@@ -114,7 +202,7 @@ def record_cleanup(result: Dict[str, Any], paths: List[str], source: str) -> Dic
     """Append one cleanup run to the history (newest first) and return the record."""
     deleted = [p for p in paths if p not in {e.get("path") for e in result.get("errors", [])}]
     record = {
-        "timestamp": time.time(),
+        "timestamp": time.time(),  # Also the record's id (kept unique below)
         "source": source,
         "mode": result.get("mode", "recycle_bin"),
         "deleted_count": result.get("deleted_count", 0),
@@ -125,10 +213,15 @@ def record_cleanup(result: Dict[str, Any], paths: List[str], source: str) -> Dic
         "started_at": result.get("started_at") or time.time(),
         # Items set aside on drives without a Recycle Bin (original -> holding folder path)
         "held": {p: d for p, d in (result.get("held") or {}).items() if p in deleted[:HISTORY_PATHS_LIMIT]},
+        "trash_ids": {p: i for p, i in (result.get("trash_ids") or {}).items() if p in deleted[:HISTORY_PATHS_LIMIT]},
         "restored": [],
     }
     with _lock:
         history = load_history()
+        # Two cleanups within one clock tick (about 16 ms on Windows) must not share an id
+        taken = {r.get("timestamp") for r in history}
+        while record["timestamp"] in taken:
+            record["timestamp"] += 0.001
         history.insert(0, record)
         _write_json("history.json", history[:HISTORY_LIMIT])
     return record
