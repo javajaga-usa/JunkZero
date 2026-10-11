@@ -124,6 +124,7 @@ def test_unknown_open_files_means_nothing_is_deleted(tmp_path, monkeypatch):
     victim.write_text("x")
     monkeypatch.setattr(osinfo, "is_windows", lambda: False)
     monkeypatch.setattr(osinfo, "is_macos", lambda: True)
+    monkeypatch.setattr(inuse.os, "getuid", lambda: 501, raising=False)  # Windows has none
     monkeypatch.setattr(inuse.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=""))
     check = OpenFileCheck()
     assert not check.checked

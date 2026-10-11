@@ -326,7 +326,7 @@ def find_in_mac_trash(original: str, since: float, trash: Optional[str] = None,
     if file_id:
         for entry in entries:
             try:
-                st = entry.stat(follow_symlinks=False)
+                st = os.lstat(entry.path)  # scandir's own stat has no inode on Windows
             except OSError:
                 continue
             if [st.st_dev, st.st_ino] == list(file_id):
