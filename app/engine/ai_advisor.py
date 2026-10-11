@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.config import ARCHIVE_EXTENSIONS
 from app.engine.archives import inspect_archive
+from app.engine.installers import inspect_exe, is_uninstaller_name
 
 
 class AIAnalysisResult(BaseModel):
@@ -199,6 +200,31 @@ def analyze_item(path_str: str) -> AIAnalysisResult:
             safety_verdict="Safe to Delete",
             explanation=f"This directory contains installed package dependencies or build artifacts for a {file_name} project.",
             recommendation="Safe to delete if this project is dormant. It can always be restored with 'npm install' or re-building.",
+            ai_powered=False
+        )
+
+    if suffix == ".exe" and path.is_file():
+        exe = inspect_exe(path_str)
+        if exe.is_uninstaller or is_uninstaller_name(file_name):
+            verdict, kind = "Keep File", "Uninstaller"
+            explanation = "This program removes an installed app. Windows needs it to uninstall that app cleanly."
+            recommendation = "Keep it. Uninstall the app from Settings instead if you no longer want it."
+        elif exe.is_installer:
+            verdict, kind = "Safe to Delete", "Setup Program"
+            explanation = f"JunkZero checked inside: {exe.evidence}. It installs software and is not needed to run it."
+            recommendation = "If the program is already installed, this setup file can go. Keep it only if you may reinstall offline."
+        else:
+            verdict, kind = "Review Carefully", "Program (not an installer)"
+            explanation = "JunkZero found no installer fingerprint inside. It looks like a program, tool or game you run directly."
+            recommendation = "Keep it if you still use it. JunkZero does not list programs like this as junk."
+        return AIAnalysisResult(
+            file_name=file_name,
+            file_path=path_str,
+            detected_type=kind,
+            origin_application="Windows program",
+            safety_verdict=verdict,
+            explanation=explanation,
+            recommendation=recommendation,
             ai_powered=False
         )
 
