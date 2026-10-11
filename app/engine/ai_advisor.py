@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Dict, Optional
 from pydantic import BaseModel
 
+from app.config import ARCHIVE_EXTENSIONS
+from app.engine.archives import inspect_archive
+
 
 class AIAnalysisResult(BaseModel):
     file_name: str
@@ -196,6 +199,34 @@ def analyze_item(path_str: str) -> AIAnalysisResult:
             safety_verdict="Safe to Delete",
             explanation=f"This directory contains installed package dependencies or build artifacts for a {file_name} project.",
             recommendation="Safe to delete if this project is dormant. It can always be restored with 'npm install' or re-building.",
+            ai_powered=False
+        )
+
+    if suffix in ARCHIVE_EXTENSIONS and path.is_file():
+        verdict = inspect_archive(path_str, path.stat().st_size)
+        if verdict.is_setup:
+            return AIAnalysisResult(
+                file_name=file_name,
+                file_path=path_str,
+                detected_type="Setup / Software Archive",
+                origin_application="Downloaded software package",
+                safety_verdict="Safe to Delete" if verdict.clean else "Review Carefully",
+                explanation=f"JunkZero looked inside without unpacking it: {verdict.summary}.",
+                recommendation="If the program is already installed or extracted, this download can go.",
+                ai_powered=False
+            )
+        if verdict.readable:
+            explanation = f"JunkZero looked inside without unpacking it: {verdict.summary}."
+        else:
+            explanation = f"JunkZero could not look inside this archive ({verdict.summary})."
+        return AIAnalysisResult(
+            file_name=file_name,
+            file_path=path_str,
+            detected_type="Compressed Archive",
+            origin_application="User archive or download",
+            safety_verdict="Review Carefully",
+            explanation=explanation,
+            recommendation="Archives often hold personal files. Open it and check before deleting.",
             ai_powered=False
         )
 

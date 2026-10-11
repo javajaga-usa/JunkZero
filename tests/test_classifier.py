@@ -88,7 +88,7 @@ def test_classify_temp_and_broken_download(default_options):
     assert cr_item.risk_level == RISK_SAFE
 
 
-def test_classify_os_iso_and_setup_zip(default_options):
+def test_classify_os_iso_and_setup_zip(default_options, tmp_path):
     iso_item = classify_item(
         path="C:/Users/Test/Downloads/Ubuntu_24_04_LTS.iso",
         name="Ubuntu_24_04_LTS.iso",
@@ -101,8 +101,13 @@ def test_classify_os_iso_and_setup_zip(default_options):
     assert iso_item.category == CAT_INSTALLERS
     assert "ISO" in iso_item.reason
 
+    import zipfile
+    setup_zip = tmp_path / "Downloads" / "VSCode_portable_win64_setup.zip"
+    setup_zip.parent.mkdir()
+    with zipfile.ZipFile(setup_zip, "w") as zf:
+        zf.writestr("VSCodeSetup-x64.exe", b"MZ")
     zip_item = classify_item(
-        path="C:/Users/Test/Downloads/VSCode_portable_win64_setup.zip",
+        path=str(setup_zip),
         name="VSCode_portable_win64_setup.zip",
         size_bytes=120000000,
         mtime=1600000000.0,
