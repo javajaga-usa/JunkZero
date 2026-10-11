@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app.config import CAT_DUPLICATES, CAT_TEMP_JUNK, ScanOptions
 from app.engine import osinfo, scheduler, storage
@@ -12,9 +11,10 @@ from app.engine.exclusions import ExclusionMatcher
 from app.engine.locations import JunkLocation, windows_junk_locations
 from app.engine.scanner import FastScanner
 from app.main import app
+from tests.helpers import api_client, offer
 
 MB = 1024 * 1024
-client = TestClient(app, base_url="http://127.0.0.1")
+client = api_client()
 
 
 def _scan(**kwargs):
@@ -154,6 +154,7 @@ def test_cleanup_is_recorded_in_history(tmp_path):
     junk.write_text("12345")
     missing = tmp_path / "missing.tmp"
 
+    offer([junk, missing], size_bytes=5)
     res = client.post("/api/clean", json={"permanent": True, "items": [
         {"path": str(junk), "size_bytes": 5}, {"path": str(missing), "size_bytes": 1}]})
     assert res.json()["deleted_count"] == 1

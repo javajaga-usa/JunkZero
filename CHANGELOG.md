@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Safeguards for personal files
+- Only JunkZero's own window can delete anything: every change needs a secret made fresh at each launch, so other web pages open in your browser can't ask JunkZero to delete files.
+- Duplicates: the copy in Documents, Pictures, Desktop or a cloud folder is kept over the one in Downloads or a temp folder, and a copy is deleted only while another identical copy is still there, so the last copy is never removed.
+- Files in OneDrive, Dropbox, Google Drive, iCloud Drive and Box are never preselected or marked Delete, and say that deleting them also deletes the cloud copy. Online-only cloud files are never listed or downloaded.
+- Backup folders (File History, Windows system images, Time Machine), backup images and virtual machine disks are never listed. `.log` and `.tmp` files outside temp, cache, log and build folders are no longer listed.
+- On USB sticks, memory cards and network drives, which have no Recycle Bin, deleted items are kept in a hidden JunkZero folder on that drive for 7 days instead of being erased.
+- Documents, photos, videos, game saves and anything changed in the last 24 hours are never preselected or marked Delete. Program Leftovers holding personal files are left out.
+- The delete dialog shows what will be removed (personal files, cloud items, top folders, file types). Deletes with personal files, over 5 GB or over 1,000 items need DELETE typed. Folder Explorer counts what is inside a folder before deleting it.
+- Cleanup History has a Restore button that puts items back from the Recycle Bin, Trash or holding folder, without overwriting anything.
+- Files open in Office, LibreOffice or another program are skipped.
+
 ### Only setup programs count as installers
 - An `.exe` is no longer listed just because it sits in Downloads, Desktop or temp, or anywhere in your user folder. JunkZero looks inside it and lists it only when it is a setup program: built with Inno Setup, NSIS, InstallShield, WiX, Squirrel, Advanced Installer and similar tools, or described as a setup or installer in its version info.
 - Portable apps, tools, games and uninstallers are left off the list, and so are programs in Program Files, AppData or a folder with the app's .dll files.

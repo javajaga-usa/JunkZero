@@ -31,6 +31,20 @@ def is_hidden(name: str, st: os.stat_result | None = None) -> bool:
     return bool(getattr(st, "st_flags", 0) & getattr(_stat, "UF_HIDDEN", 0))
 
 
+# Windows: offline, recall-on-open and recall-on-data-access attributes (cloud files not stored on this PC)
+_WIN_ONLINE_ONLY_ATTRS = 0x1000 | 0x40000 | 0x400000
+# macOS: SF_DATALESS, set on iCloud / File Provider files whose contents are only in the cloud
+_MAC_DATALESS = 0x40000000
+
+
+def is_online_only(st: os.stat_result) -> bool:
+    """True for a cloud file whose contents are not on this computer (OneDrive "online-only",
+    Dropbox / Google Drive / iCloud placeholders). Opening it would download it."""
+    if getattr(st, "st_file_attributes", 0) & _WIN_ONLINE_ONLY_ATTRS:
+        return True
+    return is_macos() and bool(getattr(st, "st_flags", 0) & getattr(_stat, "SF_DATALESS", _MAC_DATALESS))
+
+
 def platform_name() -> str:
     if is_windows():
         return "windows"

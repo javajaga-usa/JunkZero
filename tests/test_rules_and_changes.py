@@ -3,16 +3,16 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import main
 from app.config import CAT_CUSTOM_RULES, CAT_INSTALLERS, CAT_TEMP_JUNK, RISK_REVIEW, ScanOptions
 from app.engine import changes, scheduler, storage
 from app.engine.exclusions import ExclusionMatcher, rule_too_broad
 from app.engine.scanner import FastScanner
+from tests.helpers import api_client
 from exe_samples import make_exe
 
-client = TestClient(main.app, base_url="http://127.0.0.1")
+client = api_client()
 
 
 def _scan(**kwargs):

@@ -5,7 +5,7 @@ import os
 import threading
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 PARTIAL_BYTES = 64 * 1024
 CHUNK_BYTES = 1024 * 1024
@@ -107,6 +107,53 @@ def find_duplicate_groups(
     return groups
 
 
-def pick_keeper(group: List[FileCandidate]) -> FileCandidate:
-    """Keep the most recently modified copy (ties broken by shortest, then alphabetical path)."""
-    return min(group, key=lambda c: (-c.mtime, len(c.path), c.path))
+# Folders whose copy is kept first (lower is better)
+_KEEP_FOLDERS = {"documents", "pictures", "photos", "music", "videos", "movies", "desktop"}
+_SCRATCH_FOLDERS = {"temp", "tmp", "cache", "caches"}
+
+
+def _place(c: FileCandidate, cloud: Iterable[Tuple[str, str]] = ()) -> Tuple[int, str]:
+    """(rank, where) for a copy: personal and cloud folders first, Downloads and temp folders last."""
+    from app.engine.safeguards import cloud_provider
+    parts = [p.lower() for p in c.path.replace("\\", "/").split("/")[:-1]]
+    provider = cloud_provider(c.path, cloud) if cloud else ""
+    # The innermost telling folder decides: Documents/Temp is a temp folder, Temp/.../Documents is not
+    for p in reversed(parts):
+        if p in _SCRATCH_FOLDERS or "cache" in p:
+            return 3, "a temp folder"
+        if p == "downloads":
+            return 2, "Downloads"
+        if p in _KEEP_FOLDERS:
+            return 0, provider or p.capitalize()
+    if provider:
+        return 0, provider
+    return 1, ""
+
+
+def pick_keeper(group: List[FileCandidate], cloud: Iterable[Tuple[str, str]] = ()) -> FileCandidate:
+    """Keep the copy in a personal or cloud folder over one in Downloads or a temp folder; among
+    equals keep the most recently modified (ties broken by shortest, then alphabetical path)."""
+    cloud = list(cloud)
+    return min(group, key=lambda c: (_place(c, cloud)[0], -c.mtime, len(c.path), c.path))
+
+
+def keeper_reason(keep: FileCandidate, group: List[FileCandidate], cloud: Iterable[Tuple[str, str]] = ()) -> str:
+    """Why this copy is the one kept, in a few words."""
+    cloud = list(cloud)
+    rank, where = _place(keep, cloud)
+    if where and rank < max(_place(c, cloud)[0] for c in group):
+        return f"the copy in {where} is kept"
+    return "the newest copy is kept"
+
+
+def same_content(a: str, b: str) -> bool:
+    """True if both files exist and are byte-for-byte identical (checked again right before deleting)."""
+    try:
+        if not (os.path.isfile(a) and os.path.isfile(b)):
+            return False
+        if os.path.samefile(a, b) or os.path.getsize(a) != os.path.getsize(b):
+            return False
+    except OSError:
+        return False
+    first, second = _hash(a, None, None), _hash(b, None, None)
+    return first is not None and first == second

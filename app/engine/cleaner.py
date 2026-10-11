@@ -5,14 +5,19 @@ import shutil
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+import time
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 import send2trash
 
-from app.config import CAT_EMPTY_FOLDERS, VCS_DIR_NAMES
+from app.config import (
+    BACKUP_DIR_NAMES, BACKUP_DIR_SUFFIXES, CAT_DUPLICATES, CAT_EMPTY_FOLDERS, HOLDING_DIR_NAME, VCS_DIR_NAMES,
+)
 from app.engine.classifier import is_system_protected_path, format_size
+from app.engine.duplicates import same_content
+from app.engine.inuse import OpenFileCheck
 from app.engine.osinfo import is_hidden
-from app.engine import storage
+from app.engine import recycle, storage
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 
 # Kept with the rest of JunkZero's data (%APPDATA%\JunkZero), not in whatever folder the app started from
@@ -47,6 +52,19 @@ def in_vcs_folder(path: str) -> bool:
     return any(part in VCS_DIR_NAMES for part in parts)
 
 
+def in_backup_folder(path: str) -> bool:
+    """True inside a backup folder (File History, Time Machine...) or JunkZero's holding folder."""
+    parts = os.path.normpath(path).replace("\\", "/").split("/")
+    return any(
+        p.lower() in BACKUP_DIR_NAMES or p.lower().endswith(BACKUP_DIR_SUFFIXES) or p == HOLDING_DIR_NAME
+        for p in parts
+    )
+
+
+def _key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
 def _raise(err: OSError) -> None:
     raise err
 
@@ -59,16 +77,26 @@ class CleanResult(BaseModel):
     freed_formatted: str
     mode: str  # "recycle_bin" or "permanent"
     errors: List[Dict[str, str]] = Field(default_factory=list)
+    # Items on drives without a Recycle Bin: original path -> where it was set aside
+    held: Dict[str, str] = Field(default_factory=dict)
+    started_at: float = 0.0
 
 
 def delete_items(
     items: List[Dict[str, Any]],
-    permanent: bool = False
+    permanent: bool = False,
+    open_check: Optional[OpenFileCheck] = None,
 ) -> CleanResult:
     """
-    Delete a batch of files and directories. Items go to the Recycle Bin by default;
-    pass permanent=True to erase them from disk directly.
+    Delete a batch of files and directories. Items go to the Recycle Bin by default (or, on
+    drives without one, to JunkZero's holding folder on that drive); pass permanent=True to
+    erase them from disk directly.
     """
+    started_at = time.time()
+    open_check = OpenFileCheck() if open_check is None else open_check
+    deleted_keys = set()
+    held: Dict[str, str] = {}
+    batches: Dict[str, str] = {}
     deleted_count = 0
     failed_count = 0
     freed_bytes = 0
@@ -113,6 +141,12 @@ def delete_items(
             failed_count += 1
             continue
 
+        # Backups are a safety net, and the holding folder is JunkZero's own
+        if in_backup_folder(path_str):
+            errors.append({"path": path_str, "error": "Deletion blocked: backup folder"})
+            failed_count += 1
+            continue
+
         # Prevent root path deletion (e.g. C:\ or D:\)
         norm_path = os.path.abspath(path_str)
         resolved_path = Path(norm_path).resolve()
@@ -144,6 +178,23 @@ def delete_items(
                 failed_count += 1
                 continue
 
+        # Never pull a file out from under a program that has it open
+        in_use = open_check.reason(norm_path, os.path.isdir(norm_path))
+        if in_use:
+            errors.append({"path": path_str, "error": f"Skipped: {in_use} (close it and try again)"})
+            failed_count += 1
+            continue
+
+        # A duplicate goes only while another identical copy is still there (and not deleted in this batch)
+        if item.get("category") == CAT_DUPLICATES:
+            others = [o for o in item.get("duplicate_paths") or [] if isinstance(o, str)]
+            if not any(_key(o) not in deleted_keys and same_content(o, norm_path) for o in others):
+                msg = "Skipped: no other copy of this file is left, so this one is kept"
+                errors.append({"path": path_str, "error": msg})
+                logger.warning(f"Kept last copy: {norm_path}")
+                failed_count += 1
+                continue
+
         try:
             # Auto-calculate size if not passed
             if size == 0:
@@ -166,11 +217,24 @@ def delete_items(
                 else:
                     os.remove(norm_path)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
-            else:
+            elif recycle.has_recycle_bin(norm_path):
                 # Default: move to the Recycle Bin so the user can restore it
                 send2trash.send2trash(norm_path)
                 logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
+            else:
+                # USB sticks and network shares have no Recycle Bin: Windows would erase the item.
+                # Set it aside on the same drive instead, where it can be restored for a week.
+                root = recycle.mount_point(norm_path)
+                try:
+                    if root not in batches:
+                        batches[root] = recycle.new_holding_batch(root)
+                    held[path_str] = recycle.move_to_holding(norm_path, batches[root])
+                except OSError as ex:
+                    raise OSError("This drive has no Recycle Bin and JunkZero could not set the item aside "
+                                  f"there ({ex}); use Permanent delete to remove it") from ex
+                logger.info(f"Held: {norm_path} -> {held[path_str]} ({format_size(size)})")
 
+            deleted_keys.add(_key(norm_path))
             deleted_count += 1
             freed_bytes += size
 
@@ -187,5 +251,7 @@ def delete_items(
         freed_bytes=freed_bytes,
         freed_formatted=format_size(freed_bytes),
         mode=mode_str,
-        errors=errors
+        errors=errors,
+        held=held,
+        started_at=started_at,
     )

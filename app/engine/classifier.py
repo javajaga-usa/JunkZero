@@ -38,12 +38,14 @@ from app.config import (
     JAVA_EXTENSIONS,
     AMBIGUOUS_BUILD_EXTENSIONS,
     BACKUP_EXTENSIONS,
+    BACKUP_IMAGE_EXTENSIONS,
     BUILD_EXTENSIONS,
     BUILD_OUTPUT_FOLDER_NAMES,
     BUILD_DIR_NAMES,
     TEMP_EXTENSIONS,
     BROKEN_DOWNLOAD_EXTENSIONS,
     SYSTEM_BLACKLIST_DIRS,
+    VM_DISK_EXTENSIONS,
     ScanOptions,
 )
 
@@ -69,6 +71,11 @@ class GarbageItem(BaseModel):
     # Setup archives: what was found inside, and whether it was only program files
     archive_summary: str = ""
     archive_clean: bool = False
+    # Safeguards (app.engine.safeguards): cloud-sync folder it sits in, and personal file types
+    cloud_provider: str = ""
+    personal: bool = False
+    # Duplicates: the other copies of the same file (one must still exist when this one is deleted)
+    duplicate_paths: List[str] = []
     # Setup programs (.exe): the installer fingerprint found, or True when only the name suggests it
     installer_evidence: str = ""
     installer_weak: bool = False
@@ -191,6 +198,25 @@ def _in_build_output_folder(path: str) -> bool:
     return any(p in BUILD_OUTPUT_FOLDER_NAMES for p in parents)
 
 
+# Folders whose files are disposable by nature: temp, cache, log and crash-dump folders, app data
+_DISPOSABLE_FOLDER_NAMES = {
+    "temp", "tmp", "logs", "log", "crashdumps", "crash reports", "diagnosticreports", "appdata",
+    "application support", "local", "localappdata", "var",
+}
+# Temp-style names that are system clutter wherever they are
+_SYSTEM_CLUTTER_NAMES = {"thumbs.db", ".ds_store"}
+
+
+def _in_disposable_folder(path: str) -> bool:
+    """True if a parent folder is a temp, cache, log, build output or hidden app-data folder."""
+    parents = ntpath.normpath(path).replace("\\", "/").lower().split("/")[:-1]
+    return any(
+        p in _DISPOSABLE_FOLDER_NAMES or p in BUILD_OUTPUT_FOLDER_NAMES or "cache" in p
+        or (p.startswith(".") and p not in (".", ".."))
+        for p in parents
+    )
+
+
 def classify_item(
     path: str,
     name: str,
@@ -237,6 +263,10 @@ def classify_item(
     if size_bytes < options.min_file_size_bytes:
         return None
 
+    # Backup images and virtual machine disks hold whole computers' files: never listed
+    if suffix in BACKUP_IMAGE_EXTENSIONS or suffix in VM_DISK_EXTENSIONS:
+        return None
+
     category: Optional[str] = None
     risk_level: str = RISK_REVIEW
     reason: str = ""
@@ -257,6 +287,9 @@ def classify_item(
         if suffix in BACKUP_EXTENSIONS:
             risk_level = RISK_REVIEW
             reason = f"Backup copy ({suffix}); check you have the original"
+        elif lower_name not in _SYSTEM_CLUTTER_NAMES and not _in_disposable_folder(path):
+            # A .log or .tmp in Documents can be someone's own file: not listed at all
+            return None
         else:
             risk_level = RISK_SAFE
             reason = f"Temporary/cache file ({suffix or lower_name})"
@@ -283,7 +316,7 @@ def classify_item(
                 risk_level = RISK_CAUTION
                 reason = "Java Archive (.jar) executable"
 
-    # 5. OS ISO Disk Images, Virtual Disks, and Installation Media
+    # 5. OS ISO Disk Images and Installation Media
     elif options.include_installers and suffix in DISK_IMAGE_EXTENSIONS:
         category = CAT_INSTALLERS
         risk_level = RISK_REVIEW

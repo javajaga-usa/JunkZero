@@ -161,6 +161,37 @@ function smartSummary(items, fmt) {
   return { lines, deleteCount: bands.delete.length, deleteBytes: sum(bands.delete) };
 }
 
+// Lines for the delete confirm dialog, from /api/delete-preview: what needs a second look first
+function deletePreviewLines(summary, trashName = 'Recycle Bin') {
+  const lines = [];
+  const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+  if (summary.personal_count) {
+    const examples = (summary.personal_examples || []).join(', ');
+    lines.push({ level: 'warning', text: `${plural(summary.personal_count, 'personal file')} (documents, photos, videos or saves)${examples ? `, such as ${examples}` : ''}` });
+  }
+  Object.entries(summary.cloud || {}).forEach(([provider, n]) => {
+    lines.push({ level: 'warning', text: `${plural(n, 'item')} in ${provider}: deleting also removes ${n === 1 ? 'it' : 'them'} from the cloud and your other devices` });
+  });
+  if (summary.no_recycle_count) {
+    lines.push({ level: 'info', text: `${plural(summary.no_recycle_count, 'item')} on a drive without a ${trashName} (USB or network): JunkZero keeps ${summary.no_recycle_count === 1 ? 'it' : 'them'} in a hidden folder on that drive for 7 days, and you can restore ${summary.no_recycle_count === 1 ? 'it' : 'them'} from Cleanup History` });
+  }
+  if (summary.truncated) {
+    lines.push({ level: 'warning', text: 'Too many files inside to check them all' });
+  }
+  if (summary.needs_typed_confirm && !lines.some((l) => l.level === 'warning')) {
+    lines.push({ level: 'warning', text: `This is an unusually large delete (${plural(summary.count, 'item')}, ${summary.bytes_formatted})` });
+  }
+  if (summary.count > 1) {
+    (summary.top_folders || []).slice(0, 3).forEach((f) => {
+      lines.push({ level: 'info', text: `From ${f.folder}: ${plural(f.count, 'item')}, ${f.bytes_formatted}` });
+    });
+  }
+  if ((summary.types || []).length) {
+    lines.push({ level: 'info', text: `Types: ${summary.types.map((t) => `${t.type} ${t.count.toLocaleString()}`).join(', ')}` });
+  }
+  return lines;
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -173,6 +204,19 @@ if (!window.lucide) window.lucide = { createIcons() {} };
 // The table shows this many rows at a time ("Show more" adds another page), so large scans stay responsive
 const TABLE_PAGE_SIZE = 500;
 const SEARCH_DELAY_MS = 200;
+
+// Every request that changes something carries this launch's app token (the server refuses it otherwise)
+const APP_TOKEN = document.querySelector('meta[name="junkzero-token"]')?.content || '';
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (input, init = {}) => {
+  const url = typeof input === 'string' ? input : input.url;
+  if (url.startsWith('/api/')) {
+    const headers = new Headers(init.headers || {});
+    headers.set('X-JunkZero-Token', APP_TOKEN);
+    init = { ...init, headers };
+  }
+  return nativeFetch(input, init);
+};
 
 // Global State
 const state = {
@@ -327,6 +371,9 @@ const el = {
   confirmWarningBanner: document.getElementById('confirmWarningBanner'),
   confirmPermanentAck: document.getElementById('confirmPermanentAck'),
   confirmPermanentAckInput: document.getElementById('confirmPermanentAckInput'),
+  confirmChecks: document.getElementById('confirmChecks'),
+  confirmTyped: document.getElementById('confirmTyped'),
+  confirmTypedInput: document.getElementById('confirmTypedInput'),
   closeConfirmModal: document.getElementById('closeConfirmModal'),
   btnCancelDelete: document.getElementById('btnCancelDelete'),
   btnExecuteDelete: document.getElementById('btnExecuteDelete'),
@@ -602,8 +649,9 @@ function setupEventListeners() {
       subtitle: `${selectedItems.length} garbage items will be removed`,
       count: selectedItems.length,
       size: formatSize(totalBytes),
-      onConfirm: async () => {
-        await executeBatchDelete(selectedItems);
+      preview: { source: 'scan', paths: selectedItems.map((i) => i.path) },
+      onConfirm: async (confirmText) => {
+        await executeBatchDelete(selectedItems, confirmText);
       },
     });
   });
@@ -613,9 +661,8 @@ function setupEventListeners() {
   // Delete Mode Toggle
   el.modeRecycle.addEventListener('click', () => setDeleteMode(false));
   el.modePermanent.addEventListener('click', () => setDeleteMode(true));
-  el.confirmPermanentAckInput.addEventListener('change', () => {
-    el.btnExecuteDelete.disabled = !el.confirmPermanentAckInput.checked;
-  });
+  el.confirmPermanentAckInput.addEventListener('change', updateExecuteEnabled);
+  el.confirmTypedInput.addEventListener('input', updateExecuteEnabled);
 
   // Hierarchy Explorer Listeners
   el.closeHierarchyModal.addEventListener('click', closeHierarchyModal);
@@ -638,8 +685,9 @@ function setupEventListeners() {
       subtitle: 'All files and subdirectories inside this folder will be deleted',
       count: state.currentHierarchy.total_files + state.currentHierarchy.total_subdirs,
       size: folderSize,
-      onConfirm: async () => {
-        await executeDeleteFolder(folderPath);
+      preview: { source: 'explorer', paths: [folderPath] },
+      onConfirm: async (confirmText) => {
+        await executeDeleteFolder(folderPath, confirmText);
       },
     });
   });
@@ -654,8 +702,9 @@ function setupEventListeners() {
       subtitle: 'Only this specific file will be deleted, keeping the parent folder intact',
       count: 1,
       size: '1 file',
-      onConfirm: async () => {
-        await executeBatchDelete([{ path: filePath, size_bytes: 0, is_directory: false }]);
+      preview: { source: 'explorer', paths: [filePath] },
+      onConfirm: async (confirmText) => {
+        await executeExplorerDelete([filePath], confirmText);
         // Refresh hierarchy
         if (state.currentHierarchy) {
           loadHierarchy(state.currentHierarchy.current_path);
@@ -677,10 +726,9 @@ function setupEventListeners() {
       subtitle: `${selectedEntries.length} items will be removed`,
       count: selectedEntries.length,
       size: formatSize(totalBytes),
-      onConfirm: async () => {
-        await executeBatchDelete(
-          selectedEntries.map((e) => ({ path: e.path, size_bytes: e.size_bytes, is_directory: e.is_dir }))
-        );
+      preview: { source: 'explorer', paths: selectedEntries.map((e) => e.path) },
+      onConfirm: async (confirmText) => {
+        await executeExplorerDelete(selectedEntries.map((e) => e.path), confirmText);
         if (state.currentHierarchy) {
           loadHierarchy(state.currentHierarchy.current_path);
         }
@@ -711,7 +759,7 @@ function setupEventListeners() {
       el.btnExecuteDelete.disabled = true;
       el.btnExecuteDelete.innerHTML = '<div class="spinner"></div> Deleting...';
       try {
-        await state.deleteConfirmCallback();
+        await state.deleteConfirmCallback(el.confirmTypedInput.value.trim());
       } finally {
         el.btnExecuteDelete.disabled = false;
         closeConfirmModal();
@@ -1574,8 +1622,9 @@ function renderHierarchyTable() {
         subtitle: `This ${isDir ? 'folder and all its contents' : 'file'} will be removed`,
         count: 1,
         size: size,
-        onConfirm: async () => {
-          await executeBatchDelete([{ path, size_bytes: 0, is_directory: isDir }]);
+        preview: { source: 'explorer', paths: [path] },
+        onConfirm: async (confirmText) => {
+          await executeExplorerDelete([path], confirmText);
           if (state.currentHierarchy) {
             loadHierarchy(state.currentHierarchy.current_path);
           }
@@ -1607,17 +1656,15 @@ function closeHierarchyModal() {
 }
 
 // Delete Entire Folder Level Handler
-async function executeDeleteFolder(folderPath) {
+async function executeDeleteFolder(folderPath, confirmText = '') {
   try {
-    const res = await fetch('/api/filesystem/delete-folder', {
+    const result = await apiJson('/api/filesystem/delete-folder', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete }),
+      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete, confirm_text: confirmText }),
     });
-
-    const result = await res.json();
     if (result.deleted_count > 0) {
-      const verb = result.mode === 'permanent' ? 'Permanently deleted' : t('Moved to Recycle Bin');
+      const verb = result.mode === 'permanent' ? 'Permanently deleted'
+        : (Object.keys(result.held || {}).length ? 'Set aside for 7 days' : t('Moved to Recycle Bin'));
       showToast(`${verb}: ${folderPath}`, 'success');
 
       // Purge any items from main scan that were inside this deleted folder
@@ -1639,41 +1686,73 @@ async function executeDeleteFolder(folderPath) {
   }
 }
 
-// Batch Deletion (Recycle Bin or permanent, per the current delete mode)
-async function executeBatchDelete(items) {
+// Batch Deletion of scan results (Recycle Bin or permanent, per the current delete mode)
+async function executeBatchDelete(items, confirmText = '') {
   try {
-    const res = await fetch('/api/clean', {
+    const result = await apiJson('/api/clean', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items,
+        items: items.map((i) => ({ path: i.path })),
         permanent: state.permanentDelete,
+        confirm_text: confirmText,
       }),
     });
-
-    const result = await res.json();
+    showDeleteOutcome(result);
 
     if (result.deleted_count > 0) {
-      if (result.mode === 'permanent') {
-        showToast(`Permanently deleted ${result.deleted_count} item(s) (freed ${result.freed_formatted})!`, 'success');
-      } else {
-        showToast(t(`Moved ${result.deleted_count} item(s) (${result.freed_formatted}) to the Recycle Bin. Empty it to free the space.`), 'success');
-      }
-
-      const deletedPaths = new Set(items.map((i) => i.path));
+      const failed = new Set((result.errors || []).map((e) => e.path));
+      const deletedPaths = new Set(items.map((i) => i.path).filter((p) => !failed.has(p)));
       state.items = state.items.filter((i) => !deletedPaths.has(i.path));
-      items.forEach((i) => state.selectedIds.delete(i.id));
+      items.forEach((i) => { if (deletedPaths.has(i.path)) state.selectedIds.delete(i.id); });
 
       applyFiltersAndRender(true);
       updateSelectionSummary();
       renderSmartSummary();
     }
+  } catch (err) {
+    showToast(`Deletion failed: ${err.message}`, 'error');
+  }
+}
 
-    if (result.failed_count > 0) {
-      showToast(`${result.failed_count} item(s) could not be deleted (locked or protected).`, 'error');
+// Files and folders picked in Folder Explorer
+async function executeExplorerDelete(paths, confirmText = '') {
+  try {
+    const result = await apiJson('/api/filesystem/delete-paths', {
+      method: 'POST',
+      body: JSON.stringify({ paths, permanent: state.permanentDelete, confirm_text: confirmText }),
+    });
+    showDeleteOutcome(result);
+    if (result.deleted_count > 0) {
+      const failed = new Set((result.errors || []).map((e) => e.path));
+      const gone = paths.filter((p) => !failed.has(p));
+      state.items = state.items.filter((i) => !gone.some((p) => pathIsWithin(i.path, p)));
+      applyFiltersAndRender(true);
+      updateSelectionSummary();
     }
   } catch (err) {
     showToast(`Deletion failed: ${err.message}`, 'error');
+  }
+}
+
+function showDeleteOutcome(result) {
+  const held = Object.keys(result.held || {}).length;
+  if (result.deleted_count > 0) {
+    if (result.mode === 'permanent') {
+      showToast(`Permanently deleted ${result.deleted_count} item(s) (freed ${result.freed_formatted})!`, 'success');
+    } else {
+      const binned = result.deleted_count - held;
+      if (binned > 0) {
+        showToast(t(`Moved ${binned} item(s) to the Recycle Bin. Empty it to free the space.`), 'success');
+      }
+      if (held > 0) {
+        showToast(t(`${held} item(s) on a drive without a Recycle Bin were set aside in a hidden JunkZero folder on that drive for 7 days. Restore them from Cleanup History.`), 'info');
+      }
+    }
+  }
+  if (result.failed_count > 0) {
+    const first = result.errors?.[0]?.error || 'locked or protected';
+    const more = result.failed_count > 1 ? ` (and ${result.failed_count - 1} more)` : '';
+    showToast(`${result.failed_count} item(s) were not deleted: ${first}${more}`, 'error');
   }
 }
 
@@ -1691,7 +1770,7 @@ function setDeleteMode(permanent) {
 }
 
 // Universal Deletion Confirmation Modal
-function requestDeleteConfirmation({ title, subtitle, count, size, onConfirm }) {
+function requestDeleteConfirmation({ title, subtitle, count, size, preview, onConfirm }) {
   const permanent = state.permanentDelete;
   el.confirmModalTitle.textContent = title;
   el.confirmModalSubtitle.textContent = subtitle;
@@ -1715,17 +1794,63 @@ function requestDeleteConfirmation({ title, subtitle, count, size, onConfirm }) 
   // Permanent mode needs an explicit second confirmation before the button unlocks
   el.confirmPermanentAckInput.checked = false;
   el.confirmPermanentAck.classList.toggle('hidden', !permanent);
-  el.btnExecuteDelete.disabled = permanent;
+
+  // What will be deleted is checked first; large deletes and personal files need DELETE typed
+  el.confirmChecks.innerHTML = '';
+  el.confirmChecks.classList.add('hidden');
+  el.confirmTyped.classList.add('hidden');
+  el.confirmTypedInput.value = '';
+  state.confirmNeedsTyped = false;
+  state.confirmPreviewPending = Boolean(preview);
+  updateExecuteEnabled();
 
   state.deleteConfirmCallback = onConfirm;
 
   el.confirmModal.classList.remove('hidden');
   lucide.createIcons();
+  if (preview) loadDeletePreview(preview);
+}
+
+function updateExecuteEnabled() {
+  const ackOk = !state.permanentDelete || el.confirmPermanentAckInput.checked;
+  const typedOk = !state.confirmNeedsTyped || el.confirmTypedInput.value.trim().toUpperCase() === 'DELETE';
+  el.btnExecuteDelete.disabled = state.confirmPreviewPending || !ackOk || !typedOk;
+}
+
+async function loadDeletePreview(preview) {
+  const request = {};
+  state.confirmPreviewRequest = request;
+  let lines;
+  try {
+    const summary = await apiJson('/api/delete-preview', {
+      method: 'POST',
+      body: JSON.stringify({ ...preview, permanent: state.permanentDelete }),
+    });
+    if (state.confirmPreviewRequest !== request) return;
+    if (preview.source === 'explorer') {
+      el.confirmCount.textContent = summary.count.toLocaleString();
+      el.confirmSize.textContent = summary.bytes_formatted;
+    }
+    state.confirmNeedsTyped = summary.needs_typed_confirm;
+    lines = deletePreviewLines(summary, t('Recycle Bin'));
+  } catch (err) {
+    if (state.confirmPreviewRequest !== request) return;
+    // Couldn't check: be safe and ask for DELETE
+    state.confirmNeedsTyped = true;
+    lines = [{ level: 'warning', text: `Could not check what will be deleted (${err.message})` }];
+  }
+  el.confirmChecks.innerHTML = lines.map((l) => `<li class="check-${l.level}">${escapeHtml(l.text)}</li>`).join('');
+  el.confirmChecks.classList.toggle('hidden', lines.length === 0);
+  el.confirmTyped.classList.toggle('hidden', !state.confirmNeedsTyped);
+  state.confirmPreviewPending = false;
+  updateExecuteEnabled();
+  if (state.confirmNeedsTyped) el.confirmTypedInput.focus();
 }
 
 function closeConfirmModal() {
   el.confirmModal.classList.add('hidden');
   state.deleteConfirmCallback = null;
+  state.confirmPreviewRequest = null;
 }
 
 // AI Inspector
@@ -2067,6 +2192,8 @@ function renderHistory(history) {
     const when = new Date(h.timestamp * 1000).toLocaleString();
     const mode = h.mode === 'permanent' ? 'Permanently deleted' : t('Moved to Recycle Bin');
     const extra = h.paths_truncated ? `<li>...and ${h.paths_truncated} more</li>` : '';
+    const restored = (h.restored || []).length;
+    const canRestore = h.mode !== 'permanent' && restored < h.paths.length;
     return `
       <li>
         <div class="history-row">
@@ -2076,7 +2203,10 @@ function renderHistory(history) {
         <div class="history-meta">
           ${escapeHtml(mode)} &middot; ${h.deleted_count} item${h.deleted_count === 1 ? '' : 's'}
           ${h.failed_count ? `&middot; ${h.failed_count} failed` : ''} &middot; from ${escapeHtml(h.source)}
+          ${restored ? `&middot; ${restored} restored` : ''}
         </div>
+        ${canRestore ? `<button class="btn btn-secondary btn-sm btn-restore-cleanup" data-timestamp="${h.timestamp}">
+          <i data-lucide="undo-2"></i> Restore</button>` : ''}
         <details>
           <summary>Show items</summary>
           <ul>${h.paths.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}${extra}</ul>
@@ -2084,6 +2214,28 @@ function renderHistory(history) {
       </li>
     `;
   }).join('');
+  el.historyList.querySelectorAll('.btn-restore-cleanup').forEach((btn) => {
+    btn.addEventListener('click', () => restoreCleanup(Number(btn.dataset.timestamp)));
+  });
+  lucide.createIcons();
+}
+
+async function restoreCleanup(timestamp) {
+  try {
+    const result = await apiJson('/api/history/restore', {
+      method: 'POST',
+      body: JSON.stringify({ timestamp }),
+    });
+    renderHistory(result.history);
+    if (result.restored.length) {
+      showToast(`Restored ${result.restored.length} item(s) to where they were. Scan again to see them.`, 'success');
+    }
+    if (result.errors.length) {
+      showToast(`${result.errors.length} item(s) not restored: ${result.errors[0].error}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Could not restore: ${err.message}`, 'error');
+  }
 }
 
 async function clearHistory() {

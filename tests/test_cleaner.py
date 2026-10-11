@@ -3,6 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 from app.engine.cleaner import delete_items
+from tests.helpers import api_client, offer
 
 
 def test_safe_cleaner_permanent_delete():
@@ -95,12 +96,11 @@ def test_cleaner_defaults_to_recycle_bin(monkeypatch):
 
 
 def test_api_deletes_go_to_recycle_bin_unless_permanent_requested(monkeypatch):
-    from fastapi.testclient import TestClient
     from app.main import app
 
     trashed = []
     monkeypatch.setattr("app.engine.cleaner.send2trash.send2trash", lambda p: trashed.append(p))
-    client = TestClient(app, base_url="http://127.0.0.1")
+    client = api_client()
 
     with tempfile.TemporaryDirectory() as tmpdir:
         a = Path(tmpdir) / "a.tmp"
@@ -110,6 +110,7 @@ def test_api_deletes_go_to_recycle_bin_unless_permanent_requested(monkeypatch):
         b.write_text("b")
         folder.mkdir()
 
+        offer([a, b])
         res = client.post("/api/clean", json={"items": [{"path": str(a)}]})
         assert res.json()["mode"] == "recycle_bin"
         assert a.exists()
