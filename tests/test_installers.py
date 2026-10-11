@@ -81,7 +81,10 @@ def test_setup_named_without_fingerprint_is_a_weak_review(tmp_path):
     assert "no installer fingerprint" in item.reason
     _, reasons = smart.SmartScorer().score(item)
     assert "-10: only its name says setup; no installer fingerprint inside" in reasons
-    assert _classify(make_exe(tmp_path / "Documents" / "setup.exe")) is None
+    # Outside Downloads, Desktop and temp the name alone is not enough
+    # (a literal path: the test's own tmp folder sits under Temp on Windows)
+    assert classify_item("C:/Users/me/Documents/setup.exe", "setup.exe", 5000, 1_600_000_000.0, False,
+                         ScanOptions(target_path="C:/Users/me")) is None
 
 
 def test_uninstallers_and_program_folders_are_never_listed(tmp_path):
