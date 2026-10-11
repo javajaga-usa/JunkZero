@@ -135,12 +135,12 @@ def test_cloud_folders_are_found_by_name_and_env(tmp_path):
 def test_online_only_files_are_never_listed_or_opened(tmp_path, monkeypatch):
     temp = tmp_path / "Temp"
     temp.mkdir()
-    for name in ("online.tmp", "local.tmp"):
-        (temp / name).write_text("x")
+    for name, text in (("online.tmp", "online"), ("local.tmp", "x")):
+        (temp / name).write_text(text)
         _old(temp / name)
-    online = (temp / "online.tmp").stat().st_ino
     original = osinfo.is_online_only
-    monkeypatch.setattr(osinfo, "is_online_only", lambda st: st.st_ino == online)
+    # Told apart by size: Windows scandir results carry no inode number
+    monkeypatch.setattr(osinfo, "is_online_only", lambda st: st.st_size == len("online"))
     names = {i.name for i in _scan(tmp_path, include_empty_folders=False)}
     assert names == {"local.tmp"}
     monkeypatch.setattr(osinfo, "is_online_only", original)
