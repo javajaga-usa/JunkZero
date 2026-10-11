@@ -44,7 +44,7 @@ def test_classify_java_class(default_options):
     )
     assert item is not None
     assert item.category == CAT_JAVA_BUILDS
-    assert item.risk_level == RISK_SAFE
+    assert item.risk_level == RISK_REVIEW  # Outside a build folder
     assert ".class" in item.reason
 
 

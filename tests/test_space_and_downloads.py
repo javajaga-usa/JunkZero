@@ -1,5 +1,6 @@
 """Old Downloads category, Largest Files view and remembered preferences."""
 import os
+import threading
 import time
 
 from app import main
@@ -112,17 +113,15 @@ def test_downloads_folder_from_profile(tmp_path):
 
 
 def test_scan_api_passes_old_downloads_options(tmp_path, monkeypatch):
-    seen = {}
+    seen, started = {}, threading.Event()
     monkeypatch.setattr(main, "downloads_folder", lambda: str(tmp_path))
-    monkeypatch.setattr(main.FastScanner, "run_scan", lambda self: seen.update(opts=self.options) or [])
+    monkeypatch.setattr(main.FastScanner, "run_scan", lambda self: seen.update(opts=self.options) or started.set() or [])
     res = client.post("/api/scan/start", json={
         "target_path": str(tmp_path), "include_old_downloads": True, "old_download_days": 30,
     })
     assert res.status_code == 200
-    for _ in range(50):
-        if "opts" in seen:
-            break
-        time.sleep(0.02)
+    # The scan runs on its own thread, which a busy CI machine may start late
+    assert started.wait(10)
     opts = seen["opts"]
     assert (opts.include_old_downloads, opts.old_download_days, opts.downloads_dirs) == (True, 30, [str(tmp_path)])
     assert client.post("/api/scan/start", json={"target_path": str(tmp_path), "old_download_days": 0}).status_code == 422

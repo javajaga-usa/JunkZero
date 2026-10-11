@@ -218,8 +218,11 @@ def run_scheduled_report() -> int:
     """Entry point for Task Scheduler and launchd."""
     schedule = get_schedule()
     run_report(schedule["paths"], schedule["include_junk_locations"], source="scheduled")
-    schedule["last_run"] = time.time()
-    storage.update_settings(schedule=schedule)
+    # The scan can take minutes: only stamp the run, so changes made in the app meanwhile stay
+    with storage.lock():
+        current = storage.load_settings().get("schedule")
+        if isinstance(current, dict):
+            storage.update_settings(schedule={**current, "last_run": time.time()})
     return 0
 
 

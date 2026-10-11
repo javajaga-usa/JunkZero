@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.config import ARCHIVE_EXTENSIONS
 from app.engine.archives import inspect_archive
+from app.engine.classifier import _in_build_output_folder, _in_disposable_folder
 from app.engine.installers import inspect_exe, is_uninstaller_name
 
 
@@ -26,16 +27,16 @@ OFFLINE_KNOWLEDGE_BASE: Dict[str, Dict[str, str]] = {
     ".iso": {
         "type": "Operating System / Disc Image (ISO)",
         "origin": "OS Installation Media (Windows/Linux) or Optical Disc Backup",
-        "verdict": "Safe to Delete",
-        "explanation": "This is a raw optical disc or operating system installation image. Once written to a USB drive or installed, the large multi-gigabyte ISO file on your hard disk is rarely needed.",
-        "recommendation": "Safe to delete to reclaim several gigabytes of disk space."
+        "verdict": "Review Carefully",
+        "explanation": "This is an optical disc or operating system installation image. It can also be a backup of a disc you no longer have.",
+        "recommendation": "If it is installation media you can download again, it can go to reclaim several gigabytes."
     },
     ".img": {
         "type": "Raw Disk Image",
         "origin": "OS Installer / Raspberry Pi / Virtual Machine Disk",
-        "verdict": "Safe to Delete",
-        "explanation": "A raw sector-by-sector disk image file commonly used for flashing OS images or installation media.",
-        "recommendation": "Safe to delete if you have already flashed it or completed setup."
+        "verdict": "Review Carefully",
+        "explanation": "A raw sector-by-sector disk image, used for flashing OS images but also for backing up SD cards and drives.",
+        "recommendation": "Delete it only if it is an OS image you can download again, not a backup."
     },
     ".vhd": {
         "type": "Virtual Hard Disk Image",
@@ -190,16 +191,19 @@ def analyze_item(path_str: str) -> AIAnalysisResult:
     # Offline Heuristic Analysis
     info = OFFLINE_KNOWLEDGE_BASE.get(suffix)
 
-    # Check directory names
+    # Check directory names. Only __pycache__ is safe by name; a folder called target or build
+    # can hold anything (the scanner rates them Review too)
     if path.is_dir() and file_name.lower() in {"node_modules", "target", "build", "__pycache__", ".gradle"}:
+        safe = file_name.lower() == "__pycache__"
         return AIAnalysisResult(
             file_name=file_name,
             file_path=path_str,
             detected_type="Software Project Dependency / Build Directory",
             origin_application="Node.js (npm), Maven, Gradle, or Python",
-            safety_verdict="Safe to Delete",
-            explanation=f"This directory contains installed package dependencies or build artifacts for a {file_name} project.",
-            recommendation="Safe to delete if this project is dormant. It can always be restored with 'npm install' or re-building.",
+            safety_verdict="Safe to Delete" if safe else "Review Carefully",
+            explanation=f"A folder named {file_name} usually holds package dependencies or build output, but the name alone does not prove it.",
+            recommendation="Safe to delete; Python rebuilds it automatically." if safe else
+                "Check it belongs to a project you build yourself. If so it can be restored with 'npm install' or re-building.",
             ai_powered=False
         )
 
@@ -257,14 +261,22 @@ def analyze_item(path_str: str) -> AIAnalysisResult:
         )
 
     if info:
+        verdict, recommendation = info["verdict"], info["recommendation"]
+        # No more confident than the scanner: temp files, dumps and compiled classes are only
+        # junk in the places the scanner lists them
+        unsure = (suffix in {".tmp", ".dmp"} and not _in_disposable_folder(path_str)) \
+            or (suffix == ".class" and not _in_build_output_folder(path_str))
+        if unsure and verdict == "Safe to Delete":
+            verdict = "Review Carefully"
+            recommendation = "Check what it is before deleting; here it could be someone's own file."
         return AIAnalysisResult(
             file_name=file_name,
             file_path=path_str,
             detected_type=info["type"],
             origin_application=info["origin"],
-            safety_verdict=info["verdict"],
+            safety_verdict=verdict,
             explanation=info["explanation"],
-            recommendation=info["recommendation"],
+            recommendation=recommendation,
             ai_powered=False
         )
 

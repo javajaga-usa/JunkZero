@@ -201,7 +201,11 @@ def inspect_archive(path: str, size_bytes: int = 0) -> ArchiveVerdict:
             # One compressed file: its own name says what it is (ubuntu.img.xz, tool.exe.gz)
             inner = PurePosixPath(os.path.basename(lower)).stem
             suffix = PurePosixPath(inner).suffix
-            if suffix in SETUP_EXTENSIONS or suffix in DISK_IMAGE_EXTENSIONS:
+            # A compressed disk image (sdcard.img.gz) is as often a backup as an installer: not judged
+            if suffix in DISK_IMAGE_EXTENSIONS:
+                return ArchiveVerdict(summary=f"a compressed {suffix} disk image, which may be a backup",
+                                      file_count=1)
+            if suffix in SETUP_EXTENSIONS:
                 return ArchiveVerdict(is_setup=True, summary=f"a compressed {suffix} file",
                                       setup_files=[inner], file_count=1)
             return ArchiveVerdict(summary="a compressed file that is not an installer", file_count=1)

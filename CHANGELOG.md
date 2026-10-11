@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixes from a full audit
+- The app token is no longer written into the page, where any program or other user account on the computer could fetch it. JunkZero's window gets it in its address instead, and reading the scan, history or reports now needs it too. `--mode server` prints the address to open.
+- On Windows, items too big for the Recycle Bin, or on a drive whose Recycle Bin is set to remove files immediately, go to the holding folder for 7 days instead of being quietly erased.
+- On a Mac, Restore puts back only the very item JunkZero moved to the Trash, not another file with the same or a similar name. Restore never moves anything over a file that appeared in the meantime.
+- Two deletes at once can no longer remove every copy of a duplicate. A folder holding a `.git` (or a backup) is never deleted, and personal files inside a folder the scan wasn't sure about ask for DELETE typed.
+- If JunkZero can't tell which files are open in other programs, it deletes nothing. On Windows, a folder with a file open inside is left whole instead of being half deleted.
+- Only items rated Safe can be marked Delete; learning and bonuses no longer push Review items there, and an item is preselected only when it is marked Delete. "Select all safe" no longer ticks empty folders.
+- The scan no longer follows Windows junctions out of the scanned folder, and doesn't scan inside `.git`, `.svn`, `.hg` or backup folders even when one is picked as the target. Empty Desktop, Music and other personal folders are never offered as empty folders.
+- Scripts are listed as setup scripts only when a whole word of their name says setup or install (`research.sh` is no longer an installer). Compressed disk images (`.img.gz`, `.iso.xz`) may be backups and are no longer listed as setup archives.
+- `.class` and `.pyc` files are Safe only inside build folders and `__pycache__`. `.war` and `.ear` files say why they are listed. Program Leftovers skips folders holding wallets, and folders too big to check fully. `Users/<name>/Library` on other disks (a migrated Mac) is protected like your own.
+- AI Inspect is never surer than the scanner: build folders found by name and disk images are Review.
+- "Show in Finder" on an app or package shows it instead of opening it.
+- Settings and history can't be lost or mixed up when the app and a scheduled scan save at the same moment; a damaged settings file is kept aside instead of being overwritten. A scheduled scan no longer undoes schedule changes made while it ran. After a scan in the app, items from an older scheduled report can no longer be deleted.
+- Releases are published only from main, never over an existing version, and build with pinned library versions. CI also tests Python 3.12, which builds the releases.
+- Fixed a duplicates test that failed about once in 256 runs, and two tests that could time out on a busy machine.
+
 ### Safeguards for personal files
 - Only JunkZero's own window can delete anything: every change needs a secret made fresh at each launch, so other web pages open in your browser can't ask JunkZero to delete files.
 - Duplicates: the copy in Documents, Pictures, Desktop or a cloud folder is kept over the one in Downloads or a temp folder, and a copy is deleted only while another identical copy is still there, so the last copy is never removed.

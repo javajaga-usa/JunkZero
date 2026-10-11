@@ -111,7 +111,7 @@ def test_single_compressed_files_go_by_inner_name(tmp_path):
     image.write_bytes(b"x")
     notes = tmp_path / "notes.txt.gz"
     notes.write_bytes(b"x")
-    assert inspect_archive(str(image)).is_setup
+    assert not inspect_archive(str(image)).is_setup  # A compressed disk image may be a backup
     assert not inspect_archive(str(notes)).is_setup
 
 

@@ -90,7 +90,7 @@ def test_personal_folders_are_protected(tmp_path, monkeypatch):
     ("C:/Users/a/settings.old", RISK_REVIEW),
     ("C:/Users/a/App.csproj.user", RISK_REVIEW),
     ("C:/Users/a/AppData/Local/Temp/cache.tmp", RISK_SAFE),
-    ("C:/Users/a/Main.class", RISK_SAFE),
+    ("C:/Users/a/Main.class", RISK_REVIEW),
 ])
 def test_ambiguous_file_types_need_review(path, risk):
     item = classify_item(path, path.rsplit("/", 1)[-1], 10, 1.0, False, ScanOptions(target_path="."))

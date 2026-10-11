@@ -1,0 +1,9 @@
+# Exact versions the release builds use, so a new upstream release can't change a shipped build
+# unnoticed. The Release workflow also runs on every pull request, which tests these pins.
+fastapi==0.143.0
+starlette==1.6.0
+uvicorn==0.53.0
+pydantic==2.13.5
+send2trash==2.1.0
+pywebview==6.2.1
+pyinstaller==6.11.1

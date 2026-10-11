@@ -41,12 +41,28 @@ from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_r
 from app.engine.exclusions import ExclusionMatcher
 from app.engine import osinfo
 from app.engine.leftovers import find_program_leftovers
+from app.engine.locations import is_protected_user_folder, protected_user_folders
 from app.engine.safeguards import Safeguards
 from app.engine.smart import SmartScorer
 
 
 def _norm_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
+
+
+def _is_junction(entry: os.DirEntry) -> bool:
+    is_junction = getattr(entry, "is_junction", None)
+    return bool(is_junction and is_junction())
+
+
+def _in_vcs_or_backup(path: str) -> bool:
+    """True if path is (or is inside) a version-control, backup or holding folder."""
+    for part in _norm_path(path).replace("\\", "/").split("/"):
+        lower = part.lower()
+        if lower in VCS_DIR_NAMES or lower in BACKUP_DIR_NAMES or lower.endswith(BACKUP_DIR_SUFFIXES) \
+                or lower == HOLDING_DIR_NAME.lower():
+            return True
+    return False
 
 
 @dataclass
@@ -120,6 +136,9 @@ class FastScanner:
                     if self._stop_event.is_set():
                         break
                     try:
+                        # Links and junctions point elsewhere: never followed or counted
+                        if entry.is_symlink() or _is_junction(entry):
+                            continue
                         if entry.is_file(follow_symlinks=False):
                             total += entry.stat(follow_symlinks=False).st_size
                         elif entry.is_dir(follow_symlinks=False):
@@ -251,10 +270,10 @@ class FastScanner:
                                 with self._lock:
                                     self._hidden_dirs.add(path)
 
-                            # Windows junctions are not followed for emptiness purposes
-                            is_junction = getattr(entry, "is_junction", None)
-                            if is_junction and is_junction():
+                            # Windows junctions point elsewhere (even back up the tree): never followed
+                            if _is_junction(entry):
                                 has_content = True
+                                continue
 
                             leftover = self._leftovers.get(_norm_path(path)) if self._leftovers else None
                             if leftover:
@@ -393,8 +412,12 @@ class FastScanner:
                 nested_count[dir_path] = sum(1 + nested_count.get(c, 0) for c in children)
 
         items: List[GarbageItem] = []
+        user_folders = protected_user_folders()
         for dir_path, is_empty in empty.items():
             if not is_empty or dir_path in roots or dir_path in self._hidden_dirs:
+                continue
+            # An empty Desktop, Music or profile folder is still the user's own folder
+            if is_protected_user_folder(dir_path, folders=user_folders):
                 continue
             parent = parent_of.get(dir_path)
             if parent is None:
@@ -461,6 +484,9 @@ class FastScanner:
         for path in paths:
             path = os.path.abspath(path)
             if not os.path.isdir(path):
+                continue
+            # Never scan inside version-control or backup folders, even when asked to start there
+            if _in_vcs_or_backup(path):
                 continue
             if any(self._is_within(path, r) for r in roots):
                 continue

@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.config import OLD_DOWNLOAD_DAYS, ScanOptions
+from app.config import MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import changes, deletecheck, osinfo, recycle, safeguards, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
@@ -49,21 +49,44 @@ app = FastAPI(title="JunkZero API", version=__version__)
 # pointing its own domain name at 127.0.0.1 (DNS rebinding)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
-# A secret made fresh at every launch and handed only to JunkZero's own page. Every request
-# that changes something must carry it, so another web page open in the browser can't make
-# JunkZero delete files (it can send requests to 127.0.0.1, but can't read the secret).
+# A secret made fresh at every launch and handed only to the window JunkZero opens, in the
+# part of the address after # (which is never sent to a server, so nothing can fetch it from
+# here). Every API request must carry it, so neither another web page in the browser nor
+# another program or user account on this computer can read the scan or delete files.
 API_TOKEN = secrets.token_urlsafe(32)
 TOKEN_HEADER = "X-JunkZero-Token"
+TOKEN_PARAM = "token"
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+# Says only which system this is and the app version
+_OPEN_API_PATHS = {"/api/system/info"}
+# EventSource can't send headers, so the live scan stream takes the token in its address
+_TOKEN_IN_QUERY_PATHS = {"/api/scan/stream"}
+
+
+def app_url(server_url: str) -> str:
+    """The address JunkZero opens its window at, carrying this launch's token."""
+    return f"{server_url}/#{TOKEN_PARAM}={API_TOKEN}"
+
+
+def _token_ok(value: Optional[str]) -> bool:
+    try:
+        return secrets.compare_digest((value or "").encode("utf-8"), API_TOKEN.encode("utf-8"))
+    except (TypeError, UnicodeError):
+        return False
 
 
 @app.middleware("http")
 async def require_app_token(request: Request, call_next):
-    if request.url.path.startswith("/api/") and request.method not in _SAFE_METHODS:
-        origin = request.headers.get("origin")
-        if origin is not None and urlparse(origin).netloc != request.headers.get("host"):
-            return JSONResponse({"detail": "Requests from other web pages are not allowed"}, status_code=403)
-        if not secrets.compare_digest(request.headers.get(TOKEN_HEADER, ""), API_TOKEN):
+    path = request.url.path
+    if path.startswith("/api/") and path not in _OPEN_API_PATHS:
+        if request.method not in _SAFE_METHODS:
+            origin = request.headers.get("origin")
+            if origin is not None and urlparse(origin).netloc != request.headers.get("host"):
+                return JSONResponse({"detail": "Requests from other web pages are not allowed"}, status_code=403)
+        token = request.headers.get(TOKEN_HEADER)
+        if not token and path in _TOKEN_IN_QUERY_PATHS:
+            token = request.query_params.get(TOKEN_PARAM)
+        if not _token_ok(token):
             return JSONResponse({"detail": "Missing or wrong JunkZero app token"}, status_code=403)
     return await call_next(request)
 
@@ -85,10 +108,10 @@ class ScanRequest(BaseModel):
     include_old_downloads: bool = False
     include_custom_rules: bool = True
     include_leftovers: bool = False
-    old_download_days: int = Field(default=OLD_DOWNLOAD_DAYS, ge=1)
+    old_download_days: int = Field(default=OLD_DOWNLOAD_DAYS, ge=1, le=36500)
     scan_junk_locations: bool = False
-    min_size_mb: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    stale_days: int = Field(default=180, ge=1)
+    min_size_mb: float = Field(default=0.0, ge=0, le=10_000_000, allow_inf_nan=False)
+    stale_days: int = Field(default=180, ge=1, le=36500)
     skip_system_dirs: bool = True
 
 
@@ -199,7 +222,8 @@ MAC_CHOOSE_FOLDER_SCRIPT = (
 def reveal_command(path: str, is_file: bool) -> List[str]:
     """Command that shows path in Finder (macOS) or Windows Explorer, selecting it if it's a file."""
     if osinfo.is_macos():
-        return ["open", "-R", path] if is_file else ["open", path]
+        # "open" on a folder that is an app or package (Foo.app, a Photos library) would launch it
+        return ["open", "-R", path] if is_file or path.lower().rstrip("/").endswith(MAC_PACKAGE_EXTENSIONS) else ["open", path]
     return ["explorer.exe", "/select,", path] if is_file else ["explorer.exe", path]
 
 
@@ -403,22 +427,30 @@ def _key(path: str) -> str:
 
 
 def scan_results() -> Dict[str, Dict[str, Any]]:
-    """Items JunkZero itself listed (the current scan, then the latest scheduled report), by path.
-    Only these can be deleted through /api/clean."""
+    """Items JunkZero itself listed, by path: the latest scan in this window, or the latest
+    scheduled report when nothing was scanned since JunkZero opened. Only these can be deleted
+    through /api/clean, so an item a newer scan left out (excluded, changed) can't be."""
     found: Dict[str, Dict[str, Any]] = {}
-    report = storage.load_report() or {}
-    for item in report.get("items") or []:
-        if isinstance(item, dict) and isinstance(item.get("path"), str):
-            found[_key(item["path"])] = item
     scanner = current_scanner
     if scanner is not None:
         for item in list(scanner.garbage_items):
             found[_key(item.path)] = item.model_dump()
+        return found
+    report = storage.load_report() or {}
+    for item in report.get("items") or []:
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            found[_key(item["path"])] = item
     return found
 
 
 def _explorer_entries(paths: List[str]) -> List[Dict[str, Any]]:
     return [{"path": p, "is_directory": os.path.isdir(p), "size_bytes": 0} for p in paths if isinstance(p, str) and p]
+
+
+def _scan_entries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Scan results for the delete summary. A folder the scan wasn't sure about (a "build" or
+    "bin" folder, say) is looked inside, so personal files in it still ask for DELETE typed."""
+    return [{**i, "look_inside": bool(i.get("is_directory")) and i.get("risk_level") != RISK_SAFE} for i in items]
 
 
 def _check_confirmation(summary: Dict[str, Any], confirm_text: str) -> None:
@@ -442,7 +474,7 @@ def api_delete_preview(req: DeletePreviewRequest):
     if req.source == "scan":
         index = scan_results()
         entries = [index[_key(p)] for p in req.paths if isinstance(p, str) and _key(p) in index]
-        return deletecheck.summarize(entries, req.permanent, cloud)
+        return deletecheck.summarize(_scan_entries(entries), req.permanent, cloud)
     return deletecheck.summarize(_explorer_entries(req.paths), req.permanent, cloud, look_inside=True)
 
 
@@ -465,7 +497,8 @@ def api_clean_items(req: CleanRequest) -> CleanResult:
         else:
             items.append(item)
 
-    _check_confirmation(deletecheck.summarize(items, req.permanent, safeguards.cloud_folders()), req.confirm_text)
+    _check_confirmation(deletecheck.summarize(_scan_entries(items), req.permanent, safeguards.cloud_folders()),
+                        req.confirm_text)
     result = _with_errors(delete_items(items, permanent=req.permanent), unknown)
     _record_history(result, [i["path"] for i in items], "scan results")
     try:
@@ -691,11 +724,9 @@ if UI_DIR.exists():
 
     @app.get("/")
     def serve_index():
-        # The page gets this launch's app token (see require_app_token)
+        # The page holds no secret: the app token reaches it only in the window's address
         html = (UI_DIR / "index.html").read_text(encoding="utf-8")
-        meta = f'<meta name="junkzero-token" content="{API_TOKEN}">'
-        return HTMLResponse(html.replace("<head>", "<head>\n  " + meta, 1),
-                            headers={"Cache-Control": "no-store"})
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 def _purge_holding() -> None:
@@ -753,8 +784,10 @@ def main():
 
     port = args.port if args.port is not None else pick_port(8000)
     server_url = f"http://127.0.0.1:{port}"
+    window_url = app_url(server_url)
 
     if args.mode == "server":
+        print(f"Open JunkZero at {window_url}", flush=True)
         start_server(port=port)
         return
 
@@ -769,7 +802,7 @@ def main():
 
     if args.mode == "browser":
         # Launch default web browser
-        webbrowser.open(server_url)
+        webbrowser.open(window_url)
         try:
             while True:
                 threading.Event().wait(1)
@@ -785,7 +818,7 @@ def main():
             logger.info("Launching native Desktop GUI window...")
             window = webview.create_window(
                 title="JunkZero",
-                url=server_url,
+                url=window_url,
                 width=1320,
                 height=880,
                 min_size=(980, 650),
@@ -795,7 +828,7 @@ def main():
             sys.exit(0)
         except Exception as e:
             logger.warning(f"Could not open native WebView window ({e}), falling back to default browser.")
-            webbrowser.open(server_url)
+            webbrowser.open(window_url)
             try:
                 while True:
                     threading.Event().wait(1)
