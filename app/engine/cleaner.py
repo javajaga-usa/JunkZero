@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import shutil
 import logging
+import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 import send2trash
 
@@ -16,6 +18,7 @@ from app.config import (
 from app.engine.classifier import is_system_protected_path, format_size
 from app.engine.duplicates import same_content
 from app.engine.inuse import OpenFileCheck
+from app.engine import osinfo
 from app.engine.osinfo import is_hidden
 from app.engine import recycle, storage
 from app.engine.locations import is_protected_user_folder, protected_user_folders
@@ -65,6 +68,43 @@ def _key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
+# One delete at a time: two at once could each see the other's copy of a duplicate as still
+# there and remove both
+_delete_lock = threading.Lock()
+
+
+def _walk_folder(path: str) -> Tuple[int, Optional[str]]:
+    """(total size of the files inside, name of a version-control or backup folder found inside)."""
+    size = 0
+    for root, dirs, files in os.walk(path):
+        for d in dirs:
+            if d.lower() in VCS_DIR_NAMES or in_backup_folder(d):
+                return size, d
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+        for f in files:
+            try:
+                size += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return size, None
+
+
+def _remove_permanently(path: str) -> None:
+    if not os.path.isdir(path):
+        os.remove(path)
+        return
+    if osinfo.is_windows():
+        # Windows can't rename a folder while a file inside it is open, so this finds out
+        # before anything is erased instead of stopping halfway through
+        aside = f"{path.rstrip(os.sep)}.junkzero-{uuid.uuid4().hex[:6]}"
+        try:
+            os.rename(path, aside)
+        except PermissionError as ex:
+            raise OSError("a file inside it is open in another program (close it and try again)") from ex
+        path = aside
+    shutil.rmtree(path)
+
+
 def _raise(err: OSError) -> None:
     raise err
 
@@ -79,6 +119,8 @@ class CleanResult(BaseModel):
     errors: List[Dict[str, str]] = Field(default_factory=list)
     # Items on drives without a Recycle Bin: original path -> where it was set aside
     held: Dict[str, str] = Field(default_factory=dict)
+    # macOS: [device, inode] of each item sent to the Trash, so Restore finds that very item
+    trash_ids: Dict[str, List[int]] = Field(default_factory=dict)
     started_at: float = 0.0
 
 
@@ -92,10 +134,16 @@ def delete_items(
     drives without one, to JunkZero's holding folder on that drive); pass permanent=True to
     erase them from disk directly.
     """
+    with _delete_lock:
+        return _delete_items(items, permanent, open_check)
+
+
+def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Optional[OpenFileCheck]) -> CleanResult:
     started_at = time.time()
     open_check = OpenFileCheck() if open_check is None else open_check
     deleted_keys = set()
     held: Dict[str, str] = {}
+    trash_ids: Dict[str, List[int]] = {}
     batches: Dict[str, str] = {}
     deleted_count = 0
     failed_count = 0
@@ -195,43 +243,48 @@ def delete_items(
                 failed_count += 1
                 continue
 
-        try:
-            # Auto-calculate size if not passed
+        # A folder holding a .git (a build folder that is its own repository) or a backup is kept whole
+        if os.path.isdir(norm_path):
+            try:
+                inside_size, kept = _walk_folder(norm_path)
+            except OSError:
+                inside_size, kept = 0, None
+            if kept:
+                errors.append({"path": path_str, "error": f"Deletion blocked: it holds a {kept} folder"})
+                failed_count += 1
+                continue
             if size == 0:
-                try:
-                    if os.path.isdir(norm_path):
-                        for root, _, files in os.walk(norm_path):
-                            for f in files:
-                                fp = os.path.join(root, f)
-                                if not os.path.islink(fp):
-                                    size += os.path.getsize(fp)
-                    elif os.path.isfile(norm_path):
-                        size = os.path.getsize(norm_path)
-                except Exception:
-                    pass
+                size = inside_size
+        elif size == 0:
+            try:
+                size = os.path.getsize(norm_path)
+            except OSError:
+                pass
 
+        try:
             if permanent:
                 # Permanent deletion direct from disk
-                if os.path.isdir(norm_path):
-                    shutil.rmtree(norm_path)
-                else:
-                    os.remove(norm_path)
+                _remove_permanently(norm_path)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
-            elif recycle.has_recycle_bin(norm_path):
+            elif recycle.recycle_bin_takes(norm_path, size):
                 # Default: move to the Recycle Bin so the user can restore it
+                if osinfo.is_macos():
+                    st = os.lstat(norm_path)
+                    trash_ids[path_str] = [st.st_dev, st.st_ino]
                 send2trash.send2trash(norm_path)
                 logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
             else:
-                # USB sticks and network shares have no Recycle Bin: Windows would erase the item.
-                # Set it aside on the same drive instead, where it can be restored for a week.
+                # USB sticks and network shares have no Recycle Bin, and Windows erases items too big
+                # for the Recycle Bin (or all items, when it is set to). Set it aside on the same
+                # drive instead, where it can be restored for a week.
                 root = recycle.mount_point(norm_path)
                 try:
                     if root not in batches:
                         batches[root] = recycle.new_holding_batch(root)
                     held[path_str] = recycle.move_to_holding(norm_path, batches[root])
                 except OSError as ex:
-                    raise OSError("This drive has no Recycle Bin and JunkZero could not set the item aside "
-                                  f"there ({ex}); use Permanent delete to remove it") from ex
+                    raise OSError("The Recycle Bin can't take this item and JunkZero could not set it aside "
+                                  f"on this drive ({ex}); use Permanent delete to remove it") from ex
                 logger.info(f"Held: {norm_path} -> {held[path_str]} ({format_size(size)})")
 
             deleted_keys.add(_key(norm_path))
@@ -253,5 +306,6 @@ def delete_items(
         mode=mode_str,
         errors=errors,
         held=held,
+        trash_ids=trash_ids,
         started_at=started_at,
     )

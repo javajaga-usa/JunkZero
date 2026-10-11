@@ -98,7 +98,7 @@ def _is_shared(name: str, extra: Set[str] = frozenset(), extra_prefixes: tuple =
 
 
 def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
-    """Newest mtime of the folder and what's inside it (stops after `limit` entries)."""
+    """Newest mtime of the folder and what's inside it, or 0 (unknown) if it holds more than `limit` entries."""
     try:
         newest = os.stat(path, follow_symlinks=False).st_mtime
     except OSError:
@@ -112,9 +112,12 @@ def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
             except OSError:
                 continue
             if seen >= limit:
-                return newest
+                # Not fully checked, so it can't be called old
+                return 0.0
     return newest
 
+
+_WALLET_FOLDER_NAMES = {"wallet", "wallets"}
 
 # Entries looked at per folder for personal files; a bigger folder is not offered (it can't be checked fully)
 _PERSONAL_WALK_LIMIT = 20000
@@ -128,6 +131,9 @@ def holds_personal_files(path: str, limit: int = _PERSONAL_WALK_LIMIT) -> bool:
         for name in files:
             if is_personal_file(name):
                 return True
+        # Crypto wallets: losing one loses the money
+        if any(d.lower() in _WALLET_FOLDER_NAMES for d in dirs):
+            return True
         seen += len(dirs) + len(files)
         if seen > limit:
             return True

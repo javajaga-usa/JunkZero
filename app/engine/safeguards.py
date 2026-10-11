@@ -20,10 +20,12 @@ from app.engine import osinfo
 from app.engine.archives import PERSONAL_EXTENSIONS
 from app.engine.smart import SCORE_DELETE, recommendation
 
-# Files people make and keep, plus screenshots and game saves
+# Files people make and keep, plus screenshots, game saves and crypto wallets
 PERSONAL_FILE_EXTENSIONS = PERSONAL_EXTENSIONS | {
-    ".png", ".gif", ".bmp", ".sav", ".save", ".savegame", ".sl2", ".ess",
+    ".png", ".gif", ".bmp", ".sav", ".save", ".savegame", ".sl2", ".ess", ".wallet",
 }
+# Crypto wallet files without a telling extension
+_PERSONAL_NAMES = {"wallet.dat"}
 # System clutter that shares an extension with personal files (Thumbs.db is a .db)
 _NOT_PERSONAL_NAMES = {"thumbs.db", "desktop.ini", ".ds_store", "ehthumbs.db"}
 
@@ -34,6 +36,8 @@ def is_personal_file(name: str) -> bool:
     lower = name.lower()
     if lower in _NOT_PERSONAL_NAMES:
         return False
+    if lower in _PERSONAL_NAMES:
+        return True
     return os.path.splitext(lower)[1] in PERSONAL_FILE_EXTENSIONS
 
 

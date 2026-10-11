@@ -48,12 +48,10 @@ SETUP_SCRIPT_EXTENSIONS: Set[str] = {
     ".bat", ".cmd", ".ps1", ".sh"
 }
 
+# Whole words in a script's name that clearly mean it installs something (install_deps.sh, setup.bat);
+# words like "build" or "update" also name people's own scripts, so they don't count
 INSTALLER_KEYWORDS: List[str] = [
-    "setup", "install", "installer", "update", "patch", "upgrade",
-    "x64", "x86", "win64", "win32", "build", "dist", "release",
-    "portable", "driver", "package", "pack", "bundle", "sdk",
-    "windows", "win10", "win11", "ubuntu", "debian", "fedora", "arch",
-    "linux", "edition", "x86_64", "amd64", "arm64"
+    "setup", "install", "installer", "installation",
 ]
 
 JAVA_EXTENSIONS: Set[str] = {
@@ -72,8 +70,9 @@ BUILD_DIR_NAMES: Set[str] = {
 }
 
 # Build outputs that share an extension with real user files (.obj 3D models, .pdb protein data,
-# .user / .orig settings and merge backups): Safe only inside a build output folder
-AMBIGUOUS_BUILD_EXTENSIONS: Set[str] = {".obj", ".pdb", ".user", ".orig"}
+# .user / .orig settings and merge backups), or may be the only copy of a program (.class, .pyc
+# shipped without source): Safe only inside a build output folder or __pycache__
+AMBIGUOUS_BUILD_EXTENSIONS: Set[str] = {".obj", ".pdb", ".user", ".orig", ".class", ".pyc", ".pyo"}
 BUILD_OUTPUT_FOLDER_NAMES: Set[str] = BUILD_DIR_NAMES | {"debug", "release", "x64", "x86"}
 
 # Backup copies are often someone's only other copy, so they are never preselected

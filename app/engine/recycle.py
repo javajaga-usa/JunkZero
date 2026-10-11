@@ -9,6 +9,7 @@ Restoring puts items back where they were, from the holding folder or from the s
 Recycle Bin / Trash, and never overwrites something that is already at that location.
 """
 from __future__ import annotations
+import errno
 import os
 import re
 import shutil
@@ -82,6 +83,56 @@ def has_recycle_bin(path: str) -> bool:
     if osinfo.is_macos():
         return _mac_mounts().get(mount_point(path), "apfs") not in _MAC_NETWORK_FS
     return True
+
+
+_MB = 1024 * 1024
+_BITBUCKET_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume"
+
+
+def _windows_recycle_settings(root: str) -> Tuple[Optional[int], bool]:
+    """(Recycle Bin size limit in bytes or None if unknown, erase-instead-of-recycle switch) for
+    the drive, as set in the Recycle Bin's Properties."""
+    import ctypes
+    import winreg
+    buf = ctypes.create_unicode_buffer(64)
+    if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(root, buf, len(buf)):
+        return None, False
+    guid = buf.value.rstrip("\\").rsplit("Volume", 1)[-1]  # "{...}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _BITBUCKET_KEY + "\\" + guid) as key:
+            def value(name: str) -> Optional[int]:
+                try:
+                    return int(winreg.QueryValueEx(key, name)[0])
+                except (OSError, ValueError, TypeError):
+                    return None
+            limit_mb, nuke = value("MaxCapacity"), value("NukeOnDelete")
+    except OSError:
+        return None, False
+    return (limit_mb * _MB if limit_mb else None), bool(nuke)
+
+
+def recycle_bin_takes(path: str, size: int) -> bool:
+    """True if sending path to the Recycle Bin / Trash really keeps it there. Windows quietly
+    erases items larger than the Recycle Bin's size limit, and every item when the Recycle Bin
+    is set to remove files immediately; those go to JunkZero's holding folder instead."""
+    if not has_recycle_bin(path):
+        return False
+    if not osinfo.is_windows():
+        return True
+    root = mount_point(path)
+    try:
+        limit, nuke = _windows_recycle_settings(root)
+    except (OSError, AttributeError, ImportError, ValueError):
+        limit, nuke = None, False
+    if nuke:
+        return False
+    if limit is None:
+        # Not set: Windows uses a share of the drive. Assume the smallest it picks (5%).
+        try:
+            limit = shutil.disk_usage(root).total // 20
+        except OSError:
+            return True
+    return size < limit
 
 
 # ---------------------------------------------------------------- Holding folder
@@ -255,53 +306,76 @@ def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tup
     return (best[1], [best[2]]) if best else None
 
 
-def find_in_mac_trash(original: str, since: float, trash: Optional[str] = None) -> Optional[Tuple[str, List[str]]]:
-    """Finder renames items that clash with something already in the Trash ("report 2.pdf",
-    "report 10.21.33 AM.pdf"), so match the name or the name with words added before the extension."""
+def find_in_mac_trash(original: str, since: float, trash: Optional[str] = None,
+                      file_id: Optional[List[int]] = None, until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
+    """The Trash keeps no note of where an item came from, and Finder renames items that clash
+    with something already there ("report 2.pdf"). An item moved into the Trash keeps its
+    device and inode, so with file_id (recorded when JunkZero deleted it) only that very item
+    matches, whatever its name now. Without it, only a single item with exactly the same name,
+    moved there during the cleanup, is trusted; anything less certain is not restored."""
     if trash is None:
         home = os.path.expanduser("~")
         top = mount_point(original)
         trash = os.path.join(home, ".Trash") if top == mount_point(home) else \
             os.path.join(top, ".Trashes", str(os.getuid()))
     name = os.path.basename(original.rstrip("/"))
-    stem, ext = os.path.splitext(name)
-    best: Optional[Tuple[int, float, str]] = None
     try:
         entries = list(os.scandir(trash))
     except OSError:
         return None
+    if file_id:
+        for entry in entries:
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if [st.st_dev, st.st_ino] == list(file_id):
+                return entry.path, []
+        return None
+    matches = []
     for entry in entries:
-        exact = entry.name == name
-        if not exact and not (entry.name.startswith(stem + " ") and entry.name.endswith(ext)):
+        if entry.name != name:
             continue
         try:
             moved = entry.stat(follow_symlinks=False).st_ctime  # Changes when moved into the Trash
         except OSError:
             continue
-        if moved < since - 1:
-            continue
-        key = (1 if exact else 0, moved, entry.path)
-        if best is None or key[:2] > best[:2]:
-            best = key
-    return (best[2], []) if best else None
+        if moved >= since - 1 and (until is None or moved <= until):
+            matches.append(entry.path)
+    return (matches[0], []) if len(matches) == 1 else None
 
 
-def find_in_trash(original: str, since: float) -> Optional[Tuple[str, List[str]]]:
+def find_in_trash(original: str, since: float, file_id: Optional[List[int]] = None,
+                  until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
     if osinfo.is_windows():
         return find_in_windows_recycle_bin(original, since)
     if osinfo.is_macos():
-        return find_in_mac_trash(original, since)
+        return find_in_mac_trash(original, since, file_id=file_id, until=until)
     return find_in_xdg_trash(original, since)
 
 
 # ---------------------------------------------------------------- Restoring a cleanup
 
+class _Occupied(OSError):
+    pass
+
+
 def _move_back(stored: str, original: str) -> None:
+    """Move stored back to original, never over something that is already there."""
     os.makedirs(os.path.dirname(original) or ".", exist_ok=True)
+    if os.path.lexists(original):
+        raise _Occupied()
     try:
         os.rename(stored, original)
-    except OSError:
-        shutil.move(stored, original)  # Different drive
+    except FileExistsError as e:
+        raise _Occupied() from e
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        # Different drive: copy across, still only to an empty spot
+        if os.path.lexists(original):
+            raise _Occupied() from e
+        shutil.move(stored, original)
 
 
 def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -311,7 +385,9 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
     if record.get("mode") == "permanent":
         return {"restored": [], "errors": [{"path": "", "error": "Permanently deleted items can't be restored"}]}
     since = float(record.get("started_at") or record.get("timestamp", 0)) - 120
+    until = float(record.get("timestamp") or since) + 120
     held = record.get("held") or {}
+    trash_ids = record.get("trash_ids") or {}
     already = set(record.get("restored") or [])
     for original in record.get("paths") or []:
         if original in already:
@@ -327,7 +403,7 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 _move_back(stored, original)
             else:
-                found = find_in_trash(original, since)
+                found = find_in_trash(original, since, trash_ids.get(original), until)
                 if not found:
                     errors.append({"path": original, "error": "Not found in the Recycle Bin (it may have been emptied)"})
                     continue
@@ -339,6 +415,8 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
                     except OSError:
                         pass
             restored.append(original)
+        except _Occupied:
+            errors.append({"path": original, "error": "Something is already at this location; left as it is"})
         except OSError as e:
             errors.append({"path": original, "error": str(e)})
     return {"restored": restored, "errors": errors}

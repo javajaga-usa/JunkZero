@@ -182,10 +182,11 @@ def _is_mac_protected(rel: List[str]) -> bool:
 
 
 def _library_parts(rel: List[str]) -> Optional[List[str]]:
-    """The parts after "Library" if rel is in a user's Library folder (/Users/<name>/Library or
-    the current home folder's), else None."""
-    if len(rel) >= 3 and rel[0] == "users" and rel[2] == "library":
-        return rel[3:]
+    """The parts after "Library" if rel is in a user's Library folder (/Users/<name>/Library, the same
+    on another disk or copy such as /Volumes/OldMac/Users/<name>/Library, or the current home folder's), else None."""
+    for i in range(len(rel) - 2):
+        if rel[i] == "users" and rel[i + 2] == "library":
+            return rel[i + 3:]
     home = [p for p in os.environ.get("HOME", "").lower().split("/") if p]
     if home and len(rel) > len(home) and rel[:len(home)] == home and rel[len(home)] == "library":
         return rel[len(home) + 1:]
@@ -297,12 +298,18 @@ def classify_item(
     # 4. Old Java Programs & Build Artifacts (.class, loose .jar, .pyc, .obj)
     elif options.include_java_builds and (suffix in JAVA_EXTENSIONS or suffix in BUILD_EXTENSIONS or suffix == ".jar"):
         category = CAT_JAVA_BUILDS
-        if suffix == ".class":
+        if suffix in AMBIGUOUS_BUILD_EXTENSIONS and not _in_build_output_folder(path):
+            risk_level = RISK_REVIEW
+            if suffix in {".class", ".pyc", ".pyo"}:
+                reason = f"Compiled code ({suffix}) outside a build folder; it may be a program's only copy"
+            else:
+                reason = f"Possible build artifact ({suffix}), but this file type is also used for real files"
+        elif suffix == ".class":
             risk_level = RISK_SAFE
             reason = "Compiled Java class bytecode (.class)"
-        elif suffix in AMBIGUOUS_BUILD_EXTENSIONS and not _in_build_output_folder(path):
+        elif suffix in {".war", ".ear"}:
             risk_level = RISK_REVIEW
-            reason = f"Possible build artifact ({suffix}), but this file type is also used for real files"
+            reason = f"Packaged Java web application ({suffix}); may be a deployed or only copy"
         elif suffix in BUILD_EXTENSIONS:
             risk_level = RISK_SAFE
             reason = f"Compiler/build intermediate artifact ({suffix})"
@@ -335,7 +342,9 @@ def classify_item(
 
     # 7. Setup / Installation Scripts (.bat, .cmd, .ps1, .sh)
     elif options.include_installers and suffix in SETUP_SCRIPT_EXTENSIONS:
-        has_installer_kw = any(kw in lower_name for kw in INSTALLER_KEYWORDS)
+        # Whole words only: "arch" in research.sh or "pack" in backup.sh mean nothing
+        words = re.split(r"[^a-z]+", Path(lower_name).stem)
+        has_installer_kw = any(kw in words for kw in INSTALLER_KEYWORDS)
         if has_installer_kw:
             category = CAT_INSTALLERS
             risk_level = RISK_REVIEW

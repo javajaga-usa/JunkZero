@@ -47,9 +47,12 @@ def test_requests_without_the_app_token_are_refused(tmp_path):
     assert other_page.post("/api/clean", json=body).status_code == 403
     assert other_page.post("/api/filesystem/delete-folder", json={"path": str(tmp_path)}).status_code == 403
     assert victim.exists()
-    # Reading is still fine, and the page itself gets the token
-    assert no_token.get("/api/history").status_code == 200
-    assert f'content="{main.API_TOKEN}"' in no_token.get("/").text
+    # Reading needs it too, and the page itself never carries it (another program could fetch it)
+    assert no_token.get("/api/history").status_code == 403
+    assert no_token.get("/api/reports/latest").status_code == 403
+    assert no_token.get("/api/system/info").status_code == 200
+    assert main.API_TOKEN not in no_token.get("/").text
+    assert main.app_url("http://127.0.0.1:8000") == f"http://127.0.0.1:8000/#token={main.API_TOKEN}"
 
 
 def test_clean_only_accepts_items_from_the_scan_results(tmp_path):
@@ -360,11 +363,27 @@ def test_freedesktop_trash_items_are_restored(tmp_path, monkeypatch):
     assert original.read_text() == "back" and not (trash / "info" / "my file.tmp.trashinfo").exists()
 
 
-def test_mac_trash_matches_renamed_items(tmp_path):
+def test_mac_trash_finds_the_very_item_that_was_deleted(tmp_path):
+    renamed = tmp_path / "report 2.pdf"
+    renamed.write_text("x")
+    (tmp_path / "report.pdf").write_text("another report, trashed in Finder")
+    st = os.lstat(renamed)
+    found = recycle.find_in_mac_trash("/Users/a/Documents/report.pdf", time.time() - 60, trash=str(tmp_path),
+                                      file_id=[st.st_dev, st.st_ino])
+    assert found == (str(renamed), [])
+
+
+def test_mac_trash_without_an_id_trusts_only_one_exact_name(tmp_path):
     (tmp_path / "report 2.pdf").write_text("x")
-    (tmp_path / "other.pdf").write_text("x")
-    found = recycle.find_in_mac_trash("/Users/a/Documents/report.pdf", time.time() - 60, trash=str(tmp_path))
-    assert found == (str(tmp_path / "report 2.pdf"), [])
+    (tmp_path / "report final.pdf").write_text("x")
+    since = time.time() - 60
+    assert recycle.find_in_mac_trash("/Users/a/Documents/report.pdf", since, trash=str(tmp_path)) is None
+    (tmp_path / "report.pdf").write_text("x")
+    assert recycle.find_in_mac_trash("/Users/a/Documents/report.pdf", since, trash=str(tmp_path)) == \
+        (str(tmp_path / "report.pdf"), [])
+    # Trashed after the cleanup: someone else's
+    assert recycle.find_in_mac_trash("/Users/a/Documents/report.pdf", since, trash=str(tmp_path),
+                                     until=since - 10) is None
 
 
 def test_restore_never_overwrites_and_skips_permanent_deletes(tmp_path):
