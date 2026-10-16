@@ -661,6 +661,10 @@ function setupEventListeners() {
     savePreferences();
   });
   el.btnSearchFileTypes.addEventListener('click', () => {
+    if (state.isScanning) {
+      showToast('A scan is running. Wait for it to finish or stop it first.', 'error');
+      return;
+    }
     if (!state.fileTypes.length) {
       showToast('Pick at least one file type first', 'error');
       el.fileTypeInput.focus();

@@ -290,16 +290,21 @@ def api_browse_folder(req: Optional[BrowseRequest] = None):
             logger.warning(f"Window folder picker failed, using the Finder picker: {e}")
             chosen = None
         if chosen is None:
-            try:
-                res = subprocess.run(mac_choose_folder_command(start), capture_output=True, text=True, timeout=300)
-            except Exception as e:
-                logger.warning(f"Native folder picker failed: {e}")
-                return {"path": "", "error": f"The folder picker could not open ({e}). Type the folder path instead."}
-            if getattr(res, "returncode", 0):
+            # If macOS won't start the picker in the current folder, open it without one
+            attempts = [start, ""] if start and os.path.isdir(start) else [""]
+            for attempt in attempts:
+                try:
+                    res = subprocess.run(mac_choose_folder_command(attempt), capture_output=True, text=True, timeout=300)
+                except Exception as e:
+                    logger.warning(f"Native folder picker failed: {e}")
+                    return {"path": "", "error": f"The folder picker could not open ({e}). Type the folder path instead."}
                 stderr = (getattr(res, "stderr", "") or "").strip()
+                if not getattr(res, "returncode", 0):
+                    break
                 if MAC_USER_CANCELLED in stderr:
                     return {"path": ""}
                 logger.warning(f"Native folder picker failed: {stderr}")
+            else:
                 return {"path": "", "error": f"The folder picker could not open ({stderr or 'unknown error'}). "
                                              "Type the folder path instead."}
             chosen = (res.stdout or "").strip()
