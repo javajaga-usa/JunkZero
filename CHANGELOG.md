@@ -1,14 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-10-16
 
 ### Mac fixes
 - Deleting to the Trash no longer fails with "Insufficient access privileges for operation" when running from source. `requirements.txt` now includes `pyobjc-framework-Cocoa` on macOS, which lets the Trash use Apple's current API, and `run.command` installs anything missing on launch (creating `.venv` the first time). If the package is still missing, JunkZero says so when it starts and in the delete error, with the command that fixes it.
-- Browse opens the folder picker in front instead of behind the browser, starts at the current scan location, and says when the picker can't open. In JunkZero's own window it uses the window's folder picker.
+- Browse opens the folder picker in front instead of behind the browser, starts at the current scan location (or without one, if macOS won't open it there), and says when the picker can't open. In JunkZero's own window it uses the window's folder picker.
 - The drive button is highlighted only while the scan location is that whole drive, so a chosen subfolder no longer looks like the drive is still selected.
 
 ### Search by file type
-- New **File Types** window: pick groups such as Videos, Photos, Documents or Archives, or type your own extensions (`.mp4`, `*.mkv`, `tar.gz`), and optionally only files unchanged for a number of days. **Search these types** lists every matching file in the scan location under "Chosen File Types", ready to tick and delete.
+- New **File Types** window: pick groups such as Videos, Photos, Documents or Archives, or type your own extensions (`.mp4`, `*.mkv`, `tar.gz`), and optionally only files unchanged for a number of days. **Search these types** lists every matching file in the scan location under "Chosen File Types", ready to tick and delete. A search replaces the current results, and can't be started while a scan is running.
 - Found files are Review Recommended and never preselected. Exclusions, protected system folders, version-control and backup folders are skipped; personal and cloud files keep their warnings and DELETE typed. Backup images and virtual machine disks can't be searched for.
 - **Chosen file types** under *Look for* adds the same search to every deep scan; there, files a built-in category already lists stay in that category. A file type search doesn't count as the last scan for "New since last scan" and teaches the smart score nothing.
 - The chosen types and age are remembered with your other settings.

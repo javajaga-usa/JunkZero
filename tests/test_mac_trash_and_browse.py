@@ -169,3 +169,19 @@ def test_window_picker_failure_falls_back_to_the_finder_picker(mac, monkeypatch,
     monkeypatch.setattr(main, "gui_window", Window())
     assert api_client().post("/api/system/browse-folder").json() == {"path": str(tmp_path)}
     assert calls and calls[0][0] == "osascript"
+
+
+def test_picker_retries_without_the_start_folder_when_macos_refuses_it(mac, monkeypatch, tmp_path):
+    results = [_Result(stderr="execution error: Can't make file (-1700)", returncode=1), _Result(stdout=str(tmp_path))]
+    calls = []
+    monkeypatch.setattr(main.subprocess, "run", lambda args, **kw: calls.append(args) or results.pop(0))
+    monkeypatch.setattr(main, "gui_window", None)
+    data = api_client().post("/api/system/browse-folder", json={"start": str(tmp_path)}).json()
+    assert data == {"path": str(tmp_path)}
+    assert calls[0][-1] == str(tmp_path) and calls[1][-1] == "end run"
+
+
+def test_cancel_on_the_first_try_does_not_open_the_picker_again(mac, monkeypatch, tmp_path):
+    calls = _picker(monkeypatch, _Result(stderr="User canceled. (-128)", returncode=1))
+    assert api_client().post("/api/system/browse-folder", json={"start": str(tmp_path)}).json() == {"path": ""}
+    assert len(calls) == 1
