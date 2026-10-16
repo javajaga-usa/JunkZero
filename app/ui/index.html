@@ -18,7 +18,7 @@
           <i data-lucide="shield-check" class="logo-icon"></i>
         </div>
         <div class="brand">
-          <h1 class="app-title">JunkZero</h1>
+          <h1 class="app-title">JunkZero <span id="appVersion" class="app-version"></span></h1>
           <p class="app-subtitle">Find junk files, review them, and free up space safely</p>
         </div>
       </div>
@@ -38,6 +38,9 @@
           </button>
           <button id="btnOpenSchedule" class="nav-btn" title="Scheduled scans that only report, never delete">
             <i data-lucide="calendar-clock"></i> Schedule
+          </button>
+          <button id="btnOpenAbout" class="nav-btn" title="Version, updates and diagnostics">
+            <i data-lucide="info"></i> About
           </button>
         </nav>
         <div class="header-divider" aria-hidden="true"></div>
@@ -159,6 +162,15 @@
         </div>
       </div>
     </section>
+
+    <!-- Windows junk that needs admin rights: shown only, never deleted by JunkZero -->
+    <details id="cleanupHints" class="cleanup-hints card hidden">
+      <summary><i data-lucide="shield-alert"></i> Windows cleanup that needs admin <span id="cleanupHintsTotal" class="cleanup-hints-total"></span></summary>
+      <ul id="cleanupHintsList" class="simple-list"></ul>
+      <p class="cleanup-hints-note">JunkZero doesn't delete these. To clear them, open Windows Disk Cleanup
+        (search the Start menu for "Disk Cleanup", then choose "Clean up system files"), or turn on
+        Storage Sense in Settings &gt; System &gt; Storage.</p>
+    </details>
 
     <!-- Storage Statistics Overview -->
     <section class="stats-grid" aria-label="Scan summary">
@@ -364,13 +376,13 @@
                 <input type="checkbox" id="masterCheckbox" title="Select / Deselect all visible items" />
               </th>
               <th></th>
-              <th class="sortable" data-sort="name">Name <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="name"><button type="button" class="sort-btn">Name <i data-lucide="chevron-down" class="sort-icon"></i></button></th>
               <th class="text-center" title="Tick to exclude an item: it can't be deleted and isn't listed again until you remove it under Exclusions">Exclude</th>
-              <th class="sortable" data-sort="category">Category <i data-lucide="chevron-down" class="sort-icon"></i></th>
-              <th class="sortable text-right" data-sort="size">Size <i data-lucide="chevron-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="modified">Modified <i data-lucide="chevron-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="risk">Risk <i data-lucide="chevron-down" class="sort-icon"></i></th>
-              <th class="sortable" data-sort="score" title="How sure JunkZero is that this is junk. Click a score to see why.">Smart score <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="sortable" data-sort="category"><button type="button" class="sort-btn">Category <i data-lucide="chevron-down" class="sort-icon"></i></button></th>
+              <th class="sortable text-right" data-sort="size"><button type="button" class="sort-btn">Size <i data-lucide="chevron-down" class="sort-icon"></i></button></th>
+              <th class="sortable" data-sort="modified"><button type="button" class="sort-btn">Modified <i data-lucide="chevron-down" class="sort-icon"></i></button></th>
+              <th class="sortable" data-sort="risk"><button type="button" class="sort-btn">Risk <i data-lucide="chevron-down" class="sort-icon"></i></button></th>
+              <th class="sortable" data-sort="score" title="How sure JunkZero is that this is junk. Click a score to see why."><button type="button" class="sort-btn">Smart score <i data-lucide="chevron-down" class="sort-icon"></i></button></th>
               <th>Path</th>
               <th class="text-right">Actions</th>
             </tr>
@@ -422,12 +434,12 @@
 
     <!-- Largest Files & Folders Modal (read-only; deleting goes through the folder explorer) -->
     <div id="largestModal" class="modal-overlay hidden">
-      <div class="modal-card modal-wide">
+      <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="largestModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="chart-column"></i></div>
             <div>
-              <h3 class="modal-title">Largest Files &amp; Folders</h3>
+              <h3 class="modal-title" id="largestModalTitle">Largest Files &amp; Folders</h3>
               <p class="modal-subtitle" id="largestSubtitle">Where the space goes in the target folder</p>
             </div>
           </div>
@@ -453,12 +465,12 @@
 
     <!-- Junk by Folder Modal (groups the current results by the folder they are in) -->
     <div id="byFolderModal" class="modal-overlay hidden">
-      <div class="modal-card modal-wide">
+      <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="byFolderModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="folders"></i></div>
             <div>
-              <h3 class="modal-title">Junk by Folder</h3>
+              <h3 class="modal-title" id="byFolderModalTitle">Junk by Folder</h3>
               <p class="modal-subtitle" id="byFolderSubtitle">Folders holding the most reclaimable space</p>
             </div>
           </div>
@@ -476,7 +488,7 @@
 
     <!-- Folder Hierarchy & Multi-Level Parent Explorer Modal -->
     <div id="hierarchyModal" class="modal-overlay hidden">
-      <div class="modal-card modal-hierarchy">
+      <div class="modal-card modal-hierarchy" role="dialog" aria-modal="true" aria-labelledby="hierarchyModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon hierarchy-badge-icon"><i data-lucide="folder-tree"></i></div>
@@ -553,12 +565,12 @@
 
     <!-- AI Inspector Modal -->
     <div id="aiModal" class="modal-overlay hidden">
-      <div class="modal-card">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aiModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon ai-badge-icon"><i data-lucide="bot"></i></div>
             <div>
-              <h3 class="modal-title">File Inspector</h3>
+              <h3 class="modal-title" id="aiModalTitle">File Inspector</h3>
               <p class="modal-subtitle">What this item is and whether it is safe to delete</p>
             </div>
           </div>
@@ -580,7 +592,7 @@
 
     <!-- Deletion Confirmation Modal -->
     <div id="confirmModal" class="modal-overlay hidden">
-      <div class="modal-card modal-confirm">
+      <div class="modal-card modal-confirm" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div id="confirmModalIcon" class="modal-icon danger"><i data-lucide="alert-triangle"></i></div>
@@ -625,6 +637,16 @@
             I understand these items cannot be restored from the Recycle Bin
           </label>
 
+          <div id="deleteProgress" class="delete-progress hidden" role="status">
+            <div class="delete-progress-row">
+              <span id="deleteProgressText">Deleting...</span>
+              <button id="btnCancelClean" type="button" class="btn btn-secondary btn-sm hidden">Cancel</button>
+            </div>
+            <div class="progress-bar-bg">
+              <div id="deleteProgressBar" class="progress-bar-fill indeterminate"></div>
+            </div>
+          </div>
+
           <p class="confirm-note">Protected system paths and root drives are automatically blocked by the engine safety filter.</p>
         </div>
 
@@ -639,12 +661,12 @@
 
     <!-- Exclusions Modal -->
     <div id="exclusionsModal" class="modal-overlay hidden">
-      <div class="modal-card">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="exclusionsModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="eye-off"></i></div>
             <div>
-              <h3 class="modal-title">Exclusions</h3>
+              <h3 class="modal-title" id="exclusionsModalTitle">Exclusions</h3>
               <p class="modal-subtitle">Never list or delete these folders, files or patterns</p>
             </div>
           </div>
@@ -666,12 +688,12 @@
 
     <!-- Junk Rules Modal -->
     <div id="junkRulesModal" class="modal-overlay hidden">
-      <div class="modal-card">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="junkRulesModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="list-plus"></i></div>
             <div>
-              <h3 class="modal-title">Junk Rules</h3>
+              <h3 class="modal-title" id="junkRulesModalTitle">Junk Rules</h3>
               <p class="modal-subtitle">Your own folders, files and patterns to flag as junk</p>
             </div>
           </div>
@@ -693,12 +715,12 @@
 
     <!-- File Types Modal -->
     <div id="fileTypesModal" class="modal-overlay hidden">
-      <div class="modal-card">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="fileTypesModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="file-search"></i></div>
             <div>
-              <h3 class="modal-title">Search by File Type</h3>
+              <h3 class="modal-title" id="fileTypesModalTitle">Search by File Type</h3>
               <p class="modal-subtitle">Find files by extension and add them to the deletion list</p>
             </div>
           </div>
@@ -737,12 +759,12 @@
 
     <!-- Cleanup History Modal -->
     <div id="historyModal" class="modal-overlay hidden">
-      <div class="modal-card modal-wide">
+      <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="historyModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="history"></i></div>
             <div>
-              <h3 class="modal-title">Cleanup History</h3>
+              <h3 class="modal-title" id="historyModalTitle">Cleanup History</h3>
               <p class="modal-subtitle" id="historySummary">Nothing cleaned yet</p>
             </div>
           </div>
@@ -765,12 +787,12 @@
 
     <!-- Scheduled Scans Modal -->
     <div id="scheduleModal" class="modal-overlay hidden">
-      <div class="modal-card modal-wide">
+      <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="scheduleModalTitle">
         <div class="modal-header">
           <div class="modal-title-group">
             <div class="modal-icon"><i data-lucide="calendar-clock"></i></div>
             <div>
-              <h3 class="modal-title">Scheduled Scans</h3>
+              <h3 class="modal-title" id="scheduleModalTitle">Scheduled Scans</h3>
               <p class="modal-subtitle">Runs through Windows Task Scheduler. Scheduled scans only save a report; they never delete anything.</p>
             </div>
           </div>
@@ -815,8 +837,57 @@
       </div>
     </div>
 
+    <!-- Errors Modal: every item that couldn't be removed or restored, with the reason -->
+    <div id="errorsModal" class="modal-overlay hidden">
+      <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-labelledby="errorsModalTitle">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon danger"><i data-lucide="circle-alert"></i></div>
+            <div>
+              <h3 class="modal-title" id="errorsModalTitle">Items that couldn't be removed</h3>
+              <p class="modal-subtitle" id="errorsModalSubtitle"></p>
+            </div>
+          </div>
+          <button id="closeErrorsModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <ul id="errorsList" class="simple-list errors-list"></ul>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCopyErrors" class="btn btn-secondary"><i data-lucide="copy"></i> Copy</button>
+          <button id="btnCloseErrors" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="aboutModal" class="modal-overlay hidden">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon"><i data-lucide="info"></i></div>
+            <div>
+              <h3 class="modal-title" id="aboutModalTitle">About JunkZero</h3>
+              <p class="modal-subtitle" id="aboutVersion">Version unknown</p>
+            </div>
+          </div>
+          <button id="closeAboutModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>JunkZero checks for updates only when you click the button below. Nothing is sent anywhere otherwise.</p>
+          <p id="updateResult" class="update-result" aria-live="polite"></p>
+        </div>
+        <div class="modal-footer">
+          <button id="btnCopyDiagnostics" class="btn btn-ghost" title="Copy version, system and recent log lines, to paste into a bug report">
+            <i data-lucide="clipboard-copy"></i> Copy diagnostics</button>
+          <button id="btnCheckUpdates" class="btn btn-secondary"><i data-lucide="refresh-cw"></i> Check for updates</button>
+          <button id="btnCloseAbout" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Notification Toast -->
-    <div id="toastContainer" class="toast-container"></div>
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
   </div>
 
   <script src="/static/app.js"></script>
