@@ -51,17 +51,6 @@ def _scan(target, **kw):
     return s, {os.path.relpath(i.path, target).replace(os.sep, "/") if str(target) else i.path: i for i in items}
 
 
-@pytest.fixture
-def home():
-    """A folder outside any temp folder (pytest's tmp_path sits in /tmp, which counts as one)."""
-    from pathlib import Path
-    base = Path(tempfile.mkdtemp(prefix="round9-", dir=os.path.dirname(os.path.abspath(__file__))))
-    try:
-        yield base
-    finally:
-        shutil.rmtree(base, ignore_errors=True)
-
-
 def _classify(path, size=10, mtime=OLD, is_dir=False, **kw):
     path = str(path)
     return classify_item(path, os.path.basename(path), size, mtime, is_dir, ScanOptions(target_path=".", **kw))
@@ -143,17 +132,17 @@ def test_idb_and_tlog_are_safe_only_in_project_build_folders(tmp_path):
 
 # ------------------------------------------------------------- 6. Name-only detections
 
-def test_iso_needs_its_signature(tmp_path):
-    fake = _write(tmp_path / "Downloads" / "weights.iso", b"\0" * 40000)
-    iso = _write(tmp_path / "Downloads" / "ubuntu.iso", b"\0" * 0x8001 + b"CD001" + b"\0" * 100)
-    udf = _write(tmp_path / "Downloads" / "movie.iso", b"\0" * (0x8001 + 2048) + b"NSR02")
+def test_iso_needs_its_signature(home):
+    fake = _write(home / "Downloads" / "weights.iso", b"\0" * 40000)
+    iso = _write(home / "Downloads" / "ubuntu.iso", b"\0" * 0x8001 + b"CD001" + b"\0" * 100)
+    udf = _write(home / "Downloads" / "movie.iso", b"\0" * (0x8001 + 2048) + b"NSR02")
     assert _classify(fake) is None
     assert _classify(iso).category == CAT_INSTALLERS
     assert _classify(udf).category == CAT_INSTALLERS
 
 
-def test_bin_img_mdf_need_a_cue_sheet_next_to_them(tmp_path):
-    games = tmp_path / "Games"
+def test_bin_img_mdf_need_a_cue_sheet_next_to_them(home):
+    games = home / "Games"
     assert _classify(_write(games / "model.bin")) is None
     assert _classify(_write(games / "sdcard.img")) is None
     _write(games / "disc.cue")
@@ -161,10 +150,10 @@ def test_bin_img_mdf_need_a_cue_sheet_next_to_them(tmp_path):
     assert _classify(games / "disc.cue") is None  # The sheet alone is not listed
     _write(games / "old.mds")
     assert _classify(_write(games / "old.mdf")).category == CAT_INSTALLERS
-    sdk = tmp_path / "Android" / "Sdk" / "system-images"
+    sdk = home / "Android" / "Sdk" / "system-images"
     _write(sdk / "system.cue")
     assert _classify(_write(sdk / "system.bin")) is None
-    appdata = tmp_path / "AppData" / "Local" / "emu"
+    appdata = home / "AppData" / "Local" / "emu"
     _write(appdata / "rom.cue")
     assert _classify(_write(appdata / "rom.bin")) is None
 

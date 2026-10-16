@@ -88,9 +88,9 @@ def test_classify_temp_and_broken_download(default_options):
     assert cr_item.risk_level == RISK_SAFE
 
 
-def test_classify_os_iso_and_setup_zip(default_options, tmp_path):
+def test_classify_os_iso_and_setup_zip(default_options, home):
     # The ISO 9660 signature is checked, not just the name (round 9)
-    iso = tmp_path / "Ubuntu_24_04_LTS.iso"
+    iso = home / "Ubuntu_24_04_LTS.iso"
     iso.write_bytes(b"\0" * 0x8001 + b"CD001")
     iso_item = classify_item(
         path=str(iso),
@@ -105,7 +105,7 @@ def test_classify_os_iso_and_setup_zip(default_options, tmp_path):
     assert "ISO" in iso_item.reason
 
     import zipfile
-    setup_zip = tmp_path / "Downloads" / "VSCode_portable_win64_setup.zip"
+    setup_zip = home / "Downloads" / "VSCode_portable_win64_setup.zip"
     setup_zip.parent.mkdir()
     with zipfile.ZipFile(setup_zip, "w") as zf:
         zf.writestr("VSCodeSetup-x64.exe", b"MZ")

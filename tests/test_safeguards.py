@@ -153,15 +153,15 @@ def test_online_only_files_are_never_listed_or_opened(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------- 4. Backups and virtual machines
 
-def test_backup_folders_and_vm_disks_are_never_listed(tmp_path):
+def test_backup_folders_and_vm_disks_are_never_listed(home):
     for folder in ("FileHistory", "WindowsImageBackup", "Backups.backupdb"):
-        (tmp_path / folder / "sub").mkdir(parents=True)
-        (tmp_path / folder / "sub" / "old.tmp").write_text("x")
+        (home / folder / "sub").mkdir(parents=True)
+        (home / folder / "sub" / "old.tmp").write_text("x")
     for name in ("win.vhdx", "linux.qcow2", "disk.vmdk", "c-drive.tib", "image.mrimg", "ubuntu.iso"):
         # A real ISO carries "CD001" at 0x8001 (round 9: checked, not taken from the name)
-        (tmp_path / name).write_bytes(b"x" * 0x8001 + b"CD001")
-        _old(tmp_path / name)
-    items = _scan(tmp_path)
+        (home / name).write_bytes(b"x" * 0x8001 + b"CD001")
+        _old(home / name)
+    items = _scan(home)
     assert {i.name for i in items} == {"ubuntu.iso"}
 
 

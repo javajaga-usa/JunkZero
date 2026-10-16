@@ -184,7 +184,8 @@ def test_a_failed_batch_is_retried_one_by_one(tmp_path, monkeypatch):
     monkeypatch.setattr(cleaner.send2trash, "send2trash", trash)
     result = cleaner.delete_items([{"path": p, "size_bytes": 1} for p in paths])
     assert result.deleted_count == 4 and result.failed_count == 1
-    assert result.errors == [{"path": bad, "error": "access denied"}]
+    # macOS adds a hint about the Trash to the message
+    assert [e["path"] for e in result.errors] == [bad] and "access denied" in result.errors[0]["error"]
 
 
 def test_cancel_stops_after_the_current_batch(tmp_path, monkeypatch):
