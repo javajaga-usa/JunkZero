@@ -9,7 +9,10 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility for W
 
 - **⚡ Blazing Fast Multi-Threaded Scanning**: Uses parallel `os.scandir` directory traversal to scan 100,000+ files in seconds without I/O freezes.
 - **🖥️ Modern File Manager GUI**:
-  - Live animated scan progress and metrics.
+  - Scan progress: files and folders checked so far, updated a few times a second, and the current step (scanning folders, checking program leftovers, looking for empty folders, comparing duplicates). The scan can't know in advance how much there is, so there is no percentage. Found items appear in the table while the scan runs.
+  - Delete progress: a large cleanup shows "Deleting 1,200 of 3,000" with a bar and a **Cancel** button, which stops after the current batch and leaves the rest in place.
+  - Problems stay on screen: a toast such as "3 items couldn't be removed" stays until you dismiss it, and **Show details** lists every path with its reason (with **Copy**). Cleanup History keeps them too.
+  - Keyboard: Enter in the path box starts a scan, Escape closes dialogs, and the column headers can be sorted from the keyboard.
   - Storage summary cards with instant visual size breakdowns.
   - Interactive table that shows 500 rows at a time ("Show more" adds the next 500), so scans with tens of thousands of results stay responsive. Search by filename/path/extension (it runs once you pause typing) and sort by any column.
   - Quick multi-select buttons: **"Smart Select"** (only items marked Safe and Delete), **"Select All"**, **"Deselect"**.
@@ -35,11 +38,12 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility for W
 - **💬 Scan Summary**: After a scan, a short summary says how much can go now with little risk, what's worth a look first (naming the biggest item), and what looks worth keeping, with a button to select the safe bets.
 - **📏 Largest Files & Folders**: A read-only view of the biggest folders and files in the target folder, so you can see where the space goes even when it isn't junk. Review or delete through the folder explorer, which keeps the usual confirmations. Protected system folders and your exclusions are not counted.
 - **💾 Remembered Settings**: The target folder, the "Scan For" toggles and the theme are restored the next time you open JunkZero. The delete mode is never remembered; every launch starts in Recycle Bin mode.
-- **⚡ Quick Clean**: One click scans your temp folder, application crash dumps, and Chrome / Edge / Brave / Firefox caches. Browser cache folders are listed as single items (close the browser before deleting them). Locations under `C:\Windows` (Windows Update downloads, system temp) stay protected and are not offered.
+- **⚡ Quick Clean**: One click scans your temp folder, application crash dumps, and Chrome / Edge / Brave / Firefox caches. Browser cache folders are listed as single items (close the browser before deleting them). Locations under `C:\Windows` (Windows Update downloads, system temp) and `Windows.old` stay protected and are not offered; when they hold something, a **Windows cleanup that needs admin** panel lists them with their size and points to Windows Disk Cleanup or Storage Sense.
+- **ℹ️ About**: The version is shown next to the name. **About → Check for updates** asks GitHub for the latest release only when you click it; **Copy diagnostics** copies the version, system details and recent log lines for a bug report.
 - **🙈 Exclusions**: Tick **Exclude** in a result's row (before its category), or add paths and patterns such as `*.iso` in the **Exclusions** dialog at the top. An excluded item is greyed out and can't be ticked, is never deleted from any screen (and neither is a folder holding one), and isn't listed by later scans until you remove it from Exclusions. Untick Exclude on the row to undo. Excluded folders are not scanned at all.
-- **🕘 Cleanup History**: Every cleanup is logged with its date, delete mode, item list and space freed. **Restore** puts a cleanup's items back from the Recycle Bin, Trash or holding folder, never over something that is already there; on a Mac it restores only the very item JunkZero moved to the Trash.
+- **🕘 Cleanup History**: Every cleanup is logged with its date, delete mode, item list, space freed and what couldn't be removed. **Restore** puts a cleanup's items back from the Recycle Bin, Trash or holding folder, never over something that is already there; on a Mac it restores only the very item JunkZero moved to the Trash. Restore works only while the items are still there: not after the Recycle Bin or Trash was emptied, not for items Windows erased instead of keeping, and never for Permanent deletes. Items set aside on drives without a Recycle Bin are kept for 7 days.
 - **📊 Space Breakdown**: A bar under the summary cards shows where the reclaimable space is by category; click a segment to filter the table.
-- **📅 Scheduled Scans (report only)**: Schedule daily or weekly scans through Windows Task Scheduler (launchd on a Mac). Scheduled scans never delete anything; they save a report you can review in the table later. Run one manually with `python -m app.main --mode report --path C:\Users\You\Downloads`.
+- **📅 Scheduled Scans (report only)**: Schedule daily or weekly scans through Windows Task Scheduler (launchd on a Mac). Scheduled scans never delete anything; they save a report you can review in the table later. They run only while you are signed in; a scan missed while the computer was off runs when it is next available, and the Schedule screen shows when the last one failed. Uninstalling with the installer removes the scheduled scan. Run one manually with `python -m app.main --mode report --path C:\Users\You\Downloads`.
 - **📄 CSV Export**: Exports the rows currently shown. Cells are escaped so file names can't run as spreadsheet formulas.
 - **🛡️ Ironclad Safety Safeguards**:
   - **Recycle Bin by Default (`send2trash`)**: The GUI, API and engine all move deleted items to the Recycle Bin unless Permanent mode is chosen.
@@ -54,7 +58,7 @@ JunkZero is a lightning-fast storage cleanup and disk optimization utility for W
   - **Permanent Mode (opt-in)**: Switch the footer toggle from *Recycle Bin* to *Permanent* to erase files directly. Permanent deletes need an extra "cannot be restored" confirmation, and the app always starts back in Recycle Bin mode.
 - **🧠 AI Inspector (Gemini Integration)**:
   - Click the **AI Inspect** robot icon on any file to receive an instant analysis of its origin application, purpose, and safety verdict. It is never surer than the scanner: build folders and disk images found by name are Review.
-  - Works 100% offline with built-in heuristic database. Only if you set `GEMINI_API_KEY` yourself does it send the file's name, path and size (never its contents) to Google Gemini for deeper insights.
+  - Works 100% offline with built-in heuristic database. The Gemini option works only when running from source: install `google-genai` (`python -m pip install google-genai`) and set `GEMINI_API_KEY`; it then sends the file's name, path and size (never its contents) to Google Gemini. The downloadable app doesn't include the Gemini library, so it always uses the offline analysis.
 
 ## 🍎 On a Mac
 
@@ -72,7 +76,11 @@ JunkZero runs on macOS 11 or later with the same screens, and swaps in the Mac's
 ## 🚀 Quick Start
 
 ### Download (no Python needed)
-Get `JunkZero.exe` from the [latest release](https://github.com/javajaga-usa/JunkZero/releases/latest) and double-click it. It needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime, which Windows normally includes. The exe isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. See [CHANGELOG.md](CHANGELOG.md) for what's in each release.
+From the [latest release](https://github.com/javajaga-usa/JunkZero/releases/latest), get either:
+- `JunkZero-Setup.exe`: installs JunkZero for your user account (no administrator rights needed) with a Start menu entry. Uninstall it from Settings → Apps; that also removes a scheduled scan. Your settings and history in `%APPDATA%\JunkZero` are kept.
+- `JunkZero-Windows-portable.zip`: unzip it anywhere and run `JunkZero.exe` inside the `JunkZero` folder (keep the folder's other files next to it).
+
+Releases up to 1.2.0 were a single `JunkZero.exe`; from the next release the app comes as the installer or the portable folder instead, which starts faster. `SHA256SUMS.txt` in each release lists the SHA-256 checksum of every download (check one with `Get-FileHash JunkZero-Setup.exe`). JunkZero needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime, which Windows normally includes. It isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. See [CHANGELOG.md](CHANGELOG.md) for what's in each release.
 
 On a Mac, download `JunkZero-macOS.zip` from the same release, unzip it and move `JunkZero.app` to Applications. The app isn't signed by Apple yet, so the first time macOS says it can't check it: open **System Settings → Privacy & Security** and choose **Open Anyway** (on older macOS, right-click the app and choose **Open**). The download is built for Apple silicon (M1 and later) Macs.
 
@@ -116,7 +124,7 @@ python -m pip install -r requirements-test.txt
 python -m pytest -q
 ```
 
-CI runs the test suite on Windows, macOS and Linux with Python 3.10, 3.12 (which builds the releases) and 3.13, checks dependencies, compiles Python sources, and verifies JavaScript syntax and HTML escaping. Test dependencies omit the optional native GUI runtime.
+CI runs the test suite on Windows, macOS and Linux with Python 3.10, 3.12 (which builds the releases) and 3.13, checks dependencies, compiles Python sources, and verifies JavaScript syntax and HTML escaping. Test dependencies omit the optional native GUI runtime. A lint job runs `ruff check .` (real errors only, see `ruff.toml`), and a browser job runs `tests/test_browser.py` in Chromium: it starts JunkZero in server mode, scans a folder with junk, deletes it permanently from the page and checks the files are gone. To run it locally: `python -m pip install playwright` and `python -m playwright install chromium`, then `python -m pytest tests/test_browser.py` (it is skipped when Playwright isn't installed).
 
 To run the API without opening a window:
 ```powershell
@@ -129,8 +137,9 @@ Settings (exclusions, junk rules, schedule, remembered scan options), cleanup hi
 ### Building the exe
 ```powershell
 python -m pip install -r requirements.txt -c packaging/release-constraints.txt pyinstaller
-pyinstaller --noconfirm packaging/JunkZero.spec   # writes dist\JunkZero.exe
+pyinstaller --noconfirm packaging/JunkZero.spec   # writes dist\JunkZero\JunkZero.exe and its files
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=1.2.0 packaging\JunkZero.iss   # optional: dist\JunkZero-Setup.exe
 ```
-On a Mac the same command writes `dist/JunkZero.app`. The Release workflow builds and smoke-tests the exe and the Mac app on every pull request, and attaches both (`JunkZero.exe` and `JunkZero-macOS.zip`) to the release. Release builds use the exact versions in `packaging/release-constraints.txt`. To publish a release, set `__version__` in `app/__init__.py` to a version not released yet, add a matching section to `CHANGELOG.md`, merge to main, and run the Release workflow on main by hand (or push a `v<version>` tag on a commit that is on main); the files are attached to the GitHub release. Runs from other branches build but never publish.
+On a Mac the same PyInstaller command writes `dist/JunkZero.app`. The icons in `packaging/` are drawn by `packaging/make_icon.py` (needs Pillow). The Release workflow builds and smoke-tests the Windows build, its installer and uninstaller, and the Mac app on every pull request, and attaches `JunkZero-Setup.exe`, `JunkZero-Windows-portable.zip`, `JunkZero-macOS.zip` and `SHA256SUMS.txt` to the release. Each CI run also offers the Windows folder build as the `JunkZero-exe` artifact for testing. Release builds use the exact versions in `packaging/release-constraints.txt`. To publish a release, set `__version__` in `app/__init__.py` to a version not released yet, add a matching section to `CHANGELOG.md`, merge to main, and run the Release workflow on main by hand (or push a `v<version>` tag on a commit that is on main); the files are attached to the GitHub release. Runs from other branches build but never publish.
 
 Use the application on localhost. Native folder selection and Explorer / Finder integration require Windows or macOS. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.

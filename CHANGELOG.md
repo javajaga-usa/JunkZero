@@ -1,5 +1,49 @@
 # Changelog
 
+## [Unreleased]
+
+### Safer detection
+- Browser and app databases are no longer listed: `.log` files inside Chrome/Edge extension storage, IndexedDB, Local Storage and Electron apps (VS Code, Postman, MetaMask) hold the newest data, not logs. Folders named `local`, `appdata` or starting with a dot no longer count as temp folders on their own.
+- Empty folders are never marked Delete, so Smart Select no longer ticks an empty folder tree such as `Photos/2025 trip`.
+- Crypto wallets and keys are treated as personal: folders whose names contain wallet or keystore, key files (`.seco .ppk .pfx .p12 .pem .gpg .jks .keystore`) and app databases are never offered, and known wallet apps (Exodus, Atomic Wallet) are not listed as Program Leftovers.
+- `.idb` and `.tlog` are Safe only inside build folders, and `Release`, `Debug`, `x64` and `x86` count as build folders only inside a project (`.sln`, `.vcxproj`, `CMakeLists.txt`).
+- Fewer guesses by name: disc images are checked by their content (`.bin`/`.img`/`.mdf` only next to a `.cue`/`.mds`), loose `.jar` files are no longer listed, `bin`/`out`/`build`/`target` folders only next to a project file, `Package Cache` installers are kept (deleting them breaks uninstall and repair), and installed games, virtual environments and model folders are skipped by Duplicates and Stale Large Files.
+- "Changed in the last 24 hours" also counts files just unpacked from an archive (the later of modified and created time).
+- More Windows junk is found: Internet Explorer/Edge `INetCache`, the thumbnail cache, Windows Error Reporting archives, DirectX, NVIDIA and AMD shader caches, Chromium shader caches, Opera and Vivaldi caches, and npm, pip, NuGet and Yarn caches.
+- Junk only an administrator can remove (Windows Update downloads, `Windows.old`, `C:\Windows\Temp`) is shown in a read-only **Windows cleanup that needs admin** panel that points to Windows Disk Cleanup and Storage Sense. JunkZero still doesn't delete it.
+
+### Deleting and restoring
+- Big cleanups can be fully restored: history keeps every path, not just the first 500.
+- Large deletes are much faster (items go to the Recycle Bin in batches of about 100, and drive settings are looked up once per drive), and restoring reads the Recycle Bin once instead of once per item.
+- While a delete runs, the dialog shows "Deleting 1,200 of 3,000" with a progress bar and a **Cancel** button. Cancel stops after the current batch; what wasn't reached is left in place and the result says how many.
+- Closing the window while a delete runs is blocked until it finishes, and only one copy of JunkZero runs at a time (opening it again brings up the running one).
+- Errors no longer vanish: the error toast stays until dismissed, **Show details** lists every item with its reason and a **Copy** button, and Cleanup History keeps them.
+- The Folder Explorer no longer drops `C:\foo\bar2` from the results when `C:\foo\bar` is deleted.
+
+### Scanning
+- Scan progress keeps moving on clean drives: counts update about four times a second and the current step is shown (scanning folders, checking program leftovers, looking for empty folders, comparing duplicates).
+- The "scan finished" message can no longer be lost when saving "new since last scan" is slow, and an error during a scan ends it with a message instead of a spinner that runs forever. If the live connection drops, the page checks whether the scan is still running before saying it stopped.
+- Duplicates are found faster: the last 64 KB is compared too before a full hash, and files are hashed in parallel. One slow folder no longer holds up the other scan workers, and archive listing is capped at about 64 MB.
+- The folder picker no longer closes itself after 30 seconds.
+
+### Scheduled scans
+- On Windows, scheduled scans also run on battery and a missed time is made up when the computer is next available. The task is pointed at the current JunkZero at every start, so moving or updating the app no longer breaks it, and turning it off works on non-English Windows. The Schedule screen shows when the last scheduled scan failed.
+
+### Windows download
+- **The Windows download changes:** instead of a single `JunkZero.exe`, releases offer `JunkZero-Setup.exe` (an installer for your user account, no administrator rights needed) and `JunkZero-Windows-portable.zip` (unzip and run `JunkZero.exe` from the `JunkZero` folder). The folder build starts faster and is less often flagged by antivirus programs. Uninstalling removes the scheduled scan; settings and history are kept.
+- The app has an icon and version details (Properties → Details), and each release lists SHA-256 checksums in `SHA256SUMS.txt`. The Mac app has the icon too.
+
+### Version, updates and diagnostics
+- The version is shown next to the name and in **About**. **Check for updates** asks GitHub for the latest release only when clicked, never on its own.
+- JunkZero keeps a log in its data folder (`logs\junkzero.log`, rotated at 1 MB), and **Copy diagnostics** in About copies the version, system details and recent log lines for a bug report. The cleanup audit log is rotated too instead of growing forever.
+- AI Inspect's Gemini option has a timeout and is never surer than the offline verdict. It works only when running from source with `google-genai` installed; the downloadable app always uses the offline analysis.
+
+### Keyboard and screen readers
+- Escape closes dialogs, Tab stays inside the open dialog and focus returns to where it was; dialogs are announced as dialogs. Column headers can be sorted from the keyboard, notifications are read out, and Enter in the path box starts a scan.
+
+### Checks
+- CI also runs a lint check (real errors only), checks the page script's syntax, and runs a browser test that scans, deletes in Permanent mode and checks the files are gone. The release build also tests the installer and uninstaller (including removing the scheduled scan) and tries a delete-and-restore with the built app.
+
 ## [1.2.0] - 2026-10-16
 
 ### Exclude from the results table
