@@ -5,9 +5,11 @@ import plistlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
+from xml.sax.saxutils import escape
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import ScanOptions
 from app.engine import osinfo, smart, storage
@@ -36,6 +38,8 @@ def get_schedule() -> Dict[str, Any]:
         "paths": schedule.get("paths", []),
         "include_junk_locations": bool(schedule.get("include_junk_locations", True)),
         "last_run": schedule.get("last_run"),
+        # The last scheduled run that failed, or the task that could not be set up: {"at", "error"}
+        "last_error": schedule.get("last_error"),
     }
 
 
@@ -70,29 +74,104 @@ def _pythonw() -> str:
     return str(windowless if windowless.exists() else exe)
 
 
-def task_command(script_path: str) -> str:
-    """Command Task Scheduler runs. The packaged JunkZero.exe has no Python next to it,
-    so it runs itself in report mode instead of the launcher script."""
+def task_action(script_path: str) -> Tuple[str, str]:
+    """(program, arguments) Task Scheduler runs. The packaged JunkZero.exe has no Python next
+    to it, so it runs itself in report mode instead of the launcher script."""
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}" --mode report'
-    return f'"{_pythonw()}" "{script_path}"'
+        return sys.executable, "--mode report"
+    return _pythonw(), f'"{script_path}"'
 
 
-def schtasks_create_args(frequency: str, time_str: str, day: str, command: str) -> List[str]:
-    args = ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/TR", command, "/ST", time_str]
+def task_command(script_path: str) -> str:
+    program, arguments = task_action(script_path)
+    return f'"{program}" {arguments}'
+
+
+_XML_DAYS = {"MON": "Monday", "TUE": "Tuesday", "WED": "Wednesday", "THU": "Thursday",
+             "FRI": "Friday", "SAT": "Saturday", "SUN": "Sunday"}
+
+
+def task_xml(frequency: str, time_str: str, day: str, program: str, arguments: str) -> str:
+    """The Task Scheduler task. Unlike schtasks' defaults it also runs on battery, and a run
+    missed while the computer was off or asleep is made up as soon as it can be."""
     if frequency == "daily":
-        args += ["/SC", "DAILY"]
+        when = "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
     else:
-        args += ["/SC", "WEEKLY", "/D", day]
-    return args
+        when = (f"<ScheduleByWeek><DaysOfWeek><{_XML_DAYS[day]} /></DaysOfWeek>"
+                "<WeeksInterval>1</WeeksInterval></ScheduleByWeek>")
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>JunkZero report-only scan (never deletes anything)</Description></RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2020-01-01T{time_str}:00</StartBoundary>
+      <Enabled>true</Enabled>
+      {when}
+    </CalendarTrigger>
+  </Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec><Command>{escape(program)}</Command><Arguments>{escape(arguments)}</Arguments></Exec>
+  </Actions>
+</Task>
+"""
 
 
-def _run_schtasks(args: List[str]) -> None:
-    if os.name != "nt":
+def schtasks_create_args(xml_path: str) -> List[str]:
+    return ["schtasks", "/Create", "/F", "/TN", TASK_NAME, "/XML", xml_path]
+
+
+def _task_scheduler() -> bool:
+    """True on Windows, where schedules go to Task Scheduler."""
+    return os.name == "nt"
+
+
+def _run_schtasks(args: List[str]) -> subprocess.CompletedProcess:
+    if not _task_scheduler():
         raise ScheduleError("Scheduled scans use Windows Task Scheduler and are only available on Windows")
     res = subprocess.run(args, capture_output=True, text=True, timeout=30)
     if res.returncode != 0:
         raise ScheduleError((res.stderr or res.stdout or "schtasks failed").strip())
+    return res
+
+
+def _create_windows_task(frequency: str, time_str: str, day: str, script_path: str) -> None:
+    program, arguments = task_action(script_path)
+    fd, xml_path = tempfile.mkstemp(prefix="junkzero-task-", suffix=".xml", dir=storage.data_dir())
+    try:
+        with os.fdopen(fd, "w", encoding="utf-16") as f:
+            f.write(task_xml(frequency, time_str, day, program, arguments))
+        _run_schtasks(schtasks_create_args(xml_path))
+    finally:
+        try:
+            os.remove(xml_path)
+        except OSError:
+            pass
+
+
+def windows_task_command() -> Optional[str]:
+    """The program the saved task runs, or None when there is no such task. Any failure counts
+    as "not there", whatever language Windows words its message in."""
+    try:
+        res = _run_schtasks(["schtasks", "/Query", "/TN", TASK_NAME, "/XML"])
+    except (ScheduleError, OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"<Command>(.*?)</Command>", getattr(res, "stdout", "") or "", re.S)
+    if not m:
+        return ""
+    return m.group(1).strip().replace("&amp;", "&").replace("&quot;", '"').strip('"')
 
 
 def scheduling_supported() -> bool:
@@ -156,14 +235,61 @@ def save_schedule(frequency: str, time_str: str, day: str, paths: List[str], inc
     else:
         script = storage.data_dir() / "scheduled_scan.pyw"
         script.write_text(launcher_script(), encoding="utf-8")
-        _run_schtasks(schtasks_create_args(frequency, time_str, day, task_command(str(script))))
+        _create_windows_task(frequency, time_str, day, str(script))
     previous = get_schedule()
     storage.update_settings(schedule={
         "enabled": True, "frequency": frequency, "time": time_str, "day": day,
         "paths": paths, "include_junk_locations": include_junk_locations,
-        "last_run": previous.get("last_run"),
+        "last_run": previous.get("last_run"), "last_error": None,
     })
     return get_schedule()
+
+
+def _same_program(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def ensure_task_current() -> bool:
+    """At startup: if a schedule is on but its task is missing or runs another program (the exe
+    was moved or downloaded again), set it up again for this copy of JunkZero. True if it was
+    re-created. A failure is kept as last_error for the Schedule screen."""
+    schedule = get_schedule()
+    if not schedule["enabled"]:
+        return False
+    try:
+        if osinfo.is_macos():
+            script = storage.data_dir() / "scheduled_scan.py"
+            wanted = launchd_program_args(str(script))
+            try:
+                current = plistlib.loads(launch_agent_path().read_bytes()).get("ProgramArguments")
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                current = None
+            if current == wanted and (getattr(sys, "frozen", False) or script.exists()):
+                return False
+            script.write_text(launcher_script(), encoding="utf-8")
+            _install_launch_agent(launchd_plist(schedule["frequency"], schedule["time"], schedule["day"], wanted))
+            return True
+        if not _task_scheduler():
+            return False
+        script = storage.data_dir() / "scheduled_scan.pyw"
+        program, _ = task_action(str(script))
+        current = windows_task_command()
+        if current and _same_program(current, program) and (getattr(sys, "frozen", False) or script.exists()):
+            return False
+        script.write_text(launcher_script(), encoding="utf-8")
+        _create_windows_task(schedule["frequency"], schedule["time"], schedule["day"], str(script))
+        return True
+    except (ScheduleError, OSError, subprocess.SubprocessError) as e:
+        _record_error(f"Could not set up the scheduled scan again: {e}")
+        return False
+
+
+def _record_error(message: Optional[str]) -> None:
+    with storage.lock():
+        current = storage.load_settings().get("schedule")
+        if isinstance(current, dict):
+            error = {"at": time.time(), "error": message} if message else None
+            storage.update_settings(schedule={**current, "last_error": error})
 
 
 def delete_schedule() -> Dict[str, Any]:
@@ -172,9 +298,10 @@ def delete_schedule() -> Dict[str, Any]:
     else:
         try:
             _run_schtasks(["schtasks", "/Delete", "/F", "/TN", TASK_NAME])
-        except ScheduleError as e:
-            # Already removed in Task Scheduler: just record it as off
-            if "cannot find" not in str(e).lower():
+        except ScheduleError:
+            # Already removed in Task Scheduler: just record it as off. Whether it is still
+            # there is asked, not read from the message (which is in Windows' own language).
+            if windows_task_command() is not None:
                 raise
     schedule = get_schedule()
     schedule["enabled"] = False
@@ -217,12 +344,17 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
 def run_scheduled_report() -> int:
     """Entry point for Task Scheduler and launchd."""
     schedule = get_schedule()
-    run_report(schedule["paths"], schedule["include_junk_locations"], source="scheduled")
+    try:
+        run_report(schedule["paths"], schedule["include_junk_locations"], source="scheduled")
+    except Exception as e:
+        # Kept for the Schedule screen, so a run that keeps failing doesn't go unnoticed
+        _record_error(f"The scheduled scan failed: {e}" if str(e) else f"The scheduled scan failed ({type(e).__name__})")
+        return 1
     # The scan can take minutes: only stamp the run, so changes made in the app meanwhile stay
     with storage.lock():
         current = storage.load_settings().get("schedule")
         if isinstance(current, dict):
-            storage.update_settings(schedule={**current, "last_run": time.time()})
+            storage.update_settings(schedule={**current, "last_run": time.time(), "last_error": None})
     return 0
 
 

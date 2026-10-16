@@ -1,8 +1,10 @@
 """Safe and audited deletion engine with Recycle Bin integration."""
 from __future__ import annotations
+import hashlib
 import os
 import shutil
 import logging
+import logging.handlers
 import threading
 import uuid
 from datetime import datetime
@@ -16,7 +18,6 @@ from app.config import (
     BACKUP_DIR_NAMES, BACKUP_DIR_SUFFIXES, CAT_DUPLICATES, CAT_EMPTY_FOLDERS, HOLDING_DIR_NAME, VCS_DIR_NAMES,
 )
 from app.engine.classifier import is_system_protected_path, format_size
-from app.engine.duplicates import same_content
 from app.engine.exclusions import ExclusionMatcher
 from app.engine.inuse import OpenFileCheck
 from app.engine import osinfo
@@ -31,7 +32,9 @@ AUDIT_LOG_FILE = storage.data_dir() / "cleaner_audit.log"
 logger = logging.getLogger("JunkZeroCleaner")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
-    handler = logging.FileHandler(AUDIT_LOG_FILE, encoding="utf-8", delay=True)
+    # Rotated (1 MB x 3) so it never grows without end
+    handler = logging.handlers.RotatingFileHandler(AUDIT_LOG_FILE, maxBytes=1024 * 1024, backupCount=3,
+                                                   encoding="utf-8", delay=True)
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s"))
     logger.addHandler(handler)
 
@@ -72,6 +75,98 @@ def _key(path: str) -> str:
 # One delete at a time: two at once could each see the other's copy of a duplicate as still
 # there and remove both
 _delete_lock = threading.Lock()
+
+# Items handed to the Recycle Bin per call: one call per item is slow for thousands of items
+TRASH_BATCH_SIZE = 100
+# What the delete running now has done, for the progress bar (GET /api/clean/progress)
+_progress: Dict[str, Any] = {"running": False, "done": 0, "total": 0}
+_progress_lock = threading.Lock()
+# Set by Cancel (POST /api/clean/cancel): the delete stops after the batch it is on
+_cancel = threading.Event()
+
+
+def delete_progress() -> Dict[str, Any]:
+    """{"running", "done", "total"} for the delete running now (or the last one)."""
+    with _progress_lock:
+        return dict(_progress)
+
+
+def delete_running() -> bool:
+    with _progress_lock:
+        return bool(_progress["running"])
+
+
+def cancel_delete() -> bool:
+    """Ask the running delete to stop after its current batch. False if none is running."""
+    if not delete_running():
+        return False
+    _cancel.set()
+    return True
+
+
+def _set_progress(**values: Any) -> None:
+    with _progress_lock:
+        _progress.update(values)
+
+
+_SAMPLE = 64 * 1024
+HashCache = Dict[Tuple[str, int, int], Optional[str]]
+
+
+def _sample(path: str, size: int) -> bytes:
+    """The first and last 64 KB of a file."""
+    with open(path, "rb") as f:
+        head = f.read(_SAMPLE)
+        if size > 2 * _SAMPLE:
+            f.seek(-_SAMPLE, os.SEEK_END)
+        return head + f.read(_SAMPLE)
+
+
+def _full_hash(path: str, cache: HashCache) -> Optional[str]:
+    """SHA-256 of a whole file, worked out once per file (and its size and modified time) per delete."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (_key(path), st.st_size, st.st_mtime_ns)
+    if key not in cache:
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            cache[key] = digest.hexdigest()
+        except OSError:
+            cache[key] = None
+    return cache[key]
+
+
+# Whole-file hashes worked out during the delete running now (it holds _delete_lock), so the
+# copy that is kept is read once for all of its duplicates
+_hashes: Optional[HashCache] = None
+
+
+def same_content(a: str, b: str) -> bool:
+    """True if both files exist and are byte-for-byte identical (checked again right before
+    deleting). Size and the first and last 64 KB are compared first; only then are both read in
+    full."""
+    cache = _hashes if _hashes is not None else {}
+    try:
+        if not (os.path.isfile(a) and os.path.isfile(b)):
+            return False
+        if os.path.samefile(a, b):
+            return False
+        size = os.path.getsize(a)
+        if size != os.path.getsize(b):
+            return False
+        if _sample(a, size) != _sample(b, size):
+            return False
+    except OSError:
+        return False
+    if size <= 2 * _SAMPLE:
+        return True  # The samples were the whole files
+    first, second = _full_hash(a, cache), _full_hash(b, cache)
+    return first is not None and first == second
 
 
 def _walk_folder(path: str, excluder: Optional[ExclusionMatcher] = None) -> Tuple[int, Optional[str], Optional[str]]:
@@ -125,7 +220,8 @@ def _remove_permanently(path: str) -> None:
     shutil.rmtree(path)
 
 
-def _send_to_trash(path: str) -> None:
+def _send_to_trash(path) -> None:
+    """Send one path, or a list of paths in one call, to the Recycle Bin / Trash."""
     try:
         send2trash.send2trash(path)
     except OSError as ex:
@@ -153,6 +249,9 @@ class CleanResult(BaseModel):
     # macOS: [device, inode] of each item sent to the Trash, so Restore finds that very item
     trash_ids: Dict[str, List[int]] = Field(default_factory=dict)
     started_at: float = 0.0
+    # Not looked at because the delete was cancelled; nothing was done to them
+    skipped_count: int = 0
+    cancelled: bool = False
 
 
 def delete_items(
@@ -166,10 +265,20 @@ def delete_items(
     drives without one, to JunkZero's holding folder on that drive); pass permanent=True to
     erase them from disk directly.
     """
+    global _hashes
     with _delete_lock:
-        # The user's exclusions (the list under Exclusions) are never deleted, from any screen
-        excluder = ExclusionMatcher(storage.get_exclusions() if exclusions is None else exclusions)
-        return _delete_items(items, permanent, open_check, excluder)
+        _hashes = {}
+        _cancel.clear()
+        _set_progress(running=True, done=0, total=len(items))
+        try:
+            # The user's exclusions (the list under Exclusions) are never deleted, from any screen
+            excluder = ExclusionMatcher(storage.get_exclusions() if exclusions is None else exclusions)
+            with recycle.per_drive_lookups():
+                return _delete_items(items, permanent, open_check, excluder)
+        finally:
+            _set_progress(running=False)
+            _cancel.clear()
+            _hashes = None
 
 
 def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Optional[OpenFileCheck],
@@ -186,8 +295,51 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
     errors: List[Dict[str, str]] = []
     mode_str = "permanent" if permanent else "recycle_bin"
     user_folders = protected_user_folders()
+    # Checked and waiting to go to the Recycle Bin together: (path as asked, path, size)
+    pending: List[Tuple[str, str, int]] = []
+    skipped = 0
 
-    for item in items:
+    def flush() -> None:
+        """Send the waiting items to the Recycle Bin in one call; if that fails, the ones still
+        in place are tried one by one so a single bad item doesn't fail the rest."""
+        nonlocal deleted_count, failed_count, freed_bytes
+        if not pending:
+            return
+        batch = list(pending)
+        pending.clear()
+        failures: Dict[str, str] = {}
+        try:
+            _send_to_trash(batch[0][1] if len(batch) == 1 else [p for _, p, _ in batch])
+        except Exception as ex:
+            if len(batch) == 1:
+                failures[batch[0][1]] = str(ex)
+            else:
+                for _, norm, _ in batch:
+                    if not os.path.lexists(norm):
+                        continue  # Moved before the call failed
+                    try:
+                        _send_to_trash(norm)
+                    except Exception as one:
+                        failures[norm] = str(one)
+        for asked, norm, size in batch:
+            if norm in failures:
+                failed_count += 1
+                errors.append({"path": asked, "error": failures[norm]})
+                trash_ids.pop(asked, None)
+                deleted_keys.discard(_key(norm))
+                logger.error(f"Failed to delete {norm}: {failures[norm]}")
+            else:
+                deleted_count += 1
+                freed_bytes += size
+                logger.info(f"RecycleBin: {norm} ({format_size(size)})")
+
+    for index, item in enumerate(items):
+        if _cancel.is_set():
+            flush()  # Finish the batch it is on, then stop
+            skipped = len(items) - index
+            logger.info(f"Delete cancelled: {skipped} item(s) left untouched")
+            break
+        _set_progress(done=index - len(pending))
         path_str = item.get("path", "")
         size = item.get("size_bytes", 0)
 
@@ -320,8 +472,12 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
                 if osinfo.is_macos():
                     st = os.lstat(norm_path)
                     trash_ids[path_str] = [st.st_dev, st.st_ino]
-                _send_to_trash(norm_path)
-                logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
+                # Goes with the rest of its batch; counts as gone for the duplicate check meanwhile
+                pending.append((path_str, norm_path, size))
+                deleted_keys.add(_key(norm_path))
+                if len(pending) >= TRASH_BATCH_SIZE:
+                    flush()
+                continue
             else:
                 # USB sticks and network shares have no Recycle Bin, and Windows erases items too big
                 # for the Recycle Bin (or all items, when it is set to). Set it aside on the same
@@ -346,6 +502,8 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
             errors.append({"path": path_str, "error": err_msg})
             logger.error(f"Failed to delete {norm_path}: {err_msg}")
 
+    flush()
+    _set_progress(done=len(items) - skipped)
     return CleanResult(
         total_requested=len(items),
         deleted_count=deleted_count,
@@ -357,4 +515,6 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         held=held,
         trash_ids=trash_ids,
         started_at=started_at,
+        skipped_count=skipped,
+        cancelled=skipped > 0,
     )
