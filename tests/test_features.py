@@ -116,7 +116,11 @@ def test_windows_junk_locations_only_lists_existing_folders(tmp_path):
     assert windows_junk_locations({}) == []
 
 
-def test_junk_location_scan_flags_temp_files_and_cache_folders(tmp_path):
+def test_junk_location_scan_flags_temp_files_and_cache_folders(tmp_path, monkeypatch):
+    # Files made by the test were created just now; pretend setup123.dat was made when it was modified
+    # (round 9: "changed in the last 24 hours" also looks at the creation time)
+    from app.engine import scanner
+    monkeypatch.setattr(scanner, "last_changed", lambda st: st.st_mtime)
     local, locations = _make_locations(tmp_path)
     old = time.time() - 3 * 86400
     temp_file = local / "Temp" / "setup123.dat"

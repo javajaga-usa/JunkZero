@@ -1,14 +1,18 @@
-"""Duplicate file detection: group by size, then by a partial hash, then by a full hash."""
+"""Duplicate file detection: group by size, then by the first and last 64 KB, then by a full hash.
+Groups of same-size files are compared in a few threads at once."""
 from __future__ import annotations
 import hashlib
 import os
 import threading
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 PARTIAL_BYTES = 64 * 1024
 CHUNK_BYTES = 1024 * 1024
+# Groups hashed at the same time (disks slow down with more readers)
+HASH_THREADS = 4
 
 
 @dataclass(frozen=True)
@@ -17,13 +21,19 @@ class FileCandidate:
     name: str
     size: int
     mtime: float
+    # Device and file id from the scan's own stat (0: unknown, looked up again)
+    dev: int = 0
+    ino: int = 0
 
 
-def _hash(path: str, limit: Optional[int], stop: Optional[threading.Event]) -> Optional[str]:
+def _hash(path: str, limit: Optional[int], stop: Optional[threading.Event], offset: int = 0) -> Optional[str]:
+    """Hash `limit` bytes (None: all) starting at `offset`."""
     h = hashlib.blake2b(digest_size=20)
     remaining = limit
     try:
         with open(path, "rb") as f:
+            if offset:
+                f.seek(offset)
             while True:
                 if stop is not None and stop.is_set():
                     return None
@@ -50,12 +60,15 @@ def _distinct_files(group: List[FileCandidate]) -> List[FileCandidate]:
         key = os.path.normcase(os.path.realpath(c.path))
         if key in seen_paths:
             continue
-        try:
-            st = os.stat(c.path)
-        except OSError:
-            continue
-        if st.st_ino:
-            file_id = (st.st_dev, st.st_ino)
+        dev, ino = c.dev, c.ino
+        if not ino:
+            try:
+                st = os.stat(c.path)
+            except OSError:
+                continue
+            dev, ino = st.st_dev, st.st_ino
+        if ino:
+            file_id = (dev, ino)
             if file_id in seen_ids:
                 continue
             seen_ids.add(file_id)
@@ -64,46 +77,59 @@ def _distinct_files(group: List[FileCandidate]) -> List[FileCandidate]:
     return result
 
 
+def _split(group: List[FileCandidate], digest) -> List[List[FileCandidate]]:
+    """Split a group by digest(c), dropping files that can't be read and groups of one."""
+    by: Dict[str, List[FileCandidate]] = defaultdict(list)
+    for c in group:
+        d = digest(c)
+        if d is not None:
+            by[d].append(c)
+    return [g for g in by.values() if len(g) >= 2]
+
+
+def _same_size_groups(size: int, same_size: List[FileCandidate],
+                      stop: Optional[threading.Event]) -> List[List[FileCandidate]]:
+    """Identical files among files of one size: first 64 KB, then last 64 KB, then everything."""
+    if stop is not None and stop.is_set():
+        return []
+    same_size = _distinct_files(same_size)
+    if len(same_size) < 2:
+        return []
+    groups = _split(same_size, lambda c: _hash(c.path, PARTIAL_BYTES, stop))
+    if size <= PARTIAL_BYTES:
+        return groups
+    tail_offset = max(PARTIAL_BYTES, size - PARTIAL_BYTES)
+    result: List[List[FileCandidate]] = []
+    for g in groups:
+        for tail_group in _split(g, lambda c: _hash(c.path, PARTIAL_BYTES, stop, tail_offset)):
+            if size <= 2 * PARTIAL_BYTES:
+                result.append(tail_group)  # First and last 64 KB cover the whole file
+            else:
+                result.extend(_split(tail_group, lambda c: _hash(c.path, None, stop)))
+    return result
+
+
 def find_duplicate_groups(
     candidates: List[FileCandidate],
     stop: Optional[threading.Event] = None,
+    threads: int = HASH_THREADS,
 ) -> List[List[FileCandidate]]:
     """Return groups (2+ files each) whose contents are byte-for-byte identical by hash."""
     by_size: Dict[int, List[FileCandidate]] = defaultdict(list)
     for c in candidates:
         if c.size > 0:
             by_size[c.size].append(c)
+    work = [(size, files) for size, files in by_size.items() if len(files) >= 2]
+    if not work:
+        return []
 
     groups: List[List[FileCandidate]] = []
-    for size, same_size in by_size.items():
-        if len(same_size) < 2:
-            continue
-        same_size = _distinct_files(same_size)
-        if len(same_size) < 2:
-            continue
-
-        by_partial: Dict[str, List[FileCandidate]] = defaultdict(list)
-        for c in same_size:
-            digest = _hash(c.path, PARTIAL_BYTES, stop)
-            if digest is not None:
-                by_partial[digest].append(c)
-
-        for partial_group in by_partial.values():
-            if len(partial_group) < 2:
-                continue
-            if size <= PARTIAL_BYTES:
-                groups.append(partial_group)
-                continue
-            by_full: Dict[str, List[FileCandidate]] = defaultdict(list)
-            for c in partial_group:
-                digest = _hash(c.path, None, stop)
-                if digest is not None:
-                    by_full[digest].append(c)
-            groups.extend(g for g in by_full.values() if len(g) >= 2)
-
-        if stop is not None and stop.is_set():
-            return []
-
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
+        # map keeps the order of sizes, so results don't depend on which thread finished first
+        for found in pool.map(lambda w: _same_size_groups(w[0], w[1], stop), work):
+            groups.extend(found)
+    if stop is not None and stop.is_set():
+        return []
     return groups
 
 

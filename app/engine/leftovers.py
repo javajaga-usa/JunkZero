@@ -117,22 +117,57 @@ def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
     return newest
 
 
-_WALLET_FOLDER_NAMES = {"wallet", "wallets"}
+# Crypto wallets and keys: losing one loses the money or the account
+_WALLET_FOLDER_WORDS = ("wallet", "keystore")
+_KEY_FILE_EXTENSIONS = {
+    ".seco", ".ppk", ".pfx", ".p12", ".pem", ".gpg", ".asc", ".jks", ".keystore", ".kdbx", ".key",
+}
+# App databases (LevelDB, SQLite) hold an app's own data: accounts, history, wallets
+_DATABASE_EXTENSIONS = {".ldb", ".sqlite", ".sqlite3", ".db"}
+_NOT_PERSONAL_DB_NAMES = {"thumbs.db", "ehthumbs.db"}
+# Wallet apps keep their data after uninstall on purpose: never offered as leftovers
+_WALLET_APPS = (
+    "exodus", "atomic", "electrum", "ledgerlive", "ledger", "trezor", "metamask", "wasabi",
+    "sparrow", "bitcoin", "ethereum", "monero", "litecoin", "dogecoin", "armory", "mycelium",
+)
+
+
+def is_wallet_app(name: str) -> bool:
+    folder = _norm(name)
+    return any(app in folder for app in _WALLET_APPS)
+
+
+def _holds_database_or_key(names: Iterable[str]) -> bool:
+    lowered = [n.lower() for n in names]
+    if "current" in lowered and any(n.startswith("manifest-") for n in lowered):
+        return True  # A LevelDB database
+    for lower in lowered:
+        if lower in _NOT_PERSONAL_DB_NAMES:
+            continue
+        ext = os.path.splitext(lower)[1]
+        if ext in _KEY_FILE_EXTENSIONS or ext in _DATABASE_EXTENSIONS:
+            return True
+    return False
 
 # Entries looked at per folder for personal files; a bigger folder is not offered (it can't be checked fully)
 _PERSONAL_WALK_LIMIT = 20000
 
 
 def holds_personal_files(path: str, limit: int = _PERSONAL_WALK_LIMIT) -> bool:
-    """True if the folder holds documents, photos, saves or other personal files (or is too big to check)."""
+    """True if the folder holds documents, photos, saves, wallets, keys, app databases or other
+    personal files (or is too big to check)."""
     from app.engine.safeguards import is_personal_file
+    if any(w in os.path.basename(path).lower() for w in _WALLET_FOLDER_WORDS):
+        return True
     seen = 0
     for _, dirs, files in os.walk(path):
         for name in files:
             if is_personal_file(name):
                 return True
-        # Crypto wallets: losing one loses the money
-        if any(d.lower() in _WALLET_FOLDER_NAMES for d in dirs):
+        if _holds_database_or_key(files):
+            return True
+        # Crypto wallets (exodus.wallet, keystore): losing one loses the money
+        if any(w in d.lower() for d in dirs for w in _WALLET_FOLDER_WORDS):
             return True
         seen += len(dirs) + len(files)
         if seen > limit:
@@ -167,7 +202,8 @@ def find_leftovers(
             except OSError:
                 continue
             shared = _is_shared(entry.name, _MAC_SHARED_FOLDERS, _MAC_SHARED_PREFIXES) if mac else _is_shared(entry.name)
-            if shared or installed.matches(entry.name) or is_system_protected_path(entry.path):
+            if shared or installed.matches(entry.name) or is_system_protected_path(entry.path) \
+                    or is_wallet_app(entry.name):
                 continue
             changed = newest_change(entry.path)
             days = int((now - changed) / 86400) if changed > 0 else 0

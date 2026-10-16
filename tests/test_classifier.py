@@ -89,8 +89,11 @@ def test_classify_temp_and_broken_download(default_options):
 
 
 def test_classify_os_iso_and_setup_zip(default_options, tmp_path):
+    # The ISO 9660 signature is checked, not just the name (round 9)
+    iso = tmp_path / "Ubuntu_24_04_LTS.iso"
+    iso.write_bytes(b"\0" * 0x8001 + b"CD001")
     iso_item = classify_item(
-        path="C:/Users/Test/Downloads/Ubuntu_24_04_LTS.iso",
+        path=str(iso),
         name="Ubuntu_24_04_LTS.iso",
         size_bytes=4500000000,
         mtime=1600000000.0,

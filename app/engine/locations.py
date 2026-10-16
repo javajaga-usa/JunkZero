@@ -25,19 +25,49 @@ class JunkLocation:
 
 
 # (id, label, path relative to LOCALAPPDATA, whole_dir, pattern).
-# Folders under ...\Microsoft\Windows (thumbnail cache, WER, INetCache) are left out:
-# JunkZero's safety filter protects every path containing a "Windows" folder.
+# Under ...\Microsoft\Windows only the exact folders and files below are offered; JunkZero's
+# safety filter keeps protecting everything else in a "Windows" folder.
 _LOCAL_APPDATA_LOCATIONS = [
     ("crash_dumps", "Application crash dumps", "CrashDumps", False, None),
+    ("inetcache", "Internet Explorer / Edge cache (INetCache)", "Microsoft/Windows/INetCache", False, None),
+    ("thumbcache", "Windows thumbnail cache", "Microsoft/Windows/Explorer", False, "thumbcache_*.db"),
+    ("wer_archive", "Windows Error Reporting archive", "Microsoft/Windows/WER/ReportArchive", False, None),
+    ("wer_queue", "Windows Error Reporting queue", "Microsoft/Windows/WER/ReportQueue", False, None),
+    ("d3dscache", "DirectX shader cache", "D3DSCache", True, None),
+    ("nvidia_dxcache", "NVIDIA DirectX shader cache", "NVIDIA/DXCache", True, None),
+    ("nvidia_glcache", "NVIDIA OpenGL shader cache", "NVIDIA/GLCache", True, None),
+    ("amd_dxcache", "AMD DirectX shader cache", "AMD/DxCache", True, None),
+    ("npm_cache", "npm download cache", "npm-cache", True, None),
+    ("pip_cache", "Python pip download cache", "pip/Cache", True, None),
+    ("nuget_cache", "NuGet package cache (v3-cache)", "NuGet/v3-cache", True, None),
+    ("yarn_cache", "Yarn package cache", "Yarn/Cache", True, None),
 ]
+# The same, relative to APPDATA (Roaming): older npm versions keep their cache there
+_ROAMING_APPDATA_LOCATIONS = [
+    ("npm_cache_roaming", "npm download cache", "npm-cache", True, None),
+]
+# Allowed although they sit inside a protected "Windows" folder (exact paths, checked by the safety filter)
+_INSIDE_WINDOWS_FOLDER = {"inetcache", "thumbcache", "wer_archive", "wer_queue"}
 
 # (id prefix, browser name, profile glob relative to LOCALAPPDATA, cache subfolders)
 _BROWSER_CACHES = [
     ("chrome", "Chrome", "Google/Chrome/User Data/*", ["Cache", "Code Cache", "GPUCache"]),
     ("edge", "Edge", "Microsoft/Edge/User Data/*", ["Cache", "Code Cache", "GPUCache"]),
     ("brave", "Brave", "BraveSoftware/Brave-Browser/User Data/*", ["Cache", "Code Cache", "GPUCache"]),
+    ("chromium", "Chromium", "Chromium/User Data/*", ["Cache", "Code Cache", "GPUCache"]),
+    ("vivaldi", "Vivaldi", "Vivaldi/User Data/*", ["Cache", "Code Cache", "GPUCache"]),
+    ("opera", "Opera", "Opera Software/Opera*", ["Cache", "Code Cache", "GPUCache"]),
     ("firefox", "Firefox", "Mozilla/Firefox/Profiles/*", ["cache2"]),
 ]
+# Shader caches Chromium-based browsers keep next to their profiles (User Data\GrShaderCache)
+_BROWSER_SHADER_CACHES = [
+    ("chrome", "Chrome", "Google/Chrome/User Data"),
+    ("edge", "Edge", "Microsoft/Edge/User Data"),
+    ("brave", "Brave", "BraveSoftware/Brave-Browser/User Data"),
+    ("chromium", "Chromium", "Chromium/User Data"),
+    ("vivaldi", "Vivaldi", "Vivaldi/User Data"),
+]
+_SHADER_CACHE_FOLDERS = ["GrShaderCache", "ShaderCache", "GraphiteDawnCache"]
 
 
 def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLocation]:
@@ -53,8 +83,13 @@ def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[Junk
 
     def add(loc: JunkLocation) -> None:
         key = (os.path.normcase(os.path.normpath(loc.path)), loc.pattern)
-        if key in seen or not os.path.isdir(loc.path) or is_system_protected_path(loc.path):
+        if key in seen or not os.path.isdir(loc.path):
             return
+        if is_system_protected_path(loc.path):
+            # Explorer's folder stays protected; only its thumbcache_*.db files are allowed
+            sample = os.path.join(loc.path, "thumbcache_x.db") if loc.pattern else loc.path
+            if loc.id not in _INSIDE_WINDOWS_FOLDER or is_system_protected_path(sample):
+                return
         seen.add(key)
         found.append(loc)
 
@@ -62,11 +97,23 @@ def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[Junk
     if temp:
         add(JunkLocation("user_temp", "User temp folder", os.path.normpath(temp)))
 
+    roaming = env.get("APPDATA")
+    if roaming:
+        for loc_id, label, rel, whole_dir, pattern in _ROAMING_APPDATA_LOCATIONS:
+            add(JunkLocation(loc_id, label, os.path.normpath(os.path.join(roaming, rel)), whole_dir, pattern))
+
     if not local:
         return found
 
     for loc_id, label, rel, whole_dir, pattern in _LOCAL_APPDATA_LOCATIONS:
         add(JunkLocation(loc_id, label, os.path.normpath(os.path.join(local, rel)), whole_dir, pattern))
+
+    for prefix, browser, rel in _BROWSER_SHADER_CACHES:
+        for sub in _SHADER_CACHE_FOLDERS:
+            add(JunkLocation(
+                f"{prefix}:{sub}".lower(), f"{browser} shader cache ({sub})",
+                os.path.normpath(os.path.join(local, rel, sub)), whole_dir=True,
+            ))
 
     for prefix, browser, profile_glob, subdirs in _BROWSER_CACHES:
         for profile in sorted(glob.glob(os.path.join(local, profile_glob))):
@@ -80,6 +127,73 @@ def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[Junk
                 ))
 
     return found
+
+
+# Junk only Windows itself (or an administrator) should remove: shown read-only, never deleted by
+# JunkZero. (name, path relative to the Windows folder, or to the system drive when it starts with "/")
+_SYSTEM_CLEANUP_HINTS = [
+    ("Windows temp folder", "Temp"),
+    ("Windows Update downloads", "SoftwareDistribution/Download"),
+    ("Delivery Optimization cache", "SoftwareDistribution/DeliveryOptimization"),
+    ("Delivery Optimization cache",
+     "ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache"),
+    ("Previous Windows installation (Windows.old)", "/Windows.old"),
+]
+# Entries counted per folder before giving up on its size (Windows.old holds a whole system)
+_HINT_SIZE_LIMIT = 200000
+
+
+def _folder_size(path: str, limit: int) -> Optional[int]:
+    """Total size of the files in a folder, or None if it can't all be read or is too big to count."""
+    total, seen = 0, 0
+    try:
+        for root, dirs, files in os.walk(path, onerror=_raise):
+            for name in files:
+                seen += 1
+                if seen > limit:
+                    return None
+                try:
+                    total += os.stat(os.path.join(root, name), follow_symlinks=False).st_size
+                except OSError:
+                    return None
+            seen += len(dirs)
+    except OSError:
+        return None
+    return total
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+def system_cleanup_hints(env: Optional[Mapping[str, str]] = None,
+                         size_limit: int = _HINT_SIZE_LIMIT) -> List[Dict[str, object]]:
+    """System-wide junk folders that exist on this PC: [{name, path, size_bytes or None}].
+
+    Read-only: JunkZero never deletes these (they need an administrator); the UI points to
+    Windows' own Disk Cleanup / Storage Sense instead."""
+    env = os.environ if env is None else env
+    windir = env.get("SystemRoot") or env.get("windir") or env.get("WINDIR")
+    drive = env.get("SystemDrive")
+    if not windir and not drive:
+        return []
+    hints: List[Dict[str, object]] = []
+    seen = set()
+    for name, rel in _SYSTEM_CLEANUP_HINTS:
+        if rel.startswith("/"):
+            if not drive:
+                continue
+            path = os.path.join(drive.rstrip("\\/") + os.sep, *rel.lstrip("/").split("/"))
+        else:
+            if not windir:
+                continue
+            path = os.path.join(windir, *rel.split("/"))
+        path = os.path.normpath(path)
+        if name in seen or not os.path.isdir(path):
+            continue
+        seen.add(name)
+        hints.append({"name": name, "path": path, "size_bytes": _folder_size(path, size_limit)})
+    return hints
 
 
 def junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLocation]:

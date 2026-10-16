@@ -32,6 +32,9 @@ DISK_IMAGE_EXTENSIONS: Set[str] = {
     ".iso", ".img", ".wim", ".esd",
     ".toast", ".nrg", ".cue", ".bin", ".mdf"
 }
+# Names also used for model weights, game data, SDK images and databases: listed as disc images
+# only next to the matching cue sheet (game.bin + game.cue, disc.mdf + disc.mds)
+DISC_IMAGE_SHEETS: Dict[str, Set[str]] = {".img": {".cue"}, ".bin": {".cue"}, ".mdf": {".mds"}}
 
 # Virtual machine disks hold a whole computer's files: only ever listed as Caution
 VM_DISK_EXTENSIONS: Set[str] = {".vhd", ".vhdx", ".avhdx", ".vmdk", ".qcow2", ".vdi", ".hdd"}
@@ -72,9 +75,42 @@ BUILD_DIR_NAMES: Set[str] = {
 
 # Build outputs that share an extension with real user files (.obj 3D models, .pdb protein data,
 # .user / .orig settings and merge backups), or may be the only copy of a program (.class, .pyc
-# shipped without source): Safe only inside a build output folder or __pycache__
-AMBIGUOUS_BUILD_EXTENSIONS: Set[str] = {".obj", ".pdb", ".user", ".orig", ".class", ".pyc", ".pyo"}
+# shipped without source), or are also other tools' data (.idb IDA Pro databases, .tlog
+# Elasticsearch data): Safe only inside a build output folder or __pycache__
+AMBIGUOUS_BUILD_EXTENSIONS: Set[str] = {
+    ".obj", ".pdb", ".user", ".orig", ".class", ".pyc", ".pyo", ".idb", ".tlog",
+}
 BUILD_OUTPUT_FOLDER_NAMES: Set[str] = BUILD_DIR_NAMES | {"debug", "release", "x64", "x86"}
+# Build folder names people also give their own folders (Videos/out, Models/Release, .venv/bin,
+# ~/.gradle): they count as build output only with a project file next to them (or a few levels up)
+PROJECT_BOUND_FOLDER_NAMES: Set[str] = {
+    "bin", "obj", "out", "build", "target", ".gradle", "debug", "release", "x64", "x86",
+}
+# Files that mark a folder as a software project
+PROJECT_MARKER_NAMES: Set[str] = {
+    "package.json", "cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",
+    "settings.gradle.kts", "cmakelists.txt", "makefile", "gnumakefile", "setup.py", "pyproject.toml",
+    "go.mod", "meson.build", "build.xml", "package.swift", "composer.json", "build.sbt",
+}
+PROJECT_MARKER_SUFFIXES = (".sln", ".csproj", ".vbproj", ".fsproj", ".vcxproj", ".vcproj", ".xcodeproj")
+
+# Database folders (LevelDB, IndexedDB) of browsers, Electron apps and wallets. Their ".log"
+# files are write-ahead logs holding the newest data: nothing inside them is ever listed.
+DATABASE_DIR_NAMES: Set[str] = {
+    "leveldb", "indexeddb", "local storage", "session storage", "local extension settings",
+    "sync data", "sync extension settings", "managed extension settings",
+}
+DATABASE_DIR_SUFFIXES = (".leveldb", ".indexeddb")
+
+# Windows Installer's cache (needed to repair and uninstall programs): never scanned
+PACKAGE_CACHE_DIR_NAMES: Set[str] = {"package cache"}
+
+# Folders whose big files are program data, not forgotten files: games, Python environments and
+# AI model stores. Never offered as duplicates or stale large files.
+APP_DATA_DIR_NAMES: Set[str] = {
+    "steamapps", "steamlibrary", ".venv", "venv", "site-packages", "envs", ".ollama", "ollama",
+    "lm-studio", ".lmstudio", "lmstudio", "huggingface",
+}
 
 # Backup copies are often someone's only other copy, so they are never preselected
 BACKUP_EXTENSIONS: Set[str] = {".bak", ".old"}
