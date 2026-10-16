@@ -2496,3 +2496,69 @@ input[type="text"]:focus {
 .file-table tbody tr.row-excluded td { opacity: 0.5; }
 .file-table tbody tr.row-excluded td.exclude-cell { opacity: 1; }
 .file-table tbody tr.row-excluded .file-name-text { text-decoration: line-through; text-decoration-color: var(--text-muted); }
+
+/* Sort headers are buttons so the keyboard can reach them; they look like the header text */
+.file-table th.sortable .sort-btn {
+  all: unset;
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.file-table th.sortable .sort-btn:focus-visible { box-shadow: var(--focus-ring); }
+.file-table th.sortable .sort-btn:focus-visible .sort-icon { opacity: 0.45; }
+
+/* Version next to the app name */
+.app-version {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+/* Delete progress inside the confirm dialog */
+.delete-progress {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.delete-progress-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.delete-progress .progress-bar-fill:not(.indeterminate) { transition: width 0.25s; }
+
+/* Toast actions ("Show details") */
+.toast-action {
+  margin-top: 6px;
+  display: inline-block;
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.toast-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.toast-text { display: flex; flex-direction: column; align-items: flex-start; }
+
+/* Error details list */
+.errors-list li { display: flex; flex-direction: column; gap: 2px; word-break: break-all; }
+.errors-list .error-reason { color: var(--text-muted); font-size: 12px; word-break: normal; }
+.history-errors summary { color: var(--color-danger); }
+
+/* About dialog */
+.update-result a { color: var(--color-primary); }
+
+/* Windows cleanup that needs admin (read-only) */
+.cleanup-hints { padding: 12px 16px; margin-bottom: 16px; }
+.cleanup-hints summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.cleanup-hints summary svg { width: 16px; height: 16px; }
+.cleanup-hints-total { color: var(--text-muted); font-weight: 500; }
+.cleanup-hints-note { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+.cleanup-hints li { display: flex; justify-content: space-between; gap: 12px; }
+.cleanup-hints .hint-path { color: var(--text-muted); font-size: 12px; word-break: break-all; }

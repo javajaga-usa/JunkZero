@@ -273,6 +273,65 @@ function presetState(presetTypes, chosen) {
   return picked === presetTypes.length ? 'true' : 'mixed';
 }
 
+// The path is the folder itself or something inside it ("C:\foo\bar2" is not inside "C:\foo\bar")
+function pathIsWithin(path, root) {
+  const norm = (p) => String(p ?? '').toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
+  const a = norm(path);
+  const b = norm(root);
+  return b !== '' && (a === b || a.startsWith(`${b}/`));
+}
+
+// The scan's current step (ScanStats.phase on the server) in plain words; '' when unknown
+const SCAN_PHASE_LABELS = {
+  walking: 'Scanning folders',
+  leftovers: 'Checking program leftovers',
+  empty_folders: 'Looking for empty folders',
+  duplicates: 'Comparing duplicates',
+  done: 'Finishing up',
+};
+
+function scanPhaseLabel(phase) {
+  return SCAN_PHASE_LABELS[phase] || '';
+}
+
+// "Deleting 1,200 of 3,000" while a big delete runs (from /api/clean/progress)
+function deleteProgressText(progress) {
+  const total = Number(progress?.total) || 0;
+  const done = Math.min(Number(progress?.done) || 0, total);
+  if (!progress?.running || total <= 0) return 'Deleting...';
+  return `Deleting ${done.toLocaleString('en-US')} of ${total.toLocaleString('en-US')}`;
+}
+
+function deleteProgressPercent(progress) {
+  const total = Number(progress?.total) || 0;
+  if (!progress?.running || total <= 0) return null; // unknown: the bar stays indeterminate
+  return Math.max(0, Math.min(100, ((Number(progress.done) || 0) / total) * 100));
+}
+
+// The error list as plain text for the clipboard: one "path<TAB>reason" line per item
+function errorListText(errors) {
+  return (errors || []).map((e) => `${e.path ?? ''}\t${e.error ?? ''}`).join('\n');
+}
+
+// What to say after "Check for updates" (/api/update/check)
+function updateCheckMessage(result) {
+  if (!result) return { text: 'Could not check for updates.', url: '' };
+  if (result.error) return { text: `Could not check for updates: ${result.error}`, url: '' };
+  if (result.newer && result.latest) {
+    return { text: `JunkZero ${result.latest} is available (you have ${result.current}).`, url: result.url || '' };
+  }
+  return { text: `You have the latest version (${result.current}).`, url: '' };
+}
+
+// Index to move focus to when Tab (or Shift+Tab) leaves the ends of a dialog; -1 = let it be
+function trappedFocusIndex(count, current, backwards) {
+  if (count <= 0) return -1;
+  if (current < 0) return backwards ? count - 1 : 0;
+  if (backwards && current === 0) return count - 1;
+  if (!backwards && current === count - 1) return 0;
+  return -1;
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -288,6 +347,10 @@ const TABLE_PAGE_SIZE = 500;
 // up right away without the table redrawing on every single item
 const LIVE_RENDER_MS = 500;
 const SEARCH_DELAY_MS = 200;
+// While a delete runs, its progress is asked for this often
+const CLEAN_PROGRESS_MS = 300;
+// When the live scan stream drops, the scan's status is asked for this often until it ends
+const SCAN_STATUS_POLL_MS = 1000;
 
 // Every API request carries this launch's app token (the server refuses it otherwise). JunkZero
 // opens its window at /#token=..., so the token never sits in the page itself. It is kept for
@@ -344,6 +407,11 @@ const state = {
   typeSearchOnly: false,  // The running/last scan looked only for the chosen file types
   liveRenderTimer: null,  // Pending table redraw while a scan is running
   exclusionRules: [],     // The Exclusions list: excluded items can't be ticked or deleted
+  version: '',            // App version (from /api/system/info)
+  scanRun: 0,             // Counts scans, so a late answer about an old scan is ignored
+  isDeleting: false,      // A delete is running: the window asks before closing
+  cleanJob: null,         // The running /api/clean progress poll
+  shownErrors: [],        // What the errors dialog lists (for "Copy")
 
   // Hierarchy Explorer State
   currentHierarchy: null,
@@ -564,6 +632,37 @@ const el = {
   btnCloseLargest: document.getElementById('btnCloseLargest'),
 
   toastContainer: document.getElementById('toastContainer'),
+
+  // Version, updates and diagnostics
+  appVersion: document.getElementById('appVersion'),
+  btnOpenAbout: document.getElementById('btnOpenAbout'),
+  aboutModal: document.getElementById('aboutModal'),
+  aboutVersion: document.getElementById('aboutVersion'),
+  closeAboutModal: document.getElementById('closeAboutModal'),
+  btnCloseAbout: document.getElementById('btnCloseAbout'),
+  btnCheckUpdates: document.getElementById('btnCheckUpdates'),
+  btnCopyDiagnostics: document.getElementById('btnCopyDiagnostics'),
+  updateResult: document.getElementById('updateResult'),
+
+  // Errors dialog
+  errorsModal: document.getElementById('errorsModal'),
+  errorsModalTitle: document.getElementById('errorsModalTitle'),
+  errorsModalSubtitle: document.getElementById('errorsModalSubtitle'),
+  errorsList: document.getElementById('errorsList'),
+  closeErrorsModal: document.getElementById('closeErrorsModal'),
+  btnCloseErrors: document.getElementById('btnCloseErrors'),
+  btnCopyErrors: document.getElementById('btnCopyErrors'),
+
+  // Delete progress (inside the confirm dialog)
+  deleteProgress: document.getElementById('deleteProgress'),
+  deleteProgressText: document.getElementById('deleteProgressText'),
+  deleteProgressBar: document.getElementById('deleteProgressBar'),
+  btnCancelClean: document.getElementById('btnCancelClean'),
+
+  // Windows cleanup that needs admin
+  cleanupHints: document.getElementById('cleanupHints'),
+  cleanupHintsList: document.getElementById('cleanupHintsList'),
+  cleanupHintsTotal: document.getElementById('cleanupHintsTotal'),
 };
 
 // Scan toggles remembered between launches (request field -> checkbox)
@@ -599,18 +698,120 @@ function formatSize(bytes) {
   return b.toFixed(2) + ' TB';
 }
 
-function showToast(message, type = 'info') {
+// Errors stay on screen until dismissed, so they can't vanish before they are read. `details`
+// ([{path, error}]) adds "Show details", which lists every item and its reason.
+function showToast(message, type = 'info', { details = null, detailsTitle = '' } = {}) {
+  const sticky = type === 'error';
   const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
+  toast.className = `toast toast-${type}${sticky ? ' toast-sticky' : ''}`;
   const icon = { success: 'circle-check', error: 'circle-alert' }[type] || 'info';
-  toast.innerHTML = `<i data-lucide="${icon}" class="toast-icon"></i><span></span>`;
+  toast.innerHTML = `<i data-lucide="${icon}" class="toast-icon"></i><div class="toast-text"><span></span></div>`;
   toast.querySelector('span').textContent = message;
+  if (details && details.length) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'toast-action';
+    more.textContent = 'Show details';
+    more.addEventListener('click', () => openErrorsModal(details, detailsTitle));
+    toast.querySelector('.toast-text').appendChild(more);
+  }
+  if (sticky) {
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.title = 'Dismiss';
+    close.innerHTML = '&times;';
+    close.addEventListener('click', () => toast.remove());
+    toast.appendChild(close);
+  }
   el.toastContainer.appendChild(toast);
   lucide.createIcons({ root: toast });
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    setTimeout(() => toast.remove(), 200);
-  }, 3500);
+  if (!sticky) {
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      setTimeout(() => toast.remove(), 200);
+    }, 3500);
+  }
+}
+
+// Every item that couldn't be removed (or restored), with its reason and a Copy button
+function openErrorsModal(errors, title = '') {
+  state.shownErrors = errors || [];
+  el.errorsModalTitle.textContent = title || "Items that couldn't be removed";
+  el.errorsModalSubtitle.textContent = `${plural(state.shownErrors.length, 'item')}; the reason is under each path`;
+  el.errorsList.innerHTML = state.shownErrors.map((e) => `
+    <li><span>${escapeHtml(e.path)}</span><span class="error-reason">${escapeHtml(e.error)}</span></li>
+  `).join('');
+  el.errorsModal.classList.remove('hidden');
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch { /* no clipboard access here: fall back to a hidden text box */ }
+  const box = document.createElement('textarea');
+  box.value = text;
+  box.setAttribute('readonly', '');
+  box.style.position = 'fixed';
+  box.style.opacity = '0';
+  document.body.appendChild(box);
+  box.select();
+  const ok = document.execCommand('copy');
+  box.remove();
+  if (!ok) throw new Error('the clipboard is not available');
+}
+
+// Dialogs: Escape closes the top one, Tab stays inside it, and focus goes back where it was
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), '
+  + 'select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+function topDialog() {
+  const open = [...document.querySelectorAll('.modal-overlay:not(.hidden)')];
+  return open[open.length - 1] || null;
+}
+
+function setupDialogs() {
+  const recentFocus = [];
+  document.addEventListener('focusin', (e) => {
+    recentFocus.push(e.target);
+    if (recentFocus.length > 10) recentFocus.shift();
+  });
+  document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+    const card = overlay.querySelector('[role="dialog"]') || overlay;
+    card.setAttribute('tabindex', '-1');
+    let opener = null;
+    new MutationObserver(() => {
+      const open = !overlay.classList.contains('hidden');
+      if (open && !overlay.dataset.open) {
+        overlay.dataset.open = '1';
+        opener = [...recentFocus].reverse().find((n) => n.isConnected && !overlay.contains(n)) || null;
+        if (!overlay.contains(document.activeElement)) card.focus();
+      } else if (!open && overlay.dataset.open) {
+        delete overlay.dataset.open;
+        if (opener && opener.isConnected && opener.offsetParent !== null) opener.focus();
+        opener = null;
+      }
+    }).observe(overlay, { attributes: true, attributeFilter: ['class'] });
+  });
+  document.addEventListener('keydown', (e) => {
+    const overlay = topDialog();
+    if (!overlay) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      overlay.querySelector('.close-modal-btn')?.click();
+    } else if (e.key === 'Tab') {
+      const items = [...overlay.querySelectorAll(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+      const inside = overlay.contains(document.activeElement);
+      const next = inside ? trappedFocusIndex(items.length, items.indexOf(document.activeElement), e.shiftKey)
+        : (e.shiftKey ? items.length - 1 : 0);
+      if (next >= 0 && items[next]) {
+        e.preventDefault();
+        items[next].focus();
+      }
+    }
+  });
 }
 
 // A problem with how JunkZero was installed: stays on screen until dismissed
@@ -631,12 +832,14 @@ async function initApp() {
   await loadPlatform();
   lucide.createIcons();
   setupEventListeners();
+  setupDialogs();
   if (!APP_TOKEN) {
     showToast('This page was opened without JunkZero. Start JunkZero to scan and clean.', 'error');
   }
   await loadAvailableDrives();
   await loadPreferences();
   await loadExclusionRules();
+  loadCleanupHints();
 }
 
 // Event Listeners
@@ -690,6 +893,13 @@ function setupEventListeners() {
 
   // A typed path that isn't a whole drive no longer leaves the drive highlighted
   el.targetPathInput.addEventListener('input', syncDrivePills);
+  // Enter in the path box starts a scan, like the Scan button
+  el.targetPathInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !state.isScanning) {
+      e.preventDefault();
+      startScan();
+    }
+  });
 
   // Start / Stop Scan Buttons
   el.btnStartScan.addEventListener('click', () => startScan());
@@ -934,9 +1144,11 @@ function setupEventListeners() {
     if (state.deleteConfirmCallback) {
       el.btnExecuteDelete.disabled = true;
       el.btnExecuteDelete.innerHTML = '<div class="spinner"></div> Deleting...';
+      setDeleting(true);
       try {
         await state.deleteConfirmCallback(el.confirmTypedInput.value.trim());
       } finally {
+        setDeleting(false);
         el.btnExecuteDelete.disabled = false;
         closeConfirmModal();
       }
@@ -991,6 +1203,31 @@ function setupEventListeners() {
   el.btnDisableSchedule.addEventListener('click', disableSchedule);
   el.btnLoadReport.addEventListener('click', loadLatestReport);
 
+  // About: version, updates (checked only on click) and diagnostics
+  el.btnOpenAbout.addEventListener('click', () => {
+    el.updateResult.textContent = '';
+    el.aboutModal.classList.remove('hidden');
+  });
+  el.closeAboutModal.addEventListener('click', () => el.aboutModal.classList.add('hidden'));
+  el.btnCloseAbout.addEventListener('click', () => el.aboutModal.classList.add('hidden'));
+  el.btnCheckUpdates.addEventListener('click', checkForUpdates);
+  el.btnCopyDiagnostics.addEventListener('click', copyDiagnostics);
+
+  // Errors dialog
+  el.closeErrorsModal.addEventListener('click', () => el.errorsModal.classList.add('hidden'));
+  el.btnCloseErrors.addEventListener('click', () => el.errorsModal.classList.add('hidden'));
+  el.btnCopyErrors.addEventListener('click', async () => {
+    try {
+      await copyText(errorListText(state.shownErrors));
+      showToast('Copied the list of paths and reasons', 'success');
+    } catch (err) {
+      showToast(`Could not copy: ${err.message}`, 'error');
+    }
+  });
+
+  // Stop a running delete after the current batch
+  el.btnCancelClean.addEventListener('click', cancelClean);
+
   // Largest Files Modal
   el.closeLargestModal.addEventListener('click', () => el.largestModal.classList.add('hidden'));
   el.btnCloseLargest.addEventListener('click', () => el.largestModal.classList.add('hidden'));
@@ -1009,6 +1246,11 @@ async function loadPlatform() {
     const res = await fetch('/api/system/info');
     const info = await res.json();
     state.platform = info.platform || 'windows';
+    state.version = info.version || '';
+    if (state.version) {
+      el.appVersion.textContent = `v${state.version}`;
+      el.aboutVersion.textContent = `Version ${state.version}`;
+    }
     if (info.setup_warning) showSetupWarning(info.setup_warning);
   } catch (err) {
     console.error('Failed to load system info:', err);
@@ -1083,6 +1325,8 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
   }
   state.typeSearchOnly = typeOnly;
   cancelLiveRender();
+  state.scanRun += 1;
+  const run = state.scanRun;
 
   state.items = [];
   state.filteredItems = [];
@@ -1094,6 +1338,7 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
   el.btnScanJunk.classList.add('hidden');
   el.btnStopScan.classList.remove('hidden');
   el.scanProgressContainer.classList.remove('hidden');
+  el.scanProgressText.textContent = 'Scanning folders...';
   el.statusText.textContent = junkOnly ? 'Scanning junk locations...'
     : typeOnly ? 'Searching for your file types...' : 'Scanning in progress...';
   document.querySelector('.status-dot').classList.add('scanning');
@@ -1163,19 +1408,28 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
               scheduleLiveRender();
             }, 100);
           }
+        } else if (data.type === 'progress') {
+          // Sent about every quarter second, also while nothing new is found
+          updateScanProgress(data.stats);
         } else if (data.type === 'completed') {
           // Drop any pending throttled update so it cannot overwrite the final stats
           clearTimeout(updateThrottleTimer);
           updateThrottleTimer = null;
-          onScanCompleted(data.stats, data.changes);
+          onScanCompleted(data.stats, data.changes, data.error || '');
         }
       } catch (e) {
         console.error('SSE parse error:', e);
       }
     };
 
+    // The stream dropped (EventSource would quietly reconnect and miss messages): ask the
+    // server whether the scan is still going before saying it stopped
     state.eventSource.onerror = () => {
-      onScanCompleted();
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
+      if (run === state.scanRun && state.isScanning) followScanStatus(run);
     };
   } catch (err) {
     showToast(err.message, 'error');
@@ -1200,6 +1454,29 @@ function cancelLiveRender() {
   state.liveRenderTimer = null;
 }
 
+async function followScanStatus(run) {
+  const current = () => run === state.scanRun && state.isScanning;
+  while (current()) {
+    let status;
+    try {
+      status = await apiJson('/api/scan/status');
+    } catch {
+      if (current()) onScanCompleted();
+      return;
+    }
+    if (!current()) return;
+    const stats = status.stats || status;
+    const running = status.is_running ?? (status.status === 'running');
+    if (!running) {
+      if (status.status === 'idle') onScanCompleted();
+      else onScanCompleted(stats, null, status.error || stats.error || '', { streamLost: true });
+      return;
+    }
+    updateScanProgress(stats);
+    await new Promise((resolve) => setTimeout(resolve, SCAN_STATUS_POLL_MS));
+  }
+}
+
 async function stopScan() {
   try {
     await fetch('/api/scan/stop', { method: 'POST' });
@@ -1207,7 +1484,7 @@ async function stopScan() {
   onScanCompleted();
 }
 
-function onScanCompleted(finalStats = null, changes = null) {
+function onScanCompleted(finalStats = null, changes = null, error = '', { streamLost = false } = {}) {
   state.isScanning = false;
   cancelLiveRender();
   if (state.eventSource) {
@@ -1219,15 +1496,19 @@ function onScanCompleted(finalStats = null, changes = null) {
   el.btnScanJunk.classList.remove('hidden');
   el.btnStopScan.classList.add('hidden');
   el.scanProgressContainer.classList.add('hidden');
-  el.statusText.textContent = 'Scan Finished';
+  el.statusText.textContent = error ? 'Scan failed' : 'Scan Finished';
   document.querySelector('.status-dot').classList.remove('scanning');
 
   if (changes) setNewItems(changes);
   applyFiltersAndRender(true);
   renderSmartSummary();
-  if (finalStats) {
+  if (error) {
+    if (finalStats) updateMetrics(finalStats);
+    showToast(`The scan stopped because of an error: ${error}. What it found before that is listed.`, 'error');
+  } else if (finalStats) {
     updateMetrics(finalStats);
     let note = '';
+    if (streamLost) note += ' The live connection dropped, so some results may be missing: scan again to be sure.';
     if (changes && changes.previous_scan_at) {
       const count = state.newPaths.size;
       note = count ? ` ${count.toLocaleString()} new since the last scan.` : ' Nothing new since the last scan.';
@@ -1244,12 +1525,20 @@ function onScanCompleted(finalStats = null, changes = null) {
   }
 }
 
+// The counters and current step under the scan bar (from item_found, progress or status)
+function updateScanProgress(stats) {
+  if (!stats) return;
+  el.scanMetricsFiles.textContent = `${(Number(stats.files_scanned) || 0).toLocaleString()} files scanned`;
+  el.scanMetricsDirs.textContent = `${(Number(stats.dirs_scanned) || 0).toLocaleString()} folders`;
+  el.scanMetricsRate.textContent = `${(Number(stats.garbage_count) || 0).toLocaleString()} found (${formatSize(stats.garbage_bytes)})`;
+  const label = scanPhaseLabel(stats.phase);
+  if (label && state.isScanning) el.scanProgressText.textContent = `${label}...`;
+}
+
 function updateMetrics(stats) {
   if (!stats) return;
 
-  el.scanMetricsFiles.textContent = `${stats.files_scanned.toLocaleString()} files scanned`;
-  el.scanMetricsDirs.textContent = `${stats.dirs_scanned.toLocaleString()} folders`;
-  el.scanMetricsRate.textContent = `${stats.garbage_count.toLocaleString()} found (${formatSize(stats.garbage_bytes)})`;
+  updateScanProgress(stats);
 
   el.statTotalGarbageSize.textContent = formatSize(stats.garbage_bytes);
   el.statTotalGarbageCount.textContent = `${plural(stats.garbage_count, 'item')} ready for review`;
@@ -1909,8 +2198,7 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
       showToast(`${verb}: ${folderPath}`, 'success');
 
       // Purge any items from main scan that were inside this deleted folder
-      const normPrefix = folderPath.toLowerCase().replace(/\\/g, '/');
-      state.items = state.items.filter((i) => !i.path.toLowerCase().replace(/\\/g, '/').startsWith(normPrefix));
+      state.items = state.items.filter((i) => !pathIsWithin(i.path, folderPath));
       applyFiltersAndRender(true);
 
       // Navigate to parent folder or close if at root
@@ -1920,7 +2208,8 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
         closeHierarchyModal();
       }
     } else if (result.failed_count > 0) {
-      showToast(`Could not delete folder: ${result.errors[0]?.error || 'Locked or permission denied'}`, 'error');
+      showToast(`Could not delete folder: ${result.errors[0]?.error || 'Locked or permission denied'}`, 'error',
+        { details: result.errors });
     }
   } catch (err) {
     showToast(`Folder deletion failed: ${err.message}`, 'error');
@@ -1929,6 +2218,7 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
 
 // Batch Deletion of scan results (Recycle Bin or permanent, per the current delete mode)
 async function executeBatchDelete(items, confirmText = '') {
+  const job = startCleanProgress();
   try {
     const result = await apiJson('/api/clean', {
       method: 'POST',
@@ -1940,8 +2230,12 @@ async function executeBatchDelete(items, confirmText = '') {
     });
     showDeleteOutcome(result);
 
-    if (result.deleted_count > 0) {
+    // After Cancel, items not reached yet were left alone. Without their paths we can't tell
+    // which rows are gone, so the table stays as it is until the next scan.
+    const skippedKnown = Array.isArray(result.skipped);
+    if (result.deleted_count > 0 && (skippedKnown || !(result.skipped_count > 0))) {
       const failed = new Set((result.errors || []).map((e) => e.path));
+      (skippedKnown ? result.skipped : []).forEach((p) => failed.add(typeof p === 'string' ? p : p?.path));
       const deletedPaths = new Set(items.map((i) => i.path).filter((p) => !failed.has(p)));
       state.items = state.items.filter((i) => !deletedPaths.has(i.path));
       items.forEach((i) => { if (deletedPaths.has(i.path)) state.selectedIds.delete(i.id); });
@@ -1952,7 +2246,75 @@ async function executeBatchDelete(items, confirmText = '') {
     }
   } catch (err) {
     showToast(`Deletion failed: ${err.message}`, 'error');
+  } finally {
+    stopCleanProgress(job);
   }
+}
+
+// While /api/clean runs: "Deleting 1,200 of 3,000", a progress bar and Cancel. An older
+// server without /api/clean/progress just shows "Deleting..." until it is done.
+function startCleanProgress() {
+  const job = { active: true };
+  state.cleanJob = job;
+  el.deleteProgress.classList.remove('hidden');
+  el.deleteProgressText.textContent = 'Deleting...';
+  el.deleteProgressBar.classList.add('indeterminate');
+  el.deleteProgressBar.style.width = '';
+  el.btnCancelClean.classList.add('hidden');
+  el.btnCancelClean.disabled = false;
+  el.btnCancelClean.textContent = 'Cancel';
+  const poll = async () => {
+    if (!job.active) return;
+    try {
+      const res = await fetch('/api/clean/progress');
+      if (res.status === 404) return; // this server can't report progress
+      if (res.ok) {
+        const progress = await res.json();
+        if (job.active) renderCleanProgress(progress);
+      }
+    } catch { /* try again next tick */ }
+    if (job.active) setTimeout(poll, CLEAN_PROGRESS_MS);
+  };
+  setTimeout(poll, CLEAN_PROGRESS_MS);
+  return job;
+}
+
+function renderCleanProgress(progress) {
+  el.deleteProgressText.textContent = deleteProgressText(progress);
+  const percent = deleteProgressPercent(progress);
+  el.deleteProgressBar.classList.toggle('indeterminate', percent === null);
+  el.deleteProgressBar.style.width = percent === null ? '' : `${percent}%`;
+  if (progress.running) el.btnCancelClean.classList.remove('hidden');
+}
+
+function stopCleanProgress(job) {
+  job.active = false;
+  if (state.cleanJob === job) state.cleanJob = null;
+  el.deleteProgress.classList.add('hidden');
+}
+
+async function cancelClean() {
+  el.btnCancelClean.disabled = true;
+  el.btnCancelClean.textContent = 'Stopping after this batch...';
+  try {
+    await apiJson('/api/clean/cancel', { method: 'POST' });
+  } catch (err) {
+    el.btnCancelClean.disabled = false;
+    el.btnCancelClean.textContent = 'Cancel';
+    showToast(`Could not cancel: ${err.message}`, 'error');
+  }
+}
+
+// While anything is being deleted, closing or reloading the window asks first
+function setDeleting(deleting) {
+  state.isDeleting = deleting;
+  el.btnCancelDelete.disabled = deleting;
+  el.closeConfirmModal.disabled = deleting;
+  window.onbeforeunload = deleting ? (e) => {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  } : null;
 }
 
 // Files and folders picked in Folder Explorer
@@ -1990,10 +2352,14 @@ function showDeleteOutcome(result) {
       }
     }
   }
+  if (result.skipped_count > 0) {
+    const how = Array.isArray(result.skipped) ? '' : ' Scan again to refresh the list.';
+    showToast(`Cancelled. ${plural(result.skipped_count, 'item')} ${result.skipped_count === 1 ? 'was' : 'were'} not deleted and ${result.skipped_count === 1 ? 'is' : 'are'} still in place.${how}`, 'info');
+  }
   if (result.failed_count > 0) {
-    const first = result.errors?.[0]?.error || 'locked or protected';
-    const more = result.failed_count > 1 ? ` (and ${result.failed_count - 1} more)` : '';
-    showToast(`${result.failed_count} item(s) were not deleted: ${first}${more}`, 'error');
+    const errors = result.errors || [];
+    const reason = errors.length === 1 ? `: ${errors[0].error}` : '';
+    showToast(`${plural(result.failed_count, 'item')} couldn't be removed${reason}`, 'error', { details: errors });
   }
 }
 
@@ -2089,6 +2455,7 @@ async function loadDeletePreview(preview) {
 }
 
 function closeConfirmModal() {
+  if (state.isDeleting) return; // it closes by itself when the delete is done
   el.confirmModal.classList.add('hidden');
   state.deleteConfirmCallback = null;
   state.confirmPreviewRequest = null;
@@ -2183,13 +2550,6 @@ async function apiJson(url, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
   return data;
-}
-
-function pathIsWithin(path, root) {
-  const norm = (p) => p.toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '');
-  const a = norm(path);
-  const b = norm(root);
-  return a === b || a.startsWith(`${b}/`);
 }
 
 async function openExclusionsModal() {
@@ -2474,6 +2834,8 @@ function renderHistory(history) {
     const extra = h.paths_truncated ? `<li>...and ${h.paths_truncated} more</li>` : '';
     const restored = (h.restored || []).length;
     const canRestore = h.mode !== 'permanent' && restored < h.paths.length;
+    const errors = Array.isArray(h.errors) ? h.errors : [];
+    const errorsOf = h.failed_count > errors.length ? ` (first ${errors.length} of ${h.failed_count})` : '';
     return `
       <li>
         <div class="history-row">
@@ -2491,6 +2853,11 @@ function renderHistory(history) {
           <summary>Show items</summary>
           <ul>${h.paths.map((p) => `<li>${escapeHtml(p)}</li>`).join('')}${extra}</ul>
         </details>
+        ${errors.length ? `<details class="history-errors">
+          <summary>Show what couldn't be removed${errorsOf}</summary>
+          <ul class="errors-list">${errors.map((e) => `<li><span>${escapeHtml(e.path)}</span>
+            <span class="error-reason">${escapeHtml(e.error)}</span></li>`).join('')}</ul>
+        </details>` : ''}
       </li>
     `;
   }).join('');
@@ -2511,7 +2878,8 @@ async function restoreCleanup(timestamp) {
       showToast(`Restored ${result.restored.length} item(s) to where they were. Scan again to see them.`, 'success');
     }
     if (result.errors.length) {
-      showToast(`${result.errors.length} item(s) not restored: ${result.errors[0].error}`, 'error');
+      showToast(`${plural(result.errors.length, 'item')} couldn't be restored`, 'error',
+        { details: result.errors, detailsTitle: "Items that couldn't be restored" });
     }
   } catch (err) {
     showToast(`Could not restore: ${err.message}`, 'error');
@@ -2524,6 +2892,68 @@ async function clearHistory() {
   } catch (err) {
     showToast(`Could not clear history: ${err.message}`, 'error');
   }
+}
+
+// Only when the user clicks "Check for updates": JunkZero never checks on its own
+async function checkForUpdates() {
+  el.btnCheckUpdates.disabled = true;
+  el.updateResult.textContent = 'Checking...';
+  try {
+    const res = await fetch('/api/update/check');
+    if (res.status === 404) {
+      el.updateResult.textContent = 'This copy of JunkZero cannot check for updates.';
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.detail || `Request failed (${res.status})`);
+    const message = updateCheckMessage(data);
+    el.updateResult.textContent = message.text;
+    if (/^https:\/\//.test(message.url)) {
+      const link = document.createElement('a');
+      link.href = message.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = 'Open the download page';
+      el.updateResult.append(' ', link);
+    }
+  } catch (err) {
+    el.updateResult.textContent = `Could not check for updates: ${err.message}`;
+  } finally {
+    el.btnCheckUpdates.disabled = false;
+  }
+}
+
+async function copyDiagnostics() {
+  try {
+    const data = await apiJson('/api/diagnostics');
+    await copyText(data.text || '');
+    showToast('Diagnostics copied. Paste them into your bug report.', 'success');
+  } catch (err) {
+    showToast(`Could not copy diagnostics: ${err.message}`, 'error');
+  }
+}
+
+// Windows junk only an administrator can remove (Windows Update downloads, Windows.old...):
+// listed read-only with a pointer to Disk Cleanup. Hidden when there is none, or on servers
+// that don't offer the list.
+async function loadCleanupHints() {
+  try {
+    const res = await fetch('/api/system/cleanup-hints');
+    if (!res.ok) return;
+    const hints = ((await res.json()).hints || []).filter((h) => h && h.path);
+    if (!hints.length) return;
+    const size = (h) => (Number.isFinite(Number(h.size_bytes)) && h.size_bytes !== null ? Number(h.size_bytes) : null);
+    const total = hints.reduce((acc, h) => acc + (size(h) || 0), 0);
+    el.cleanupHintsTotal.textContent = total > 0 ? `(${formatSize(total)})` : '';
+    el.cleanupHintsList.innerHTML = hints.map((h) => `
+      <li>
+        <div><strong>${escapeHtml(h.name || h.path)}</strong><div class="hint-path">${escapeHtml(h.path)}</div></div>
+        <span>${size(h) === null ? '' : formatSize(size(h))}</span>
+      </li>
+    `).join('');
+    el.cleanupHints.classList.remove('hidden');
+    lucide.createIcons();
+  } catch { /* not shown */ }
 }
 
 async function openRecycleBin() {
