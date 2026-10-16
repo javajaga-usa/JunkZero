@@ -10,6 +10,8 @@
 - Found items appear in the results table while a scan or file type search is still running (refreshed twice a second), instead of only when it finishes. They can be inspected, ticked and deleted right away; empty folders and duplicates still appear at the end, since finding them needs the whole scan.
 
 ### Mac fixes
+- Deleting from an exFAT, FAT or NTFS disk (most USB drives and memory cards, and disks shared with Windows) no longer risks erasing items for good. On those disks macOS can erase an item at once when asked to move it to the Trash, so JunkZero now keeps it in its hidden holding folder on that disk for 7 days instead, restorable from Cleanup History, as it already did for network drives. Only the startup disk and APFS or Mac OS Extended disks use the Trash.
+- Carbon Copy Cloner's `_CCC SafetyNet` folder counts as a backup: it is never scanned or deleted from.
 - Deleting to the Trash no longer fails with "Insufficient access privileges for operation" when running from source. `requirements.txt` now includes `pyobjc-framework-Cocoa` on macOS, which lets the Trash use Apple's current API, and `run.command` installs anything missing on launch (creating `.venv` the first time). If the package is still missing, JunkZero says so when it starts and in the delete error, with the command that fixes it.
 - Browse opens the folder picker in front instead of behind the browser, starts at the current scan location (or without one, if macOS won't open it there), and says when the picker can't open. In JunkZero's own window it uses the window's folder picker.
 - The drive button is highlighted only while the scan location is that whole drive, so a chosen subfolder no longer looks like the drive is still selected.
