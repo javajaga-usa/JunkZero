@@ -176,3 +176,18 @@ test('drive buttons match the scan location only when it is the whole drive', ()
   assert.equal(context.samePath('C:\\', 'C:\\Users'), false);
   assert.equal(context.samePath('', ''), false);
 });
+
+test('exclusion rules match like the server: paths cover what is inside, patterns match names or paths', () => {
+  const rules = ['C:\\Users\\me\\Keep', '*.iso', '/Volumes/Red/a[0-9].txt', 'report?.pdf'];
+  assert.equal(context.exclusionRuleFor('c:\\users\\me\\keep\\x.tmp', rules), 'C:\\Users\\me\\Keep');
+  assert.equal(context.exclusionRuleFor('C:\\Users\\me\\Keep', rules), 'C:\\Users\\me\\Keep');
+  assert.equal(context.exclusionRuleFor('C:\\Users\\me\\Keeper\\x', rules), null);
+  assert.equal(context.exclusionRuleFor('/x/Win.ISO', rules), '*.iso');
+  assert.equal(context.exclusionRuleFor('/Volumes/Red/a7.txt', rules), '/Volumes/Red/a[0-9].txt');
+  assert.equal(context.exclusionRuleFor('/Volumes/Red/ab.txt', rules), null);
+  assert.equal(context.exclusionRuleFor('/d/report1.pdf', rules), 'report?.pdf');
+  assert.equal(context.exclusionRuleFor('/d/report12.pdf', rules), null);
+  assert.equal(context.exclusionRuleFor('/d/a.(1).log', ['a.(1).log']), null);
+  assert.equal(context.exclusionRuleFor('/d/a.(1).log', ['*(1).log']), '*(1).log');
+  assert.equal(context.exclusionRuleFor('/d/x', []), null);
+});

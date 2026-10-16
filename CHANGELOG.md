@@ -2,6 +2,10 @@
 
 ## [1.2.0] - 2026-10-16
 
+### Exclude from the results table
+- Each result has an **Exclude** checkbox before its category. Ticking it adds the item to Exclusions: the row is greyed out and can't be ticked for deletion, and later scans don't list it until it is removed under **Exclusions** at the top. Unticking undoes it. This replaces the hide icon in the row's actions.
+- Excluded items can't be deleted from any screen, including Folder Explorer, and neither can a folder that holds one; the delete says which exclusion is in the way.
+
 ### Results while the scan runs
 - Found items appear in the results table while a scan or file type search is still running (refreshed twice a second), instead of only when it finishes. They can be inspected, ticked and deleted right away; empty folders and duplicates still appear at the end, since finding them needs the whole scan.
 

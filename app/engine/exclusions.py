@@ -40,6 +40,11 @@ class ExclusionMatcher:
     def patterns(self) -> List[str]:
         return [n for n, _ in self._patterns]
 
+    def paths_inside(self, folder: str) -> List[str]:
+        """Path rules (as written) for something strictly inside folder."""
+        norm = _norm(folder)
+        return [rule for p, rule in self._paths if p.startswith(norm + "/")]
+
     def __bool__(self) -> bool:
         return bool(self._paths or self._patterns)
 

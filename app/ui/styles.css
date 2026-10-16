@@ -1053,6 +1053,7 @@ input[type="text"]:focus {
 .results-table .col-check { width: 42px; }
 .results-table .col-icon { width: 30px; }
 .results-table .col-name { width: 21%; }
+.results-table .col-exclude { width: 70px; }
 .results-table .col-category { width: 156px; }
 .results-table .col-size { width: 96px; }
 .results-table .col-modified { width: 132px; }
@@ -2488,3 +2489,10 @@ input[type="text"]:focus {
 
 .toast-close:hover { background: var(--bg-card-hover); color: var(--text-primary); }
 .toast-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Excluded results: greyed out, can't be ticked for deletion; the Exclude box stays usable */
+.results-table .exclude-cell { text-align: center; }
+.results-table th.text-center { text-align: center; }
+.file-table tbody tr.row-excluded td { opacity: 0.5; }
+.file-table tbody tr.row-excluded td.exclude-cell { opacity: 1; }
+.file-table tbody tr.row-excluded .file-name-text { text-decoration: line-through; text-decoration-color: var(--text-muted); }
