@@ -199,6 +199,20 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
   return lines;
 }
 
+// What to say after a scan about folders it couldn't read ('' when there were none)
+function unreadableText(stats) {
+  const n = Number(stats?.unreadable_dirs) || 0;
+  if (!n) return '';
+  const folders = `${n.toLocaleString()} folder${n === 1 ? '' : 's'}`;
+  const example = (stats.unreadable_examples || [])[0];
+  const such = example ? `, such as ${example}` : '';
+  const blocked = Number(stats.privacy_blocked_dirs) || 0;
+  if (blocked) {
+    return `macOS kept JunkZero out of ${folders}${such}, so ${n === 1 ? 'it wasn\'t' : 'they weren\'t'} scanned. ${stats.privacy_fix || 'Give JunkZero Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then restart JunkZero'}.`;
+  }
+  return `${folders} couldn't be read (no permission)${such}, so ${n === 1 ? 'it wasn\'t' : 'they weren\'t'} scanned.`;
+}
+
 // One line of the delete dialog for one disk (from /api/delete-preview "disks")
 function diskLine(d, trashName = 'Recycle Bin', holdingDays = 7) {
   const where = `${d.name}${d.fs_label ? ` (${d.fs_label})` : ''}`;
@@ -647,17 +661,46 @@ function showToast(message, type = 'info') {
   }, 3500);
 }
 
-// A problem with how JunkZero was installed: stays on screen until dismissed
-function showSetupWarning(message) {
+// A message that stays on screen until dismissed, optionally with one action button
+function showStickyToast(message, { type = 'error', actionLabel = '', onAction = null } = {}) {
   const toast = document.createElement('div');
-  toast.className = 'toast toast-error toast-sticky';
-  toast.setAttribute('role', 'alert');
-  toast.innerHTML = '<i data-lucide="circle-alert" class="toast-icon"></i><span></span>'
+  toast.className = `toast toast-${type} toast-sticky`;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  toast.innerHTML = `<i data-lucide="${type === 'error' ? 'circle-alert' : 'info'}" class="toast-icon"></i>`
+    + '<div class="toast-body"><span></span></div>'
     + '<button type="button" class="toast-close" aria-label="Dismiss" title="Dismiss">&times;</button>';
   toast.querySelector('span').textContent = message;
+  if (actionLabel && onAction) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary btn-sm toast-action';
+    btn.textContent = actionLabel;
+    btn.addEventListener('click', onAction);
+    toast.querySelector('.toast-body').appendChild(btn);
+  }
   toast.querySelector('.toast-close').addEventListener('click', () => toast.remove());
   el.toastContainer.appendChild(toast);
   lucide.createIcons({ root: toast });
+  return toast;
+}
+
+// A problem with how JunkZero was installed: stays on screen until dismissed
+function showSetupWarning(message) {
+  showStickyToast(message);
+}
+
+// macOS privacy settings kept JunkZero out of something: say so, with a way to fix it
+function showPrivacyNotice(message) {
+  showStickyToast(message, {
+    actionLabel: 'Open Privacy & Security',
+    onAction: async () => {
+      try {
+        await apiJson('/api/system/open-privacy-settings', { method: 'POST' });
+      } catch (err) {
+        showToast(`Could not open System Settings: ${err.message}`, 'error');
+      }
+    },
+  });
 }
 
 // App Initialization
@@ -1293,6 +1336,7 @@ function onScanCompleted(finalStats = null, changes = null) {
       const count = state.newPaths.size;
       note = count ? ` ${count.toLocaleString()} new since the last scan.` : ' Nothing new since the last scan.';
     }
+    notifyUnreadable(finalStats);
     if (state.typeSearchOnly) {
       const n = finalStats.garbage_count;
       showToast(n ? `Found ${plural(n, 'file')} of your chosen types. Tick the ones to remove, then Delete.`
@@ -1303,6 +1347,14 @@ function onScanCompleted(finalStats = null, changes = null) {
   } else {
     showToast(`Scan stopped. Found ${state.items.length} items.`, 'info');
   }
+}
+
+// Folders the scan wasn't allowed to read are reported, never silently skipped
+function notifyUnreadable(stats) {
+  const message = unreadableText(stats);
+  if (!message) return;
+  if (stats.privacy_blocked_dirs) showPrivacyNotice(message);
+  else showStickyToast(message, { type: 'info' });
 }
 
 function updateMetrics(stats) {
@@ -2052,9 +2104,20 @@ function showDeleteOutcome(result) {
     }
   }
   if (result.failed_count > 0) {
-    const first = result.errors?.[0]?.error || 'locked or protected';
-    const more = result.failed_count > 1 ? ` (and ${result.failed_count - 1} more)` : '';
-    showToast(`${result.failed_count} item(s) were not deleted: ${first}${more}`, 'error');
+    const errors = result.errors || [];
+    const privacy = errors.filter((e) => e.kind === 'mac_privacy');
+    const rest = errors.filter((e) => e.kind !== 'mac_privacy');
+    if (privacy.length) {
+      showPrivacyNotice(`${privacy.length} item(s) were not deleted: ${privacy[0].error.replace(/^Can't delete: /, '')}`);
+    }
+    if (rest.length) {
+      const first = rest[0]?.error || 'locked or protected';
+      const more = rest.length > 1 ? ` (and ${rest.length - 1} more)` : '';
+      const message = `${rest.length} item(s) were not deleted: ${first}${more}`;
+      // Permission problems stay on screen: they say what to change before trying again
+      if (rest.some((e) => e.kind)) showStickyToast(message);
+      else showToast(message, 'error');
+    }
   }
 }
 
