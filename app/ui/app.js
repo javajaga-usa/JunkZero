@@ -193,6 +193,50 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
   return lines;
 }
 
+// Exclusion rules, as app/engine/exclusions.py matches them: a rule with *, ? or [ is a pattern
+// (matched against the name and the full path); any other rule is a path that covers that file
+// or folder and everything inside it. Case-insensitive, either kind of slash.
+function normRulePath(p) {
+  return String(p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function globToRegExp(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i += 1) {
+    const c = glob[i];
+    if (c === '*') re += '.*';
+    else if (c === '?') re += '.';
+    else if (c === '[') {
+      const end = glob.indexOf(']', i + 2);
+      if (end < 0) { re += '\\['; continue; }
+      let cls = glob.slice(i + 1, end);
+      if (cls[0] === '!') cls = `^${cls.slice(1)}`;
+      re += `[${cls.replace(/\\/g, '\\\\')}]`;
+      i = end;
+    } else re += c.replace(/[.+^${}()|\\/\]]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`, 's');
+}
+
+// The first rule (as written) that excludes path, or null
+function exclusionRuleFor(path, rules) {
+  const norm = normRulePath(path);
+  const name = norm.slice(norm.lastIndexOf('/') + 1);
+  for (const rule of rules || []) {
+    const r = String(rule ?? '').trim();
+    if (!r || /[*?[]/.test(r)) continue;
+    const p = normRulePath(r);
+    if (p && (norm === p || norm.startsWith(`${p}/`))) return r;
+  }
+  for (const rule of rules || []) {
+    const r = String(rule ?? '').trim();
+    if (!r || !/[*?[]/.test(r)) continue;
+    const re = globToRegExp(normRulePath(r));
+    if (re.test(name) || re.test(norm)) return r;
+  }
+  return null;
+}
+
 // Same folder, ignoring case and a trailing separator ("C:\\" and "c:", "/Users/me/" and "/Users/me")
 function samePath(a, b) {
   const norm = (p) => {
@@ -299,6 +343,7 @@ const state = {
   fileTypesNeverListed: [], // Backup images and VM disks: the search refuses these
   typeSearchOnly: false,  // The running/last scan looked only for the chosen file types
   liveRenderTimer: null,  // Pending table redraw while a scan is running
+  exclusionRules: [],     // The Exclusions list: excluded items can't be ticked or deleted
 
   // Hierarchy Explorer State
   currentHierarchy: null,
@@ -591,6 +636,7 @@ async function initApp() {
   }
   await loadAvailableDrives();
   await loadPreferences();
+  await loadExclusionRules();
 }
 
 // Event Listeners
@@ -716,7 +762,7 @@ function setupEventListeners() {
   el.masterCheckbox.addEventListener('change', (e) => {
     const checkAll = e.target.checked;
     state.filteredItems.forEach((item) => {
-      if (checkAll) {
+      if (checkAll && !item.excluded_by) {
         state.selectedIds.add(item.id);
       } else {
         state.selectedIds.delete(item.id);
@@ -728,7 +774,7 @@ function setupEventListeners() {
 
   // Selection Presets
   el.btnSelectAll.addEventListener('click', () => {
-    state.filteredItems.forEach((i) => state.selectedIds.add(i.id));
+    state.filteredItems.forEach((i) => { if (!i.excluded_by) state.selectedIds.add(i.id); });
     renderTable();
     updateSelectionSummary();
   });
@@ -737,7 +783,7 @@ function setupEventListeners() {
     state.selectedIds.clear();
     state.items.forEach((i) => {
       // Only what the server itself ticked: Safe and marked Delete (empty folders stay unticked)
-      if (i.risk_level === 'Safe' && i.selected && scoreBand(i.score || 0) === 'delete') state.selectedIds.add(i.id);
+      if (i.risk_level === 'Safe' && i.selected && !i.excluded_by && scoreBand(i.score || 0) === 'delete') state.selectedIds.add(i.id);
     });
     renderTable();
     updateSelectionSummary();
@@ -1102,8 +1148,9 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
         const data = JSON.parse(event.data);
 
         if (data.type === 'item_found') {
+          markExcluded([data.item]);
           state.items.push(data.item);
-          if (data.item.selected) {
+          if (data.item.selected && !data.item.excluded_by) {
             state.selectedIds.add(data.item.id);
           }
 
@@ -1369,7 +1416,7 @@ function renderTable() {
   if (state.filteredItems.length === 0) {
     el.fileTableBody.innerHTML = `
       <tr class="empty-row">
-        <td colspan="10">
+        <td colspan="11">
           <div class="empty-state">
             <div class="empty-icon-wrap">${state.isScanning ? '<div class="spinner spinner-lg"></div>' : '<i data-lucide="search-x" class="empty-icon"></i>'}</div>
             <h3>${state.isScanning ? 'Scanning in progress...' : state.items.length ? 'No items match your filters' : 'No junk found'}</h3>
@@ -1384,7 +1431,14 @@ function renderTable() {
 
   const shown = state.filteredItems.slice(0, state.renderLimit);
   const html = shown.map((item) => {
-    const isChecked = state.selectedIds.has(item.id);
+    const excludedBy = item.excluded_by || null;
+    const isChecked = state.selectedIds.has(item.id) && !excludedBy;
+    // Excluded by its own path (untick to undo) or by another rule (change that under Exclusions)
+    const ownRule = excludedBy && normRulePath(excludedBy) === normRulePath(item.path);
+    const excludeTitle = !excludedBy
+      ? `Exclude: never delete this ${item.is_directory ? 'folder' : 'file'} or list it again (until you remove it under Exclusions)`
+      : ownRule ? 'Excluded. Untick to allow deleting it again.'
+        : `Excluded by "${excludedBy}". Remove that rule under Exclusions to allow deleting it.`;
     const riskClass = item.risk_level === 'Safe' ? 'risk-safe' : item.risk_level === 'Caution' ? 'risk-caution' : 'risk-review';
     const badge = categoryBadge(item.category);
 
@@ -1416,9 +1470,10 @@ function renderTable() {
     }
 
     return `
-      <tr class="${isChecked ? 'row-selected' : ''}" data-id="${escapeHtml(item.id)}">
+      <tr class="${isChecked ? 'row-selected' : ''}${excludedBy ? ' row-excluded' : ''}" data-id="${escapeHtml(item.id)}">
         <td>
-          <input type="checkbox" class="row-checkbox" data-id="${escapeHtml(item.id)}" ${isChecked ? 'checked' : ''} />
+          <input type="checkbox" class="row-checkbox" data-id="${escapeHtml(item.id)}" ${isChecked ? 'checked' : ''}
+            ${excludedBy ? 'disabled title="Excluded items can\'t be deleted"' : ''} aria-label="Select ${escapeHtml(item.name)}" />
         </td>
         <td>
           <i data-lucide="${typeIcon}" class="file-type-icon ${typeClass}"></i>
@@ -1427,6 +1482,10 @@ function renderTable() {
           <div class="file-name-cell clickable-file-cell" title="Click to view parent folder and hierarchy" data-path="${escapeHtml(item.path)}">
             <span class="file-name-text">${escapeHtml(item.name)}</span>${state.newPaths.has(item.path) ? '<span class="new-badge" title="Not found by the previous scan of this folder">New</span>' : ''}
           </div>
+        </td>
+        <td class="exclude-cell">
+          <input type="checkbox" class="exclude-checkbox" data-id="${escapeHtml(item.id)}" ${excludedBy ? 'checked' : ''}
+            ${excludedBy && !ownRule ? 'disabled' : ''} title="${escapeHtml(excludeTitle)}" aria-label="Exclude ${escapeHtml(item.name)}" />
         </td>
         <td>
           <span class="category-badge" data-slot="${badge.slot}" title="${escapeHtml(item.category)}">${escapeHtml(badge.label)}</span>
@@ -1461,14 +1520,11 @@ function renderTable() {
             <button class="action-icon-btn ai-btn btn-inspect-ai" title="AI Inspection & Advice" data-path="${escapeHtml(item.path)}">
               <i data-lucide="bot"></i>
             </button>
-            <button class="action-icon-btn btn-exclude" title="Never flag this ${item.is_directory ? 'folder' : 'file'} again" data-path="${escapeHtml(item.path)}">
-              <i data-lucide="eye-off"></i>
-            </button>
           </div>
         </td>
       </tr>${state.expandedScoreId === item.id ? `
       <tr class="score-reasons-row">
-        <td colspan="10">
+        <td colspan="11">
           <div class="score-reasons">
             <strong>Why ${Number(item.score) || 0}/100 (${escapeHtml(item.recommendation || '')})</strong>
             <ul>${(item.score_reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>
@@ -1481,7 +1537,7 @@ function renderTable() {
   const remaining = state.filteredItems.length - shown.length;
   const moreRow = remaining > 0 ? `
       <tr class="more-row">
-        <td colspan="10">
+        <td colspan="11">
           <button type="button" class="btn btn-secondary btn-show-more">
             Show ${Math.min(remaining, TABLE_PAGE_SIZE).toLocaleString()} more (${remaining.toLocaleString()} not shown yet)
           </button>
@@ -1495,6 +1551,12 @@ function renderTable() {
 // Table events are handled once on the table body (rows are re-rendered often)
 function bindTableEvents() {
   el.fileTableBody.addEventListener('change', (e) => {
+    const excludeBox = e.target.closest('.exclude-checkbox');
+    if (excludeBox) {
+      const item = state.items.find((i) => i.id === excludeBox.dataset.id);
+      if (item) setItemExcluded(item, excludeBox.checked);
+      return;
+    }
     const chk = e.target.closest('.row-checkbox');
     if (!chk) return;
     const id = chk.dataset.id;
@@ -1542,13 +1604,6 @@ function bindTableEvents() {
       return;
     }
 
-    const exclude = e.target.closest('.btn-exclude');
-    if (exclude) {
-      e.stopPropagation();
-      addExclusion(exclude.dataset.path, { fromTable: true });
-      return;
-    }
-
     const ai = e.target.closest('.btn-inspect-ai');
     if (ai) {
       e.stopPropagation();
@@ -1560,7 +1615,7 @@ function bindTableEvents() {
 // Tick only the items JunkZero is confident about (marked Delete)
 function smartSelect() {
   state.selectedIds.clear();
-  const picked = state.items.filter((i) => scoreBand(i.score || 0) === 'delete');
+  const picked = state.items.filter((i) => !i.excluded_by && scoreBand(i.score || 0) === 'delete');
   picked.forEach((i) => state.selectedIds.add(i.id));
   renderTable();
   updateSelectionSummary();
@@ -1571,7 +1626,7 @@ function smartSelect() {
 }
 
 function renderSmartSummary() {
-  const summary = smartSummary(state.items, formatSize);
+  const summary = smartSummary(state.items.filter((i) => !i.excluded_by), formatSize);
   el.smartSummary.classList.toggle('hidden', summary.lines.length === 0);
   el.btnSmartSelectSummary.classList.toggle('hidden', summary.deleteCount === 0);
   el.smartSummaryList.innerHTML = summary.lines.map((l) => `
@@ -1581,11 +1636,17 @@ function renderSmartSummary() {
 
 // Ticked items that the current filters show (the ones "Delete Selected" removes)
 function visibleSelectedItems() {
-  return state.filteredItems.filter((i) => state.selectedIds.has(i.id));
+  return state.filteredItems.filter((i) => state.selectedIds.has(i.id) && !i.excluded_by);
+}
+
+// Excluded items are never ticked, whichever button tried to tick them
+function dropExcludedFromSelection() {
+  state.items.forEach((i) => { if (i.excluded_by) state.selectedIds.delete(i.id); });
 }
 
 // Update Footer Selection Summary
 function updateSelectionSummary() {
+  dropExcludedFromSelection();
   const selectedItems = visibleSelectedItems();
   const count = selectedItems.length;
   const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
@@ -1605,8 +1666,9 @@ function updateSelectionSummary() {
     el.masterCheckbox.checked = false;
     el.masterCheckbox.indeterminate = false;
   } else {
-    const allFilteredChecked = state.filteredItems.every((i) => state.selectedIds.has(i.id));
-    const someFilteredChecked = state.filteredItems.some((i) => state.selectedIds.has(i.id));
+    const selectable = state.filteredItems.filter((i) => !i.excluded_by);
+    const allFilteredChecked = selectable.length > 0 && selectable.every((i) => state.selectedIds.has(i.id));
+    const someFilteredChecked = selectable.some((i) => state.selectedIds.has(i.id));
 
     el.masterCheckbox.checked = allFilteredChecked;
     el.masterCheckbox.indeterminate = someFilteredChecked && !allFilteredChecked;
@@ -2158,9 +2220,11 @@ function renderExclusions(rules) {
     btn.addEventListener('click', async () => {
       try {
         const remaining = rules.filter((r) => r !== btn.dataset.rule);
-        renderExclusions((await apiJson('/api/exclusions', {
+        const saved = (await apiJson('/api/exclusions', {
           method: 'PUT', body: JSON.stringify({ rules: remaining }),
-        })).rules);
+        })).rules;
+        renderExclusions(saved);
+        setExclusionRules(saved);
       } catch (err) {
         showToast(`Could not remove exclusion: ${err.message}`, 'error');
       }
@@ -2168,23 +2232,60 @@ function renderExclusions(rules) {
   });
 }
 
-async function addExclusion(rule, { fromTable = false } = {}) {
+async function addExclusion(rule) {
   rule = (rule || '').trim();
   if (!rule) return;
   try {
     const data = await apiJson('/api/exclusions/add', { method: 'POST', body: JSON.stringify({ rule }) });
     el.exclusionInput.value = '';
     if (!el.exclusionsModal.classList.contains('hidden')) renderExclusions(data.rules);
-    if (fromTable) {
-      // Hide the excluded item (and anything inside it) from the current results
-      const removed = state.items.filter((i) => pathIsWithin(i.path, rule));
-      state.items = state.items.filter((i) => !pathIsWithin(i.path, rule));
-      removed.forEach((i) => state.selectedIds.delete(i.id));
-      applyFiltersAndRender(true);
-      showToast(`Excluded ${rule.split(/[\\/]/).pop()}. It won't be flagged in future scans.`, 'success');
-    }
+    setExclusionRules(data.rules);
   } catch (err) {
     showToast(`Could not add exclusion: ${err.message}`, 'error');
+  }
+}
+
+// The Exclusions list changed: mark the matching results, untick them, and redraw
+function setExclusionRules(rules) {
+  state.exclusionRules = Array.isArray(rules) ? rules : [];
+  markExcluded(state.items);
+  dropExcludedFromSelection();
+  applyFiltersAndRender(false);
+  renderTable();
+  renderSmartSummary();
+}
+
+function markExcluded(items) {
+  items.forEach((i) => { i.excluded_by = exclusionRuleFor(i.path, state.exclusionRules); });
+}
+
+async function loadExclusionRules() {
+  try {
+    setExclusionRules((await apiJson('/api/exclusions')).rules);
+  } catch (err) {
+    console.warn('Could not load exclusions:', err);
+  }
+}
+
+// The Exclude checkbox in a result row: add or remove that item's own exclusion
+async function setItemExcluded(item, exclude) {
+  const name = item.name || item.path;
+  try {
+    let rules;
+    if (exclude) {
+      rules = (await apiJson('/api/exclusions/add', { method: 'POST', body: JSON.stringify({ rule: item.path }) })).rules;
+    } else {
+      const remaining = state.exclusionRules.filter((r) => normRulePath(r) !== normRulePath(item.path));
+      rules = (await apiJson('/api/exclusions', { method: 'PUT', body: JSON.stringify({ rules: remaining }) })).rules;
+    }
+    setExclusionRules(rules);
+    if (!el.exclusionsModal.classList.contains('hidden')) renderExclusions(rules);
+    showToast(exclude
+      ? `Excluded ${name}: it can't be deleted and won't be listed again until you remove it under Exclusions.`
+      : `${name} is no longer excluded.`, 'success');
+  } catch (err) {
+    showToast(`Could not ${exclude ? 'exclude' : 'un-exclude'} ${name}: ${err.message}`, 'error');
+    renderTable();  // put the checkbox back as it was
   }
 }
 
@@ -2510,9 +2611,10 @@ async function loadLatestReport() {
   try {
     const report = await apiJson('/api/reports/latest');
     state.items = report.items;
+    markExcluded(state.items);
     state.selectedIds.clear();
     resetResultViews();
-    report.items.forEach((i) => { if (i.selected) state.selectedIds.add(i.id); });
+    report.items.forEach((i) => { if (i.selected && !i.excluded_by) state.selectedIds.add(i.id); });
     updateMetrics({
       files_scanned: 0,
       dirs_scanned: 0,

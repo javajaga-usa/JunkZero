@@ -355,7 +355,7 @@
       <div class="table-container">
         <table class="file-table results-table" id="fileTable">
           <colgroup>
-            <col class="col-check" /><col class="col-icon" /><col class="col-name" /><col class="col-category" />
+            <col class="col-check" /><col class="col-icon" /><col class="col-name" /><col class="col-exclude" /><col class="col-category" />
             <col class="col-size" /><col class="col-modified" /><col class="col-risk" /><col class="col-score" /><col class="col-path" /><col class="col-actions" />
           </colgroup>
           <thead>
@@ -365,6 +365,7 @@
               </th>
               <th></th>
               <th class="sortable" data-sort="name">Name <i data-lucide="chevron-down" class="sort-icon"></i></th>
+              <th class="text-center" title="Tick to exclude an item: it can't be deleted and isn't listed again until you remove it under Exclusions">Exclude</th>
               <th class="sortable" data-sort="category">Category <i data-lucide="chevron-down" class="sort-icon"></i></th>
               <th class="sortable text-right" data-sort="size">Size <i data-lucide="chevron-down" class="sort-icon"></i></th>
               <th class="sortable" data-sort="modified">Modified <i data-lucide="chevron-down" class="sort-icon"></i></th>
@@ -376,7 +377,7 @@
           </thead>
           <tbody id="fileTableBody">
             <tr class="empty-row">
-              <td colspan="10">
+              <td colspan="11">
                 <div class="empty-state">
                   <div class="empty-icon-wrap"><i data-lucide="sparkles" class="empty-icon"></i></div>
                   <h3>No scan yet</h3>
@@ -644,7 +645,7 @@
             <div class="modal-icon"><i data-lucide="eye-off"></i></div>
             <div>
               <h3 class="modal-title">Exclusions</h3>
-              <p class="modal-subtitle">Never flag these folders, files or patterns</p>
+              <p class="modal-subtitle">Never list or delete these folders, files or patterns</p>
             </div>
           </div>
           <button id="closeExclusionsModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
@@ -654,7 +655,7 @@
             <input type="text" id="exclusionInput" placeholder="C:\Projects\keep-this  or  *.iso" />
             <button id="btnAddExclusion" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add</button>
           </div>
-          <p class="confirm-note">A path excludes that file or folder and everything inside it. Use * or ? for patterns matched against names and paths. Applies from the next scan.</p>
+          <p class="confirm-note">A path excludes that file or folder and everything inside it. Use * or ? for patterns matched against names and paths. Excluded items are never listed by a scan and can't be deleted from any screen (nor can a folder holding one) until you remove them here. Ticking Exclude in a result row adds that item here.</p>
           <ul id="exclusionsList" class="simple-list"></ul>
         </div>
         <div class="modal-footer">

@@ -17,6 +17,7 @@ from app.config import (
 )
 from app.engine.classifier import is_system_protected_path, format_size
 from app.engine.duplicates import same_content
+from app.engine.exclusions import ExclusionMatcher
 from app.engine.inuse import OpenFileCheck
 from app.engine import osinfo
 from app.engine.osinfo import is_hidden
@@ -73,20 +74,39 @@ def _key(path: str) -> str:
 _delete_lock = threading.Lock()
 
 
-def _walk_folder(path: str) -> Tuple[int, Optional[str]]:
-    """(total size of the files inside, name of a version-control or backup folder found inside)."""
+def _walk_folder(path: str, excluder: Optional[ExclusionMatcher] = None) -> Tuple[int, Optional[str], Optional[str]]:
+    """(total size of the files inside, name of a version-control or backup folder found inside,
+    an excluded file or folder found inside)."""
     size = 0
+    # A path rule for something inside this folder: no need to walk to find it
+    if excluder:
+        inside = _excluded_path_inside(path, excluder)
+        if inside:
+            return size, None, inside
+    check_patterns = bool(excluder and excluder.patterns)
     for root, dirs, files in os.walk(path):
         for d in dirs:
             if d.lower() in VCS_DIR_NAMES or in_backup_folder(d):
-                return size, d
+                return size, d, None
+            if check_patterns and excluder.matches(os.path.join(root, d), d):
+                return size, None, os.path.join(root, d)
         dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
         for f in files:
+            if check_patterns and excluder.matches(os.path.join(root, f), f):
+                return size, None, os.path.join(root, f)
             try:
                 size += os.lstat(os.path.join(root, f)).st_size
             except OSError:
                 pass
-    return size, None
+    return size, None, None
+
+
+def _excluded_path_inside(folder: str, excluder: ExclusionMatcher) -> Optional[str]:
+    """An excluded file or folder (a path rule, as written) that exists inside folder."""
+    for rule in excluder.paths_inside(folder):
+        if os.path.lexists(rule):
+            return rule
+    return None
 
 
 def _remove_permanently(path: str) -> None:
@@ -139,6 +159,7 @@ def delete_items(
     items: List[Dict[str, Any]],
     permanent: bool = False,
     open_check: Optional[OpenFileCheck] = None,
+    exclusions: Optional[List[str]] = None,
 ) -> CleanResult:
     """
     Delete a batch of files and directories. Items go to the Recycle Bin by default (or, on
@@ -146,10 +167,13 @@ def delete_items(
     erase them from disk directly.
     """
     with _delete_lock:
-        return _delete_items(items, permanent, open_check)
+        # The user's exclusions (the list under Exclusions) are never deleted, from any screen
+        excluder = ExclusionMatcher(storage.get_exclusions() if exclusions is None else exclusions)
+        return _delete_items(items, permanent, open_check, excluder)
 
 
-def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Optional[OpenFileCheck]) -> CleanResult:
+def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Optional[OpenFileCheck],
+                  excluder: Optional[ExclusionMatcher] = None) -> CleanResult:
     started_at = time.time()
     open_check = OpenFileCheck() if open_check is None else open_check
     deleted_keys = set()
@@ -197,6 +221,15 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         if in_vcs_folder(path_str):
             msg = "Deletion blocked: version-control folder (.git, .svn, .hg)"
             errors.append({"path": path_str, "error": msg})
+            failed_count += 1
+            continue
+
+        # Excluded by the user: kept until they remove it from Exclusions
+        rule = excluder.match(path_str) if excluder else None
+        if rule is None and excluder and os.path.realpath(path_str) != path_str:
+            rule = excluder.match(os.path.realpath(path_str))
+        if rule is not None:
+            errors.append({"path": path_str, "error": f"Excluded ({rule}): remove it from Exclusions to delete it"})
             failed_count += 1
             continue
 
@@ -257,11 +290,16 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         # A folder holding a .git (a build folder that is its own repository) or a backup is kept whole
         if os.path.isdir(norm_path):
             try:
-                inside_size, kept = _walk_folder(norm_path)
+                inside_size, kept, excluded_inside = _walk_folder(norm_path, excluder)
             except OSError:
-                inside_size, kept = 0, None
+                inside_size, kept, excluded_inside = 0, None, None
             if kept:
                 errors.append({"path": path_str, "error": f"Deletion blocked: it holds a {kept} folder"})
+                failed_count += 1
+                continue
+            if excluded_inside:
+                errors.append({"path": path_str, "error": "Deletion blocked: it holds an excluded item "
+                               f"({excluded_inside}); remove it from Exclusions or delete the rest separately"})
                 failed_count += 1
                 continue
             if size == 0:
