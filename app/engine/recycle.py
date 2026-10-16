@@ -28,6 +28,9 @@ from app.engine import osinfo, storage
 
 _DRIVE_REMOVABLE, _DRIVE_FIXED, _DRIVE_REMOTE, _DRIVE_CDROM, _DRIVE_RAMDISK = 2, 3, 4, 5, 6
 _MAC_NETWORK_FS = {"smbfs", "afpfs", "nfs", "webdav", "ftp", "cifs"}
+# File systems whose Trash macOS keeps reliably. On others (exFAT, FAT, NTFS, and the FSKit
+# drivers macOS uses for them), "move to Trash" can erase the item at once instead.
+_MAC_TRASH_FS = {"apfs", "hfs"}
 _mac_mounts_cache: Tuple[float, Dict[str, str]] = (0.0, {})
 
 
@@ -71,7 +74,9 @@ def mount_point(path: str) -> str:
 
 def has_recycle_bin(path: str) -> bool:
     """False for USB sticks, memory cards, CDs and network shares, where a "recycled" item is
-    erased for good. Fixed disks (and anything that can't be told) count as having one."""
+    erased for good. Fixed disks (and, on Windows, anything that can't be told) count as having
+    one. On a Mac only the startup disk and APFS or Mac OS Extended disks do: an exFAT or FAT
+    disk, or one whose file system can't be told, gets JunkZero's holding folder instead."""
     if osinfo.is_windows():
         if os.path.abspath(path).startswith("\\\\"):
             return False  # \\server\share
@@ -81,7 +86,11 @@ def has_recycle_bin(path: str) -> bool:
             return True
         return kind not in (_DRIVE_REMOVABLE, _DRIVE_REMOTE, _DRIVE_CDROM, _DRIVE_RAMDISK)
     if osinfo.is_macos():
-        return _mac_mounts().get(mount_point(path), "apfs") not in _MAC_NETWORK_FS
+        root = mount_point(path)
+        fs = (_mac_mounts().get(root) or "").lower()
+        if fs in _MAC_NETWORK_FS:
+            return False
+        return root == "/" or fs in _MAC_TRASH_FS
     return True
 
 
