@@ -144,6 +144,125 @@ def recycle_bin_takes(path: str, size: int) -> bool:
     return size < limit
 
 
+# ---------------------------------------------------------------- What a delete does on each disk
+
+# Where a deleted item goes: the system's Recycle Bin / Trash, JunkZero's holding folder on the
+# same disk (kept HOLDING_DAYS days), erased (permanent mode), or nowhere: the disk is read-only
+DEST_TRASH, DEST_HOLDING, DEST_ERASE, DEST_READ_ONLY = "trash", "holding", "erase", "read_only"
+
+_FS_LABELS = {
+    "apfs": "APFS", "hfs": "Mac OS Extended", "exfat": "exFAT", "msdos": "FAT", "fat": "FAT",
+    "fat32": "FAT32", "vfat": "FAT", "ntfs": "NTFS", "ufsd_ntfs": "NTFS", "tuxera_ntfs": "NTFS",
+    "refs": "ReFS", "smbfs": "SMB network share", "afpfs": "AFP network share", "nfs": "NFS network share",
+    "webdav": "WebDAV share", "cifs": "network share", "cd9660": "CD/DVD", "udf": "CD/DVD", "cdfs": "CD/DVD",
+    "ext4": "ext4", "btrfs": "Btrfs", "xfs": "XFS",
+}
+_FILE_READ_ONLY_VOLUME = 0x00080000
+
+
+def fs_label(fs: str) -> str:
+    fs = (fs or "").strip()
+    return _FS_LABELS.get(fs.lower(), fs.upper() if len(fs) <= 5 else fs)
+
+
+def _windows_volume(root: str) -> Tuple[str, str, bool]:
+    """(volume label, file system name, read-only) for a Windows drive root."""
+    import ctypes
+    name, fs = ctypes.create_unicode_buffer(261), ctypes.create_unicode_buffer(261)
+    flags = ctypes.c_ulong(0)
+    ok = ctypes.windll.kernel32.GetVolumeInformationW(root, name, 261, None, None, ctypes.byref(flags), fs, 261)
+    if not ok:
+        return "", "", False
+    return name.value, fs.value, bool(flags.value & _FILE_READ_ONLY_VOLUME)
+
+
+def is_read_only(path: str) -> bool:
+    """True if nothing can be deleted where path is: a read-only disk (a CD, or an NTFS disk on a
+    Mac, which macOS can only read)."""
+    folder = os.path.dirname(os.path.abspath(path)) or path
+    if osinfo.is_windows():
+        try:
+            root = mount_point(path)
+            if _windows_drive_type(root) == _DRIVE_CDROM:
+                return True
+            return _windows_volume(root)[2]
+        except (OSError, AttributeError, ValueError):
+            return False
+    try:
+        # The folder holding the item, not the disk root: on a Mac "/" is the read-only system
+        # volume while the files in /Users live on the writable data volume
+        return bool(os.statvfs(folder).f_flag & os.ST_RDONLY)
+    except (OSError, AttributeError):
+        return False
+
+
+def disk_info(path: str) -> Dict[str, Any]:
+    """The disk holding path, and what deleting from it does (ignoring permanent mode and the
+    Windows Recycle Bin's size limit, which depend on the item): name, file system, destination
+    (DEST_TRASH, DEST_HOLDING or DEST_READ_ONLY) and, unless it is the Trash, why."""
+    root = mount_point(path)
+    name, fs = "", ""
+    if osinfo.is_windows():
+        try:
+            name, fs, _ = _windows_volume(root)
+        except (OSError, AttributeError, ValueError):
+            pass
+        name = f"{name} ({root.rstrip(chr(92))})" if name else root
+    else:
+        if osinfo.is_macos():
+            fs = _mac_mounts().get(root) or ""
+        name = ("Macintosh HD" if osinfo.is_macos() else "/") if root == "/" else os.path.basename(root.rstrip("/")) or root
+    label = fs_label(fs)
+    trash = "Trash" if not osinfo.is_windows() else "Recycle Bin"
+    info = {"root": root, "name": name, "fs": fs, "fs_label": label, "destination": DEST_TRASH, "reason": ""}
+
+    if is_read_only(path):
+        info["destination"] = DEST_READ_ONLY
+        if osinfo.is_macos() and fs.lower() in ("ntfs", "ufsd_ntfs", "tuxera_ntfs"):
+            info["reason"] = "macOS can only read NTFS disks, so nothing on it can be deleted"
+        else:
+            info["reason"] = "the disk is read-only, so nothing on it can be deleted"
+        return info
+    if has_recycle_bin(path):
+        return info
+
+    info["destination"] = DEST_HOLDING
+    if osinfo.is_windows():
+        kind = None
+        try:
+            kind = _windows_drive_type(root)
+        except (OSError, AttributeError, ValueError):
+            pass
+        if os.path.abspath(path).startswith("\\\\") or kind == _DRIVE_REMOTE:
+            info["reason"] = f"network drives have no {trash}"
+        elif kind == _DRIVE_RAMDISK:
+            info["reason"] = f"RAM disks have no {trash}"
+        else:
+            info["reason"] = f"USB drives and memory cards have no {trash}"
+    elif fs.lower() in _MAC_NETWORK_FS:
+        info["reason"] = f"network drives have no {trash}"
+    elif fs:
+        info["reason"] = f"on {label} disks macOS may erase items instead of keeping them in the {trash}"
+    else:
+        info["reason"] = f"JunkZero can't tell how this disk is formatted, so it doesn't rely on the {trash}"
+    return info
+
+
+def item_destination(path: str, size: int, permanent: bool, info: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """(destination, why) for deleting one item: what the delete will really do with it."""
+    info = info if info is not None else disk_info(path)
+    if info["destination"] == DEST_READ_ONLY:
+        return DEST_READ_ONLY, info["reason"]
+    if permanent:
+        return DEST_ERASE, ""
+    if recycle_bin_takes(path, size):
+        return DEST_TRASH, ""
+    if info["destination"] == DEST_HOLDING and info["reason"]:
+        return DEST_HOLDING, info["reason"]
+    # Windows: bigger than this drive's Recycle Bin, or the Recycle Bin removes files at once
+    return DEST_HOLDING, "the Recycle Bin on this drive would erase it (too big for it, or set to remove files immediately)"
+
+
 # ---------------------------------------------------------------- Holding folder
 
 _BATCH_RE = re.compile(r"^(\d{8}-\d{6})-[0-9a-f]{6}$")

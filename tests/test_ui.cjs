@@ -191,3 +191,40 @@ test('exclusion rules match like the server: paths cover what is inside, pattern
   assert.equal(context.exclusionRuleFor('/d/a.(1).log', ['*(1).log']), '*(1).log');
   assert.equal(context.exclusionRuleFor('/d/x', []), null);
 });
+
+test('delete dialog says what happens on each disk when it is not simply the Trash', () => {
+  const lines = context.deletePreviewLines({
+    count: 6, bytes_formatted: '6 KB', personal_count: 0, cloud: {}, no_recycle_count: 3, truncated: false,
+    needs_typed_confirm: false, top_folders: [], types: [],
+    disks: [
+      { name: 'J Red', fs_label: 'exFAT', destination: 'holding', count: 3, bytes_formatted: '3 KB',
+        reason: 'on exFAT disks macOS may erase items instead of keeping them in the Trash' },
+      { name: 'Macintosh HD', fs_label: 'APFS', destination: 'trash', count: 2, bytes_formatted: '2 KB', reason: '' },
+      { name: 'Windows', fs_label: 'NTFS', destination: 'read_only', count: 1, bytes_formatted: '1 KB',
+        reason: 'macOS can only read NTFS disks, so nothing on it can be deleted' },
+    ],
+  }, 'Trash');
+  const texts = lines.map((l) => l.text);
+  assert.ok(texts.some((t) => /^J Red \(exFAT\): 3 items \(3 KB\) go to a hidden JunkZero folder on that disk for 7 days instead of the Trash, because on exFAT/.test(t)));
+  assert.ok(texts.includes('Macintosh HD (APFS): 2 items (2 KB) go to the Trash'));
+  assert.ok(lines.some((l) => l.level === 'warning' && /^Windows \(NTFS\): 1 item can't be deleted: macOS can only read NTFS/.test(l.text)));
+  assert.ok(!texts.some((t) => /without a Trash/.test(t)));
+});
+
+test('a single ordinary disk adds no disk line', () => {
+  const lines = context.deletePreviewLines({
+    count: 2, bytes_formatted: '2 KB', personal_count: 0, cloud: {}, no_recycle_count: 0, truncated: false,
+    needs_typed_confirm: false, top_folders: [], types: [],
+    disks: [{ name: 'Macintosh HD', fs_label: 'APFS', destination: 'trash', count: 2, bytes_formatted: '2 KB', reason: '' }],
+  }, 'Trash');
+  assert.equal(lines.length, 0);
+});
+
+test('scan location note appears only for disks without a dependable Trash', () => {
+  assert.equal(context.diskNoteText({ destination: 'trash', name: 'Macintosh HD' }, 'Trash'), '');
+  assert.match(context.diskNoteText({ destination: 'holding', name: 'J Red', fs_label: 'exFAT', holding_days: 7,
+    reason: 'on exFAT disks macOS may erase items instead of keeping them in the Trash' }, 'Trash'),
+  /^J Red \(exFAT\): deleted items go to a hidden JunkZero folder on this disk for 7 days instead of the Trash/);
+  assert.match(context.diskNoteText({ destination: 'read_only', name: 'Windows', fs_label: 'NTFS',
+    reason: 'macOS can only read NTFS disks, so nothing on it can be deleted' }, 'Trash'), /can scan it, but can't delete anything/);
+});

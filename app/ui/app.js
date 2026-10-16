@@ -173,7 +173,13 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
   Object.entries(summary.cloud || {}).forEach(([provider, n]) => {
     lines.push({ level: 'warning', text: `${plural(n, 'item')} in ${provider}: deleting also removes ${n === 1 ? 'it' : 'them'} from the cloud and your other devices` });
   });
-  if (summary.no_recycle_count) {
+  if (Array.isArray(summary.disks)) {
+    // What happens on each disk: say it whenever it isn't simply "goes to the Trash"
+    const unusual = summary.disks.some((d) => d.destination === 'holding' || d.destination === 'read_only');
+    if (unusual || summary.disks.length > 1) {
+      summary.disks.forEach((d) => lines.push(diskLine(d, trashName)));
+    }
+  } else if (summary.no_recycle_count) {
     lines.push({ level: 'info', text: `${plural(summary.no_recycle_count, 'item')} on a drive without a ${trashName} (USB or network): JunkZero keeps ${summary.no_recycle_count === 1 ? 'it' : 'them'} in a hidden folder on that drive for 7 days, and you can restore ${summary.no_recycle_count === 1 ? 'it' : 'them'} from Cleanup History` });
   }
   if (summary.truncated) {
@@ -191,6 +197,32 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
     lines.push({ level: 'info', text: `Types: ${summary.types.map((t) => `${t.type} ${t.count.toLocaleString()}`).join(', ')}` });
   }
   return lines;
+}
+
+// One line of the delete dialog for one disk (from /api/delete-preview "disks")
+function diskLine(d, trashName = 'Recycle Bin', holdingDays = 7) {
+  const where = `${d.name}${d.fs_label ? ` (${d.fs_label})` : ''}`;
+  const n = `${Number(d.count).toLocaleString()} item${Number(d.count) === 1 ? '' : 's'}`;
+  const size = d.bytes_formatted ? ` (${d.bytes_formatted})` : '';
+  if (d.destination === 'read_only') {
+    return { level: 'warning', text: `${where}: ${n} can't be deleted: ${d.reason}` };
+  }
+  if (d.destination === 'holding') {
+    return { level: 'info', text: `${where}: ${n}${size} go to a hidden JunkZero folder on that disk for ${holdingDays} days instead of the ${trashName}, because ${d.reason}. Restore them from Cleanup History.` };
+  }
+  if (d.destination === 'erase') return { level: 'info', text: `${where}: ${n}${size} erased permanently` };
+  return { level: 'info', text: `${where}: ${n}${size} go to the ${trashName}` };
+}
+
+// The note under the scan location when deleting there won't simply use the Trash (or can't delete)
+function diskNoteText(info, trashName = 'Recycle Bin') {
+  if (!info || !info.destination || info.destination === 'trash') return '';
+  const fs = info.fs_label ? ` (${info.fs_label})` : '';
+  const days = info.holding_days || 7;
+  if (info.destination === 'read_only') {
+    return `${info.name}${fs}: JunkZero can scan it, but can't delete anything on it, because ${info.reason}.`;
+  }
+  return `${info.name}${fs}: deleted items go to a hidden JunkZero folder on this disk for ${days} days instead of the ${trashName}, because ${info.reason}. You can restore them from Cleanup History.`;
 }
 
 // Exclusion rules, as app/engine/exclusions.py matches them: a rule with *, ? or [ is a pattern
@@ -350,6 +382,7 @@ const state = {
   hierarchySelectedPaths: new Set(),
   initialTargetFilePath: null,
   deleteConfirmCallback: null,
+  confirmNothingDeletable: false, // Every selected item is on a read-only disk
 
   // Delete mode: Recycle Bin unless the user explicitly switches to permanent.
   // Deliberately not persisted, so every launch starts in the safe mode.
@@ -364,6 +397,7 @@ const el = {
   statusText: document.getElementById('statusText'),
   driveButtons: document.getElementById('driveButtons'),
   targetPathInput: document.getElementById('targetPathInput'),
+  diskNote: document.getElementById('diskNote'),
   btnBrowse: document.getElementById('btnBrowse'),
 
   // Option Checkboxes
@@ -1061,12 +1095,39 @@ async function loadAvailableDrives() {
   }
 }
 
+// Say under the scan location when deleting there won't use the Trash, or can't delete at all
+let diskNoteTimer = null;
+function scheduleDiskNote() {
+  clearTimeout(diskNoteTimer);
+  diskNoteTimer = setTimeout(updateDiskNote, 400);
+}
+
+async function updateDiskNote() {
+  const path = el.targetPathInput.value.trim();
+  let text = '';
+  let level = 'info';
+  if (path) {
+    try {
+      const info = await apiJson(`/api/system/disk-info?path=${encodeURIComponent(path)}`);
+      if (el.targetPathInput.value.trim() !== path) return;  // the path changed meanwhile
+      text = diskNoteText(info, t('Recycle Bin'));
+      level = info.destination === 'read_only' ? 'warning' : 'info';
+    } catch (err) {
+      text = '';
+    }
+  }
+  el.diskNote.textContent = text;
+  el.diskNote.dataset.level = level;
+  el.diskNote.classList.toggle('hidden', !text);
+}
+
 // Highlight the drive button only when the scan location is that whole drive
 function syncDrivePills() {
   const current = el.targetPathInput.value.trim();
   document.querySelectorAll('.drive-pill').forEach((b) => {
     b.classList.toggle('active', samePath(b.dataset.path, current));
   });
+  scheduleDiskNote();
 }
 
 // Scanning Engine Controller
@@ -1986,7 +2047,7 @@ function showDeleteOutcome(result) {
         showToast(t(`Moved ${binned} item(s) to the Recycle Bin. Empty it to free the space.`), 'success');
       }
       if (held > 0) {
-        showToast(t(`${held} item(s) on a drive without a Recycle Bin were set aside in a hidden JunkZero folder on that drive for 7 days. Restore them from Cleanup History.`), 'info');
+        showToast(t(`${held} item(s) were moved to a hidden JunkZero folder on their disk for 7 days instead of the Recycle Bin, because that disk can't keep them there safely. Restore them from Cleanup History.`), 'info');
       }
     }
   }
@@ -2042,6 +2103,7 @@ function requestDeleteConfirmation({ title, subtitle, count, size, preview, onCo
   el.confirmTyped.classList.add('hidden');
   el.confirmTypedInput.value = '';
   state.confirmNeedsTyped = false;
+  state.confirmNothingDeletable = false;
   state.confirmPreviewPending = Boolean(preview);
   updateExecuteEnabled();
 
@@ -2055,7 +2117,23 @@ function requestDeleteConfirmation({ title, subtitle, count, size, preview, onCo
 function updateExecuteEnabled() {
   const ackOk = !state.permanentDelete || el.confirmPermanentAckInput.checked;
   const typedOk = !state.confirmNeedsTyped || el.confirmTypedInput.value.trim().toUpperCase() === 'DELETE';
-  el.btnExecuteDelete.disabled = state.confirmPreviewPending || !ackOk || !typedOk;
+  el.btnExecuteDelete.disabled = state.confirmPreviewPending || state.confirmNothingDeletable || !ackOk || !typedOk;
+}
+
+// The dialog's main message and button follow what will really happen on these disks
+function applyDiskOutcome(disks) {
+  const dests = new Set(disks.map((d) => d.destination));
+  state.confirmNothingDeletable = disks.length > 0 && dests.size === 1 && dests.has('read_only');
+  if (state.confirmNothingDeletable) {
+    el.confirmWarningText.textContent = `Nothing selected can be deleted: ${disks[0].reason}.`;
+    return;
+  }
+  if (!state.permanentDelete && disks.length > 0 && [...dests].every((d) => d === 'holding' || d === 'read_only')) {
+    el.confirmMode.textContent = 'JunkZero holding folder (7 days)';
+    el.confirmWarningText.textContent = `These items can't safely go to the ${t('Recycle Bin')} on their disk, so JunkZero moves them to a hidden folder on that disk for 7 days. Restore them from Cleanup History until then; after that they are erased.`;
+    el.btnExecuteDelete.innerHTML = '<i data-lucide="archive"></i> Move to holding folder';
+    lucide.createIcons({ root: el.btnExecuteDelete });
+  }
 }
 
 async function loadDeletePreview(preview) {
@@ -2073,6 +2151,7 @@ async function loadDeletePreview(preview) {
       el.confirmSize.textContent = summary.bytes_formatted;
     }
     state.confirmNeedsTyped = summary.needs_typed_confirm;
+    applyDiskOutcome(summary.disks || []);
     lines = deletePreviewLines(summary, t('Recycle Bin'));
   } catch (err) {
     if (state.confirmPreviewRequest !== request) return;

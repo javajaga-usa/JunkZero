@@ -56,13 +56,20 @@ def summarize(
     providers: Counter = Counter()
     no_recycle = 0
     truncated = False
-    recycle_cache: Dict[str, bool] = {}
+    disk_cache: Dict[str, Dict[str, Any]] = {}
+    # (disk root, destination, why) -> [items, bytes]: what the delete will do on each disk
+    destinations: Dict[Tuple[str, str, str], List[int]] = defaultdict(lambda: [0, 0])
 
-    def has_bin(path: str) -> bool:
+    def note_destination(path: str, size: int) -> None:
+        nonlocal no_recycle
         root = recycle.mount_point(path)
-        if root not in recycle_cache:
-            recycle_cache[root] = recycle.has_recycle_bin(path)
-        return recycle_cache[root]
+        if root not in disk_cache:
+            disk_cache[root] = recycle.disk_info(path)
+        dest, why = recycle.item_destination(path, size, permanent, disk_cache[root])
+        if dest == recycle.DEST_HOLDING:
+            no_recycle += 1
+        destinations[(root, dest, why)][0] += 1
+        destinations[(root, dest, why)][1] += size
 
     def add_file(path: str, size: int, group: str) -> None:
         nonlocal count, total
@@ -84,8 +91,9 @@ def summarize(
         provider = entry.get("cloud_provider") or cloud_provider(path, cloud)
         if provider:
             providers[provider] += 1
-        if not permanent and os.path.lexists(path) and not has_bin(path):
-            no_recycle += 1
+        entry_size = entry.get("size_bytes")
+        if os.path.lexists(path):
+            note_destination(path, entry_size if isinstance(entry_size, int) and entry_size >= 0 else 0)
         if is_dir and (look_inside or entry.get("look_inside")):
             files, stopped = _walk(path, max(1, walk_limit - count))
             truncated = truncated or stopped
@@ -115,6 +123,13 @@ def summarize(
         "personal_examples": personal[:3],
         "cloud": dict(providers),
         "no_recycle_count": no_recycle,
+        # One row per disk and outcome, so the dialog can say what happens on each disk
+        "disks": [
+            {"root": root, "name": disk_cache[root]["name"], "fs_label": disk_cache[root]["fs_label"],
+             "destination": dest, "reason": why, "count": c, "bytes_formatted": format_size(b)}
+            for (root, dest, why), (c, b) in sorted(destinations.items(), key=lambda kv: -kv[1][0])
+        ],
+        "read_only_count": sum(c for (_, dest, _), (c, _) in destinations.items() if dest == recycle.DEST_READ_ONLY),
         "top_folders": [{"folder": f, "count": c, "bytes_formatted": format_size(b)} for f, (c, b) in top],
         "types": [{"type": t, "count": c} for t, c in types.most_common(6)],
         "truncated": truncated,

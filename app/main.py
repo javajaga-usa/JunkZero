@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.config import MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
+from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import changes, deletecheck, filetypes, osinfo, recycle, safeguards, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
@@ -787,6 +787,15 @@ def api_largest_items(req: LargestItemsRequest):
         return largest_items(req.path, req.file_limit, req.folder_limit, exclusions=storage.get_exclusions())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/system/disk-info")
+def api_disk_info(path: str = ""):
+    """The disk holding path, and what deleting from it does (Trash, holding folder or read-only)."""
+    path = path.strip()
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Path not found")
+    return {**recycle.disk_info(path), "holding_days": HOLDING_DAYS}
 
 
 @app.get("/api/system/downloads-folder")

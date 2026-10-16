@@ -2,6 +2,12 @@
 
 ## [1.2.0] - 2026-10-16
 
+### Deletes that fit the disk
+- JunkZero now tells you, before deleting, what will happen on each disk, by name and format: "J Red (exFAT): 12 items go to a hidden JunkZero folder on that disk for 7 days instead of the Trash, because on exFAT disks macOS may erase items instead of keeping them in the Trash." When every selected item goes to the holding folder, the dialog's message, mode and button say so.
+- A note under the scan location says the same as soon as you pick a disk whose deletes won't use the Trash, or that is read-only.
+- Read-only disks (a CD or DVD, or an NTFS disk on a Mac, which macOS can only read) are named as such, and nothing is attempted there; when every selected item is on one, the delete button stays off.
+- The delete does exactly what the dialog said: Windows fixed drives and APFS/Mac OS Extended disks use the Recycle Bin or Trash; USB drives, memory cards, network drives, RAM disks, and on a Mac exFAT, FAT and NTFS disks use the holding folder; items too big for a Windows drive's Recycle Bin, or on one set to erase files at once, also go to the holding folder, with the reason given.
+
 ### Exclude from the results table
 - Each result has an **Exclude** checkbox before its category. Ticking it adds the item to Exclusions: the row is greyed out and can't be ticked for deletion, and later scans don't list it until it is removed under **Exclusions** at the top. Unticking undoes it. This replaces the hide icon in the row's actions.
 - Excluded items can't be deleted from any screen, including Folder Explorer, and neither can a folder that holds one; the delete says which exclusion is in the way.

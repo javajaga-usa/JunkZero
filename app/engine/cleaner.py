@@ -186,6 +186,7 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
     errors: List[Dict[str, str]] = []
     mode_str = "permanent" if permanent else "recycle_bin"
     user_folders = protected_user_folders()
+    disks: Dict[str, Dict[str, Any]] = {}
 
     for item in items:
         path_str = item.get("path", "")
@@ -310,12 +311,22 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
             except OSError:
                 pass
 
+        # What this disk allows: the Trash, the holding folder, or nothing (read-only)
+        root = recycle.mount_point(norm_path)
+        if root not in disks:
+            disks[root] = recycle.disk_info(norm_path)
+        destination, why = recycle.item_destination(norm_path, size, permanent, disks[root])
+        if destination == recycle.DEST_READ_ONLY:
+            errors.append({"path": path_str, "error": f"Can't delete: {why} ({disks[root]['name']})"})
+            failed_count += 1
+            continue
+
         try:
-            if permanent:
+            if destination == recycle.DEST_ERASE:
                 # Permanent deletion direct from disk
                 _remove_permanently(norm_path)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
-            elif recycle.recycle_bin_takes(norm_path, size):
+            elif destination == recycle.DEST_TRASH:
                 # Default: move to the Recycle Bin so the user can restore it
                 if osinfo.is_macos():
                     st = os.lstat(norm_path)
