@@ -197,11 +197,18 @@ def test_items_on_drives_without_a_recycle_bin_are_set_aside_and_restored(tmp_pa
     assert out["history"][0]["restored"] == [str(item_path)]
 
 
-def test_held_items_are_removed_after_seven_days(tmp_path):
+def test_held_items_are_removed_after_seven_days(tmp_path, monkeypatch):
     batch = recycle.new_holding_batch(str(tmp_path), now=time.time() - 8 * DAY)
     fresh = recycle.new_holding_batch(str(tmp_path))
+    # Round 9: only batches a cleanup record mentions are ever erased
+    unrecorded = recycle.new_holding_batch(str(tmp_path), now=time.time() - 9 * DAY)
+    real_time = time.time
+    monkeypatch.setattr(storage.time, "time", lambda: real_time() - 8 * DAY)
+    storage.record_cleanup({"deleted_count": 1, "held": {"/a": os.path.join(batch, "a")}}, ["/a"], "test")
+    monkeypatch.setattr(storage.time, "time", real_time)
+    storage.record_cleanup({"deleted_count": 1, "held": {"/b": os.path.join(fresh, "b")}}, ["/b"], "test")
     assert recycle.purge_holding() == 1
-    assert not os.path.exists(batch) and os.path.exists(fresh)
+    assert not os.path.exists(batch) and os.path.exists(fresh) and os.path.exists(unrecorded)
     assert storage.load_settings()["holding_roots"] == [str(tmp_path)]
 
 
