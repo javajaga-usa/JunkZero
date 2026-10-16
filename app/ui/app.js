@@ -213,6 +213,11 @@ function unreadableText(stats) {
   return `${folders} couldn't be read (no permission)${such}, so ${n === 1 ? 'it wasn\'t' : 'they weren\'t'} scanned.`;
 }
 
+// The delete dialog's warning when some selected items were never drawn in the list
+function unseenLine(unseen, total) {
+  return `${Number(unseen).toLocaleString()} of these ${Number(total).toLocaleString()} items are further down the list and haven't been shown. Cancel and use Show all to look through them first, or type DELETE to go ahead.`;
+}
+
 // One line of the delete dialog for one disk (from /api/delete-preview "disks")
 function diskLine(d, trashName = 'Recycle Bin', holdingDays = 7) {
   const where = `${d.name}${d.fs_label ? ` (${d.fs_label})` : ''}`;
@@ -330,6 +335,8 @@ if (!window.lucide) window.lucide = { createIcons() {} };
 
 // The table shows this many rows at a time ("Show more" adds another page), so large scans stay responsive
 const TABLE_PAGE_SIZE = 500;
+// "Show all" draws every row up to this many (more would make the window sluggish)
+const SHOW_ALL_LIMIT = 20000;
 // While a scan runs, the results table is redrawn at most this often, so found items show
 // up right away without the table redrawing on every single item
 const LIVE_RENDER_MS = 500;
@@ -397,6 +404,7 @@ const state = {
   initialTargetFilePath: null,
   deleteConfirmCallback: null,
   confirmNothingDeletable: false, // Every selected item is on a read-only disk
+  confirmUnseen: 0,       // Selected items the table hasn't drawn yet (in the open delete dialog)
 
   // Delete mode: Recycle Bin unless the user explicitly switches to permanent.
   // Deliberately not persisted, so every launch starts in the safe mode.
@@ -411,6 +419,7 @@ const el = {
   statusText: document.getElementById('statusText'),
   driveButtons: document.getElementById('driveButtons'),
   targetPathInput: document.getElementById('targetPathInput'),
+  shownCount: document.getElementById('shownCount'),
   diskNote: document.getElementById('diskNote'),
   btnBrowse: document.getElementById('btnBrowse'),
 
@@ -854,6 +863,10 @@ function setupEventListeners() {
     state.filteredItems.forEach((i) => { if (!i.excluded_by) state.selectedIds.add(i.id); });
     renderTable();
     updateSelectionSummary();
+    const unseen = unseenSelected(visibleSelectedItems()).length;
+    if (unseen) {
+      showToast(`Selected ${visibleSelectedItems().length.toLocaleString()} items. ${unseen.toLocaleString()} of them are further down the list than shown: use Show all to look through them before deleting.`, 'info');
+    }
   });
 
   el.btnSelectAllSafe.addEventListener('click', () => {
@@ -899,9 +912,10 @@ function setupEventListeners() {
     const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
     requestDeleteConfirmation({
       title: 'Confirm Deletion',
-      subtitle: `${selectedItems.length} garbage items will be removed`,
+      subtitle: `${selectedItems.length.toLocaleString()} items will be removed`,
       count: selectedItems.length,
       size: formatSize(totalBytes),
+      unseen: unseenSelected(selectedItems).length,
       preview: { source: 'scan', paths: selectedItems.map((i) => i.path) },
       onConfirm: async (confirmText) => {
         await executeBatchDelete(selectedItems, confirmText);
@@ -1654,11 +1668,28 @@ function renderTable() {
           <button type="button" class="btn btn-secondary btn-show-more">
             Show ${Math.min(remaining, TABLE_PAGE_SIZE).toLocaleString()} more (${remaining.toLocaleString()} not shown yet)
           </button>
+          ${remaining > TABLE_PAGE_SIZE && state.filteredItems.length <= SHOW_ALL_LIMIT ? `
+          <button type="button" class="btn btn-ghost btn-show-all">Show all ${state.filteredItems.length.toLocaleString()}</button>` : ''}
         </td>
       </tr>` : '';
 
   el.fileTableBody.innerHTML = html + moreRow;
   lucide.createIcons({ root: el.fileTableBody });
+  updateShownCount(shown.length);
+}
+
+// "Showing 500 of 7,002" whenever the table hasn't drawn every matching item yet
+function updateShownCount(shownCount) {
+  const total = state.filteredItems.length;
+  el.shownCount.textContent = shownCount < total
+    ? `Showing ${shownCount.toLocaleString()} of ${total.toLocaleString()}` : '';
+  el.shownCount.classList.toggle('hidden', shownCount >= total);
+}
+
+// Ticked items that the table hasn't drawn yet (further down than "Show more")
+function unseenSelected(items) {
+  const drawn = new Set(state.filteredItems.slice(0, state.renderLimit).map((i) => i.id));
+  return items.filter((i) => !drawn.has(i.id));
 }
 
 // Table events are handled once on the table body (rows are re-rendered often)
@@ -1685,6 +1716,11 @@ function bindTableEvents() {
   el.fileTableBody.addEventListener('click', async (e) => {
     if (e.target.closest('.btn-show-more')) {
       state.renderLimit += TABLE_PAGE_SIZE;
+      renderTable();
+      return;
+    }
+    if (e.target.closest('.btn-show-all')) {
+      state.renderLimit = state.filteredItems.length;
       renderTable();
       return;
     }
@@ -2010,11 +2046,11 @@ function closeHierarchyModal() {
 }
 
 // Delete Entire Folder Level Handler
-async function executeDeleteFolder(folderPath, confirmText = '') {
+async function executeDeleteFolder(folderPath, confirmText = '', { unlock = false } = {}) {
   try {
     const result = await apiJson('/api/filesystem/delete-folder', {
       method: 'POST',
-      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete, confirm_text: confirmText }),
+      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete, confirm_text: confirmText, unlock }),
     });
     if (result.deleted_count > 0) {
       const verb = result.mode === 'permanent' ? 'Permanently deleted'
@@ -2033,7 +2069,7 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
         closeHierarchyModal();
       }
     } else if (result.failed_count > 0) {
-      showToast(`Could not delete folder: ${result.errors[0]?.error || 'Locked or permission denied'}`, 'error');
+      showDeleteOutcome(result, { retryUnlock: () => executeDeleteFolder(folderPath, confirmText, { unlock: true }) });
     }
   } catch (err) {
     showToast(`Folder deletion failed: ${err.message}`, 'error');
@@ -2041,7 +2077,7 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
 }
 
 // Batch Deletion of scan results (Recycle Bin or permanent, per the current delete mode)
-async function executeBatchDelete(items, confirmText = '') {
+async function executeBatchDelete(items, confirmText = '', { unlock = false } = {}) {
   try {
     const result = await apiJson('/api/clean', {
       method: 'POST',
@@ -2049,9 +2085,12 @@ async function executeBatchDelete(items, confirmText = '') {
         items: items.map((i) => ({ path: i.path })),
         permanent: state.permanentDelete,
         confirm_text: confirmText,
+        unlock,
       }),
     });
-    showDeleteOutcome(result);
+    showDeleteOutcome(result, {
+      retryUnlock: (paths) => executeBatchDelete(items.filter((i) => paths.includes(i.path)), confirmText, { unlock: true }),
+    });
 
     if (result.deleted_count > 0) {
       const failed = new Set((result.errors || []).map((e) => e.path));
@@ -2069,13 +2108,15 @@ async function executeBatchDelete(items, confirmText = '') {
 }
 
 // Files and folders picked in Folder Explorer
-async function executeExplorerDelete(paths, confirmText = '') {
+async function executeExplorerDelete(paths, confirmText = '', { unlock = false } = {}) {
   try {
     const result = await apiJson('/api/filesystem/delete-paths', {
       method: 'POST',
-      body: JSON.stringify({ paths, permanent: state.permanentDelete, confirm_text: confirmText }),
+      body: JSON.stringify({ paths, permanent: state.permanentDelete, confirm_text: confirmText, unlock }),
     });
-    showDeleteOutcome(result);
+    showDeleteOutcome(result, {
+      retryUnlock: (locked) => executeExplorerDelete(paths.filter((p) => locked.includes(p)), confirmText, { unlock: true }),
+    });
     if (result.deleted_count > 0) {
       const failed = new Set((result.errors || []).map((e) => e.path));
       const gone = paths.filter((p) => !failed.has(p));
@@ -2088,7 +2129,7 @@ async function executeExplorerDelete(paths, confirmText = '') {
   }
 }
 
-function showDeleteOutcome(result) {
+function showDeleteOutcome(result, { retryUnlock = null } = {}) {
   const held = Object.keys(result.held || {}).length;
   if (result.deleted_count > 0) {
     if (result.mode === 'permanent') {
@@ -2106,7 +2147,15 @@ function showDeleteOutcome(result) {
   if (result.failed_count > 0) {
     const errors = result.errors || [];
     const privacy = errors.filter((e) => e.kind === 'mac_privacy');
-    const rest = errors.filter((e) => e.kind !== 'mac_privacy');
+    const locked = retryUnlock ? errors.filter((e) => e.kind === 'locked') : [];
+    const rest = errors.filter((e) => e.kind !== 'mac_privacy' && !locked.includes(e));
+    if (locked.length) {
+      // Locked on purpose (Finder's Locked): only unlocked when the user says so
+      const toast = showStickyToast(`${locked.length.toLocaleString()} item(s) were not deleted because they are locked (in Finder, File > Get Info > Locked). Unlock them and delete them as well?`, {
+        actionLabel: 'Unlock and delete',
+        onAction: () => { toast.remove(); retryUnlock(locked.map((e) => e.path)); },
+      });
+    }
     if (privacy.length) {
       showPrivacyNotice(`${privacy.length} item(s) were not deleted: ${privacy[0].error.replace(/^Can't delete: /, '')}`);
     }
@@ -2135,8 +2184,9 @@ function setDeleteMode(permanent) {
 }
 
 // Universal Deletion Confirmation Modal
-function requestDeleteConfirmation({ title, subtitle, count, size, preview, onConfirm }) {
+function requestDeleteConfirmation({ title, subtitle, count, size, preview, onConfirm, unseen = 0 }) {
   const permanent = state.permanentDelete;
+  state.confirmUnseen = unseen;
   el.confirmModalTitle.textContent = title;
   el.confirmModalSubtitle.textContent = subtitle;
   el.confirmCount.textContent = count.toLocaleString();
@@ -2213,9 +2263,13 @@ async function loadDeletePreview(preview) {
       el.confirmCount.textContent = summary.count.toLocaleString();
       el.confirmSize.textContent = summary.bytes_formatted;
     }
-    state.confirmNeedsTyped = summary.needs_typed_confirm;
+    // Items the user hasn't seen in the list: say so, and ask for DELETE typed
+    state.confirmNeedsTyped = summary.needs_typed_confirm || state.confirmUnseen > 0;
     applyDiskOutcome(summary.disks || []);
     lines = deletePreviewLines(summary, t('Recycle Bin'));
+    if (state.confirmUnseen > 0) {
+      lines.unshift({ level: 'warning', text: unseenLine(state.confirmUnseen, summary.count) });
+    }
   } catch (err) {
     if (state.confirmPreviewRequest !== request) return;
     // Couldn't check: be safe and ask for DELETE

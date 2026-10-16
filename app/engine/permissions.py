@@ -9,7 +9,7 @@ import errno
 import os
 import stat
 import sys
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from app.engine import osinfo
 
@@ -64,13 +64,60 @@ def is_permission_error(err: BaseException) -> bool:
     return any(word in text for word in _PERMISSION_WORDS)
 
 
+_UF_IMMUTABLE = getattr(stat, "UF_IMMUTABLE", 0x2)
+_SF_IMMUTABLE = getattr(stat, "SF_IMMUTABLE", 0x20000)
+# Disks whose "locked" flag is really the Windows read-only attribute: macOS shows that attribute
+# on FAT, exFAT, NTFS and network (SMB) disks as Finder's Locked flag
+_READ_ONLY_ATTRIBUTE_FS = {"msdos", "exfat", "ntfs", "ufsd_ntfs", "tuxera_ntfs", "smbfs", "cifs"}
+
+
+def _flags(path: str) -> int:
+    try:
+        return getattr(os.lstat(path), "st_flags", 0) or 0
+    except OSError:
+        return 0
+
+
 def is_locked(path: str) -> bool:
     """Locked in Finder (user immutable flag) or immutable for everyone (system flag)."""
+    return bool(_flags(path) & (_UF_IMMUTABLE | _SF_IMMUTABLE))
+
+
+def _disk_fs(path: str) -> str:
+    from app.engine import recycle  # recycle imports nothing from here
     try:
-        flags = getattr(os.lstat(path), "st_flags", 0)
-    except OSError:
+        return (recycle._mac_mounts().get(recycle.mount_point(path)) or "").lower()
+    except Exception:
+        return ""
+
+
+def is_read_only_attribute(path: str) -> bool:
+    """The "lock" is just the Windows read-only attribute (a FAT, exFAT, NTFS or network disk on a
+    Mac), not something the user locked in Finder on a Mac disk."""
+    flags = _flags(path)
+    return bool(flags & _UF_IMMUTABLE) and not flags & _SF_IMMUTABLE and osinfo.is_macos() \
+        and _disk_fs(path) in _READ_ONLY_ATTRIBUTE_FS
+
+
+def is_finder_locked(path: str) -> bool:
+    """Locked on purpose (Finder's Locked on a Mac disk, or immutable for everyone)."""
+    return is_locked(path) and not is_read_only_attribute(path)
+
+
+def unlock(path: str) -> bool:
+    """Clear the user's Locked flag on their own item (never the system flag). True if cleared."""
+    flags = _flags(path)
+    if not flags & _UF_IMMUTABLE or flags & _SF_IMMUTABLE or _not_mine(path) or not hasattr(os, "chflags"):
         return False
-    return bool(flags & (getattr(stat, "UF_IMMUTABLE", 0) | getattr(stat, "SF_IMMUTABLE", 0)))
+    try:
+        os.chflags(path, flags & ~_UF_IMMUTABLE, follow_symlinks=False)
+        return True
+    except (OSError, NotImplementedError, TypeError):
+        try:
+            os.chflags(path, flags & ~_UF_IMMUTABLE)
+            return True
+        except (OSError, NotImplementedError):
+            return False
 
 
 def _owner_name(uid: int) -> str:
@@ -102,11 +149,11 @@ def explain(err: BaseException, path: str) -> Optional[Tuple[str, str]]:
 
     if code == errno.EROFS:
         return KIND_READ_ONLY_DISK, "the disk is read-only, so nothing on it can be deleted"
-    if is_locked(path) or is_locked(parent):
-        where = "it" if is_locked(path) else "the folder it is in"
-        how = "select it in Finder, choose File > Get Info and untick Locked" if osinfo.is_macos() \
-            else "remove the immutable flag"
-        return KIND_LOCKED, f"{where} is locked: {how}, then try again"
+    if is_finder_locked(path) or is_finder_locked(parent):
+        where = "it" if is_finder_locked(path) else "the folder it is in"
+        how = "use Unlock and delete, or select it in Finder, choose File > Get Info and untick Locked" \
+            if osinfo.is_macos() else "remove the immutable flag"
+        return KIND_LOCKED, f"{where} is locked: {how}"
     owner = _not_mine(path)
     if owner:
         return KIND_NOT_YOURS, (f"it belongs to {'the system' if owner == 'root' else 'the account ' + repr(owner)}, "
@@ -123,13 +170,21 @@ def explain(err: BaseException, path: str) -> Optional[Tuple[str, str]]:
     return KIND_DENIED, "you don't have permission to change it"
 
 
-def make_writable(path: str) -> bool:
+def make_writable(path: str, unlock_locked: bool = False) -> bool:
     """Make the user's own file or folder (and the folder holding it) writable so it can be removed.
-    Never touches what belongs to someone else or what is locked. True if anything changed."""
+    The Windows read-only attribute is cleared (on Windows, and on FAT, exFAT, NTFS and network
+    disks on a Mac, where it shows as Locked). Something locked on purpose is unlocked only with
+    unlock_locked (the user chose Unlock and delete), and only the item itself, never its folder.
+    Never touches what belongs to someone else. True if anything changed."""
     changed = False
     for target in (path, os.path.dirname(os.path.abspath(path))):
-        if not os.path.lexists(target) or os.path.islink(target) or is_locked(target) or _not_mine(target):
+        if not os.path.lexists(target) or os.path.islink(target) or _not_mine(target):
             continue
+        if is_locked(target):
+            allowed = is_read_only_attribute(target) or (unlock_locked and target == path)
+            if not (allowed and unlock(target)):
+                continue
+            changed = True
         try:
             mode = os.lstat(target).st_mode
             if osinfo.is_windows():
@@ -144,9 +199,19 @@ def make_writable(path: str) -> bool:
     return changed
 
 
-def retry_writable(func: Callable, path: str, err: BaseException) -> None:
+def retry_writable(func: Callable, path: str, err: BaseException, unlock_locked: bool = False) -> None:
     """shutil.rmtree error handler: on a permission error, make the user's own item writable and try once more."""
-    if is_permission_error(err) and make_writable(path):
+    if is_permission_error(err) and make_writable(path, unlock_locked):
         func(path)
         return
     raise err
+
+
+def with_retry(action: Callable[[], Any], path: str, unlock_locked: bool = False) -> Any:
+    """Run action (a move or delete of path); on a permission error, make path writable and try once more."""
+    try:
+        return action()
+    except Exception as err:
+        if is_permission_error(err) and make_writable(path, unlock_locked):
+            return action()
+        raise

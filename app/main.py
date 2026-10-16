@@ -126,12 +126,15 @@ class CleanRequest(BaseModel):
     permanent: bool = False
     # "DELETE", when the confirm dialog asked the user to type it
     confirm_text: str = ""
+    # The user chose "Unlock and delete" for items they had locked in Finder
+    unlock: bool = False
 
 
 class DeletePathsRequest(BaseModel):
     paths: List[str]
     permanent: bool = False
     confirm_text: str = ""
+    unlock: bool = False
 
 
 class DeletePreviewRequest(BaseModel):
@@ -153,6 +156,7 @@ class DeleteFolderRequest(BaseModel):
     path: str
     permanent: bool = False
     confirm_text: str = ""
+    unlock: bool = False
 
 
 class OpenFolderRequest(BaseModel):
@@ -597,7 +601,7 @@ def api_clean_items(req: CleanRequest) -> CleanResult:
 
     _check_confirmation(deletecheck.summarize(_scan_entries(items), req.permanent, safeguards.cloud_folders()),
                         req.confirm_text)
-    result = _with_errors(delete_items(items, permanent=req.permanent), unknown)
+    result = _with_errors(delete_items(items, permanent=req.permanent, unlock=req.unlock), unknown)
     _record_history(result, [i["path"] for i in items], "scan results")
     try:
         smart.learn_deleted(items, [e.get("path", "") for e in result.errors])
@@ -653,7 +657,8 @@ def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
         raise HTTPException(status_code=400, detail="Path does not exist")
     _check_confirmation(deletecheck.summarize(
         _explorer_entries([req.path]), req.permanent, safeguards.cloud_folders(), look_inside=True), req.confirm_text)
-    result = delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent)
+    result = delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent,
+                          unlock=req.unlock)
     _record_history(result, [req.path], "folder explorer")
     return result
 
@@ -666,7 +671,7 @@ def api_delete_paths(req: DeletePathsRequest) -> CleanResult:
     entries = _explorer_entries(req.paths)
     _check_confirmation(deletecheck.summarize(
         entries, req.permanent, safeguards.cloud_folders(), look_inside=True), req.confirm_text)
-    result = delete_items(entries, permanent=req.permanent)
+    result = delete_items(entries, permanent=req.permanent, unlock=req.unlock)
     _record_history(result, [e["path"] for e in entries], "folder explorer")
     return result
 

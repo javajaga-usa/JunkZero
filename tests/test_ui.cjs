@@ -237,3 +237,8 @@ test('after a scan, unreadable folders are reported, with the privacy fix on a M
     privacy_fix: 'Give Terminal Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then restart JunkZero' });
   assert.match(mac, /^macOS kept JunkZero out of 1 folder, such as \/Volumes\/J Red, so it wasn't scanned\. Give Terminal Full Disk Access/);
 });
+
+test('delete dialog warns about selected items further down the list', () => {
+  assert.equal(context.unseenLine(6502, 7002),
+    "6,502 of these 7,002 items are further down the list and haven't been shown. Cancel and use Show all to look through them first, or type DELETE to go ahead.");
+});

@@ -2517,3 +2517,17 @@ input[type="text"]:focus {
 /* Sticky toasts can carry one action (e.g. open Privacy & Security) */
 .toast-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
 .toast-action { pointer-events: auto; }
+
+/* "Showing 500 of 7,002": the table hasn't drawn every matching item */
+.shown-count {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.more-row td { text-align: center; }
+.more-row .btn-show-all { margin-left: 8px; }

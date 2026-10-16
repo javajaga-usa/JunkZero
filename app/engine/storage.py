@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 HISTORY_LIMIT = 200          # Cleanup records kept
-HISTORY_PATHS_LIMIT = 500    # Paths stored per cleanup record
+HISTORY_PATHS_LIMIT = 500    # Paths kept in history.json per cleanup (for display)
+# Every item of a cleanup, with where each went, is kept in its own file in this folder, so
+# Restore can put back all of them however many there were
+CLEANUP_DETAILS_DIR = "cleanups"
 SCAN_MEMORY_LIMIT = 20       # Scan targets remembered for "new since last scan"
 SCAN_MEMORY_PATHS_LIMIT = 50000  # Flagged paths remembered per target
 
@@ -198,9 +201,22 @@ def load_history() -> List[Dict[str, Any]]:
     return history if isinstance(history, list) else []
 
 
+def _details_name(timestamp: float) -> str:
+    return f"{CLEANUP_DETAILS_DIR}/{timestamp:.3f}.json"
+
+
+def _remove_details(timestamps: Iterable[float]) -> None:
+    for ts in timestamps:
+        try:
+            os.remove(data_dir() / _details_name(ts))
+        except (OSError, TypeError, ValueError):
+            pass
+
+
 def record_cleanup(result: Dict[str, Any], paths: List[str], source: str) -> Dict[str, Any]:
     """Append one cleanup run to the history (newest first) and return the record."""
-    deleted = [p for p in paths if p not in {e.get("path") for e in result.get("errors", [])}]
+    failed = {e.get("path") for e in result.get("errors", [])}
+    deleted = [p for p in paths if p not in failed]
     record = {
         "timestamp": time.time(),  # Also the record's id (kept unique below)
         "source": source,
@@ -222,14 +238,28 @@ def record_cleanup(result: Dict[str, Any], paths: List[str], source: str) -> Dic
         taken = {r.get("timestamp") for r in history}
         while record["timestamp"] in taken:
             record["timestamp"] += 0.001
+        # The full lists, so Restore isn't limited to what history.json shows
+        (data_dir() / CLEANUP_DETAILS_DIR).mkdir(parents=True, exist_ok=True)
+        deleted_set = set(deleted)
+        _write_json(_details_name(record["timestamp"]), {
+            "paths": deleted,
+            "held": {p: d for p, d in (result.get("held") or {}).items() if p in deleted_set},
+            "trash_ids": {p: i for p, i in (result.get("trash_ids") or {}).items() if p in deleted_set},
+        })
+        record["full_details"] = True
         history.insert(0, record)
         _write_json("history.json", history[:HISTORY_LIMIT])
+        _remove_details(r.get("timestamp") for r in history[HISTORY_LIMIT:])
     return record
 
 
 def find_cleanup(timestamp: float) -> Optional[Dict[str, Any]]:
+    """The history record, with every item and where it went (not just the ones history.json lists)."""
     for record in load_history():
         if record.get("timestamp") == timestamp:
+            details = _read_json(_details_name(timestamp), None) if record.get("full_details") else None
+            if isinstance(details, dict):
+                record = {**record, **{k: details[k] for k in ("paths", "held", "trash_ids") if k in details}}
             return record
     return None
 
@@ -248,6 +278,7 @@ def mark_restored(timestamp: float, paths: List[str]) -> Optional[Dict[str, Any]
 
 def clear_history() -> None:
     with _lock:
+        _remove_details(r.get("timestamp") for r in load_history())
         _write_json("history.json", [])
 
 

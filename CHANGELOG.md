@@ -2,6 +2,19 @@
 
 ## [1.2.0] - 2026-10-16
 
+### Restore brings back everything
+- Cleanup History kept only the first 500 items of a cleanup, so Restore could put back only those. Every item of a cleanup, and where it went, is now kept in its own file next to the history, and Restore uses all of it.
+- For cleanups recorded before this, Restore also puts back everything still in that cleanup's holding folder batch (each item's place is its path inside the batch), never over something that is already there.
+- A move to the holding folder that fails no longer leaves empty folders behind in it.
+
+### Read-only and locked files
+- On a Mac, FAT, exFAT, NTFS and network disks show the Windows read-only attribute as Finder's Locked flag, so old Windows files there could not be deleted ("locked"). JunkZero now clears that attribute on your own files and finishes the delete, as it does on Windows.
+- Files you locked in Finder on a Mac disk are still never unlocked on their own: the message offers **Unlock and delete**, which unlocks only those items (never the folder holding them, and never system-locked files) and deletes them.
+
+### Seeing what you delete
+- The results show "Showing 500 of 7,002" whenever the list hasn't drawn every matching item, and **Show all** draws them (up to 20,000).
+- **Select All** says when it ticked items further down the list than shown, and the delete dialog warns about them and asks for DELETE typed before going ahead.
+
 ### Permission problems fixed or explained
 - Permanent deletes no longer stop at read-only files or folders that are your own (the read-only attribute on Windows, a read-only folder on a Mac or Linux): JunkZero makes them writable and finishes. It never does this to what belongs to another account or the system, or to what you locked.
 - When a delete is refused, it says why in plain words and what fixes it: macOS privacy settings (with the app to give Full Disk Access and an **Open Privacy & Security** button), a file locked in Finder (how to unlock it), a file that belongs to another account or the system (JunkZero doesn't use administrator rights), a folder you can't change, a read-only disk, or Windows denying access. These messages stay on screen until dismissed.

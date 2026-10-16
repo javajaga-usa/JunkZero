@@ -110,15 +110,11 @@ def _excluded_path_inside(folder: str, excluder: ExclusionMatcher) -> Optional[s
     return None
 
 
-def _remove_permanently(path: str) -> None:
+def _remove_permanently(path: str, unlock: bool = False) -> None:
     if not os.path.isdir(path):
-        try:
-            os.remove(path)
-        except PermissionError:
-            # A read-only file of the user's own (Windows), or in their own read-only folder
-            if not permissions.make_writable(path):
-                raise
-            os.remove(path)
+        # A read-only file of the user's own (Windows read-only attribute, also shown as Locked
+        # on FAT, exFAT, NTFS and network disks on a Mac), or one in their own read-only folder
+        permissions.with_retry(lambda: os.remove(path), path, unlock)
         return
     if osinfo.is_windows():
         # Windows can't rename a folder while a file inside it is open, so this finds out
@@ -127,7 +123,7 @@ def _remove_permanently(path: str) -> None:
         try:
             os.rename(path, aside)
         except PermissionError as ex:
-            if not permissions.make_writable(path):
+            if not permissions.make_writable(path, unlock):
                 raise OSError("a file inside it is open in another program, or Windows denied access "
                               "(close programs using it and try again)") from ex
             try:
@@ -138,9 +134,9 @@ def _remove_permanently(path: str) -> None:
         path = aside
     # Read-only files and folders of the user's own inside are made writable as they are reached
     if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=permissions.retry_writable)
+        shutil.rmtree(path, onexc=lambda func, p, exc: permissions.retry_writable(func, p, exc, unlock))
     else:
-        shutil.rmtree(path, onerror=lambda func, p, exc_info: permissions.retry_writable(func, p, exc_info[1]))
+        shutil.rmtree(path, onerror=lambda func, p, exc_info: permissions.retry_writable(func, p, exc_info[1], unlock))
 
 
 class TrashSetupError(OSError):
@@ -182,6 +178,7 @@ def delete_items(
     permanent: bool = False,
     open_check: Optional[OpenFileCheck] = None,
     exclusions: Optional[List[str]] = None,
+    unlock: bool = False,
 ) -> CleanResult:
     """
     Delete a batch of files and directories. Items go to the Recycle Bin by default (or, on
@@ -191,11 +188,12 @@ def delete_items(
     with _delete_lock:
         # The user's exclusions (the list under Exclusions) are never deleted, from any screen
         excluder = ExclusionMatcher(storage.get_exclusions() if exclusions is None else exclusions)
-        return _delete_items(items, permanent, open_check, excluder)
+        return _delete_items(items, permanent, open_check, excluder, unlock)
 
 
 def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Optional[OpenFileCheck],
-                  excluder: Optional[ExclusionMatcher] = None) -> CleanResult:
+                  excluder: Optional[ExclusionMatcher] = None, unlock: bool = False) -> CleanResult:
+    """unlock: the user chose Unlock and delete, so their own Finder-locked items are unlocked first."""
     started_at = time.time()
     open_check = OpenFileCheck() if open_check is None else open_check
     deleted_keys = set()
@@ -347,14 +345,14 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         try:
             if destination == recycle.DEST_ERASE:
                 # Permanent deletion direct from disk
-                _remove_permanently(norm_path)
+                _remove_permanently(norm_path, unlock)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
             elif destination == recycle.DEST_TRASH:
                 # Default: move to the Recycle Bin so the user can restore it
                 if osinfo.is_macos():
                     st = os.lstat(norm_path)
                     trash_ids[path_str] = [st.st_dev, st.st_ino]
-                _send_to_trash(norm_path)
+                permissions.with_retry(lambda: _send_to_trash(norm_path), norm_path, unlock)
                 logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
             else:
                 # USB sticks and network shares have no Recycle Bin, and Windows erases items too big
@@ -364,7 +362,8 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
                 try:
                     if root not in batches:
                         batches[root] = recycle.new_holding_batch(root)
-                    held[path_str] = recycle.move_to_holding(norm_path, batches[root])
+                    held[path_str] = permissions.with_retry(
+                        lambda: recycle.move_to_holding(norm_path, batches[root]), norm_path, unlock)
                 except OSError as ex:
                     raise OSError("The Recycle Bin can't take this item and JunkZero could not set it aside "
                                   f"on this drive ({ex}); use Permanent delete to remove it") from ex
