@@ -143,3 +143,27 @@ test('a large delete with nothing personal still explains why DELETE must be typ
   assert.equal(lines[0].level, 'warning');
   assert.match(lines[0].text, /unusually large delete \(1,200 items, 7 GB\)/);
 });
+
+test('file type input accepts common spellings and drops repeats', () => {
+  const { types, invalid } = context.parseFileTypes('MP4, .mov *.mkv  tar.gz;mp4');
+  assert.equal(JSON.stringify(types), JSON.stringify(['mp4', 'mov', 'mkv', 'tar.gz']));
+  assert.equal(invalid.length, 0);
+});
+
+test('file type input refuses paths and match-everything wildcards', () => {
+  const { types, invalid } = context.parseFileTypes('* *.* ../x C:\\Videos mp4/ ok');
+  assert.equal(JSON.stringify(types), JSON.stringify(['ok']));
+  assert.equal(JSON.stringify(invalid), JSON.stringify(['*', '*.*', '../x', 'C:\\Videos', 'mp4/']));
+});
+
+test('preset chips show whether a group is fully, partly or not chosen', () => {
+  assert.equal(context.presetState(['mp4', 'mov'], ['mp4', 'mov', 'log']), 'true');
+  assert.equal(context.presetState(['mp4', 'mov'], ['mp4']), 'mixed');
+  assert.equal(context.presetState(['mp4', 'mov'], []), 'false');
+});
+
+test('chosen file types take the next color slot after program leftovers', () => {
+  const parts = context.spaceBreakdown({ 'Chosen File Types': 10, 'Program Leftovers': 10 });
+  assert.equal(JSON.stringify(parts.map((p) => [p.label, p.slot])),
+    JSON.stringify([['Leftovers', 9], ['File types', 10]]));
+});

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
-from app.engine import changes, deletecheck, osinfo, recycle, safeguards, scheduler, smart, storage
+from app.engine import changes, deletecheck, filetypes, osinfo, recycle, safeguards, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
@@ -108,6 +108,12 @@ class ScanRequest(BaseModel):
     include_old_downloads: bool = False
     include_custom_rules: bool = True
     include_leftovers: bool = False
+    # File type search: list files with these extensions ("mp4", ".mp4" or "*.mp4")
+    include_file_types: bool = False
+    file_types: List[str] = Field(default_factory=list, max_length=filetypes.MAX_FILE_TYPES)
+    file_type_min_days: int = Field(default=0, ge=0, le=36500)
+    # Look only for the chosen file types (every other category off)
+    type_search_only: bool = False
     old_download_days: int = Field(default=OLD_DOWNLOAD_DAYS, ge=1, le=36500)
     scan_junk_locations: bool = False
     min_size_mb: float = Field(default=0.0, ge=0, le=10_000_000, allow_inf_nan=False)
@@ -186,7 +192,7 @@ class LargestItemsRequest(BaseModel):
 SCAN_OPTION_KEYS = (
     "include_installers", "include_java_builds", "include_temp_junk", "include_broken_downloads",
     "include_stale_large", "include_empty_folders", "include_duplicates", "include_old_downloads",
-    "include_leftovers",
+    "include_leftovers", "include_file_types",
 )
 
 
@@ -194,6 +200,8 @@ class PreferencesRequest(BaseModel):
     theme: Literal["dark", "light"] = "dark"
     target_path: str = Field(default="", max_length=1024)
     scan_options: Dict[str, bool] = Field(default_factory=dict)
+    file_types: List[str] = Field(default_factory=list, max_length=filetypes.MAX_FILE_TYPES)
+    file_type_min_days: int = Field(default=0, ge=0, le=36500)
 
 
 class ReportRequest(BaseModel):
@@ -284,6 +292,20 @@ async def api_start_scan(req: ScanRequest):
         if not os.path.isdir(req.target_path):
             raise HTTPException(status_code=400, detail=f"Target path '{req.target_path}' is not a directory")
 
+    try:
+        file_types = filetypes.normalize_types(req.file_types)
+    except filetypes.FileTypeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if req.type_search_only:
+        if not req.target_path:
+            raise HTTPException(status_code=400, detail="Pick a folder or drive to search")
+        # Only the chosen types: every other category is off for this scan
+        updates = {key: False for key in SCAN_OPTION_KEYS}
+        updates.update(include_custom_rules=False, scan_junk_locations=False, include_file_types=True)
+        req = req.model_copy(update=updates)
+    if req.include_file_types and not file_types:
+        raise HTTPException(status_code=400, detail="Pick at least one file type to search for")
+
     options = ScanOptions(
         target_path=req.target_path,
         include_installers=req.include_installers,
@@ -301,6 +323,9 @@ async def api_start_scan(req: ScanRequest):
         include_custom_rules=req.include_custom_rules,
         custom_rules=storage.get_custom_rules(),
         include_leftovers=req.include_leftovers,
+        include_file_types=req.include_file_types,
+        file_types=file_types,
+        file_type_min_days=req.file_type_min_days,
         learning=smart.load_learning(),
         junk_locations=junk_locations(),
         min_file_size_bytes=int(req.min_size_mb * 1024 * 1024),
@@ -337,6 +362,7 @@ async def api_start_scan(req: ScanRequest):
         loop.call_soon_threadsafe(session_queue.put_nowait, msg)
 
     scanner.set_callback(on_item_found)
+    type_search_only = req.type_search_only
 
     def run_worker():
         if scanner:
@@ -355,7 +381,9 @@ async def api_start_scan(req: ScanRequest):
                     "is_cancelled": scanner.stats.is_cancelled,
                 }
             }
-            if scanner.stats.is_completed:
+            # A file type search is not a cleanup scan: it doesn't count for "new since last
+            # scan", and finding the same files again teaches the smart score nothing
+            if scanner.stats.is_completed and not type_search_only:
                 try:
                     completion_msg["changes"] = changes.compare_and_remember(scanner.options, scanner.garbage_items)
                 except OSError as e:
@@ -629,6 +657,13 @@ def api_add_custom_rule(req: AddExclusionRequest):
     return {"rules": storage.set_custom_rules(storage.get_custom_rules() + [req.rule])}
 
 
+@app.get("/api/file-types/presets")
+def api_file_type_presets():
+    """Ready-made groups of file types for the file type search."""
+    return {"presets": filetypes.presets(), "never_listed": filetypes.never_listed(),
+            "max_types": filetypes.MAX_FILE_TYPES}
+
+
 @app.get("/api/history")
 def api_get_history():
     return {"history": storage.load_history()}
@@ -705,6 +740,16 @@ def api_set_preferences(req: PreferencesRequest):
     prefs = req.model_dump()
     # Only known scan toggles are kept, so a stale or hand-edited file can't add options
     prefs["scan_options"] = {k: v for k, v in req.scan_options.items() if k in SCAN_OPTION_KEYS}
+    # File type search settings are kept only when the page sends them
+    if "file_types" in req.model_fields_set:
+        try:
+            prefs["file_types"] = filetypes.normalize_types(req.file_types)
+        except filetypes.FileTypeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    else:
+        prefs.pop("file_types", None)
+    if "file_type_min_days" not in req.model_fields_set:
+        prefs.pop("file_type_min_days", None)
     return {"preferences": storage.set_preferences(prefs)}
 
 

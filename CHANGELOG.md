@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Search by file type
+- New **File Types** window: pick groups such as Videos, Photos, Documents or Archives, or type your own extensions (`.mp4`, `*.mkv`, `tar.gz`), and optionally only files unchanged for a number of days. **Search these types** lists every matching file in the scan location under "Chosen File Types", ready to tick and delete.
+- Found files are Review Recommended and never preselected. Exclusions, protected system folders, version-control and backup folders are skipped; personal and cloud files keep their warnings and DELETE typed. Backup images and virtual machine disks can't be searched for.
+- **Chosen file types** under *Look for* adds the same search to every deep scan; there, files a built-in category already lists stay in that category. A file type search doesn't count as the last scan for "New since last scan" and teaches the smart score nothing.
+- The chosen types and age are remembered with your other settings.
+
 ## [1.1.0] - 2026-10-11
 
 ### Fixes from a full audit

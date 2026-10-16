@@ -19,6 +19,7 @@ from app.config import (
     CAT_CUSTOM_RULES,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
+    CAT_FILE_TYPES,
     CAT_LEFTOVERS,
     CAT_OLD_DOWNLOADS,
     CAT_TEMP_JUNK,
@@ -39,6 +40,7 @@ from app.engine.classifier import (
 )
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_reason, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
+from app.engine.filetypes import FileTypeMatcher
 from app.engine import osinfo
 from app.engine.leftovers import find_program_leftovers
 from app.engine.locations import is_protected_user_folder, protected_user_folders
@@ -101,6 +103,8 @@ class FastScanner:
         self._hidden_dirs: Set[str] = set()
         self._excluder = ExclusionMatcher(options.exclusions)
         self._junk_rules = ExclusionMatcher(options.custom_rules if options.include_custom_rules else [])
+        self._file_types = FileTypeMatcher(
+            options.file_types if options.include_file_types else [], options.file_type_min_days)
         # Junk locations: folders flagged as a single item, and folders whose files are flagged
         self._dir_locations = {
             _norm_path(loc.path): loc for loc in options.junk_locations if loc.whole_dir
@@ -191,6 +195,16 @@ class FastScanner:
             path, name, CAT_CUSTOM_RULES, size, mtime, RISK_REVIEW,
             f"Matches your junk rule: {rule}", is_dir=is_dir, selected=False,
         )
+
+    def _file_type_item(self, path: str, name: str, size: int, mtime: float) -> Optional[GarbageItem]:
+        """Flag a file of a type the user searched for (Review Recommended, never preselected)."""
+        ext = self._file_types.match(name)
+        if ext is None or size < self.options.min_file_size_bytes or not self._file_types.old_enough(mtime):
+            return None
+        reason = f"File type you searched for (.{ext})"
+        if self._file_types.min_age_days:
+            reason += f", unchanged for {self._file_types.min_age_days}+ days"
+        return build_item(path, name, CAT_FILE_TYPES, size, mtime, RISK_REVIEW, reason, selected=False)
 
     def _location_item(self, path: str, name: str, size: int, mtime: float, locations: List) -> Optional[GarbageItem]:
         """Flag a file that sits inside a known junk location."""
@@ -330,6 +344,8 @@ class FastScanner:
                                 item = self._old_download_item(path, name, size, stat)
                             if item is None and self._junk_rules:
                                 item = self._custom_rule_item(path, name, size, mtime)
+                            if item is None and self._file_types:
+                                item = self._file_type_item(path, name, size, mtime)
                             if item:
                                 found_items.append(item)
                             elif self.options.include_duplicates and size >= DUPLICATE_MIN_BYTES:

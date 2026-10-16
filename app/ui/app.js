@@ -63,6 +63,7 @@ const SPACE_CATEGORIES = [
   { name: 'Old Downloads', label: 'Old downloads' },
   { name: 'My Junk Rules', label: 'My rules' },
   { name: 'Program Leftovers', label: 'Leftovers' },
+  { name: 'Chosen File Types', label: 'File types' },
 ];
 
 function spaceBreakdown(categoryBytes) {
@@ -192,6 +193,32 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
   return lines;
 }
 
+// File type search input ("mp4, .MOV *.mkv tar.gz") -> lowercase types without the dot.
+// Mirrors app/engine/filetypes.py; the server checks again and has the last word.
+const FILE_TYPE_PATTERN = /^[a-z0-9_+~$-]{1,16}(\.[a-z0-9_+~$-]{1,16}){0,2}$/;
+
+function parseFileTypes(text) {
+  const types = [];
+  const invalid = [];
+  String(text ?? '').split(/[\s,;]+/).forEach((raw) => {
+    if (!raw) return;
+    let value = raw.toLowerCase();
+    if (value.replace(/[*.]/g, '') === '' && value.includes('*')) { invalid.push(raw); return; }
+    value = value.replace(/^\*/, '').replace(/^\.+/, '');
+    if (!value) return;
+    if (!FILE_TYPE_PATTERN.test(value)) { invalid.push(raw); return; }
+    if (!types.includes(value)) types.push(value);
+  });
+  return { types, invalid };
+}
+
+// Whether a preset group is fully, partly or not at all in the chosen types (for aria-pressed)
+function presetState(presetTypes, chosen) {
+  const picked = presetTypes.filter((t) => chosen.includes(t)).length;
+  if (picked === 0) return 'false';
+  return picked === presetTypes.length ? 'true' : 'mixed';
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -253,6 +280,11 @@ const state = {
   newPaths: new Set(),    // Paths the previous scan of this target did not find
   newOnly: false,
   expandedScoreId: null,  // Row whose smart-score reasons are shown
+  fileTypes: [],          // File type search: lowercase extensions without the dot
+  fileTypeMinDays: 0,     // ...only files unchanged for this many days (0 = any age)
+  fileTypePresets: [],    // Groups from /api/file-types/presets
+  fileTypesNeverListed: [], // Backup images and VM disks: the search refuses these
+  typeSearchOnly: false,  // The running/last scan looked only for the chosen file types
 
   // Hierarchy Explorer State
   currentHierarchy: null,
@@ -299,6 +331,23 @@ const el = {
   learningNote: document.getElementById('learningNote'),
   btnForgetLearning: document.getElementById('btnForgetLearning'),
   optLeftovers: document.getElementById('optLeftovers'),
+  optFileTypes: document.getElementById('optFileTypes'),
+  fileTypesHint: document.getElementById('fileTypesHint'),
+  btnChooseFileTypes: document.getElementById('btnChooseFileTypes'),
+
+  // File Types Modal
+  btnOpenFileTypes: document.getElementById('btnOpenFileTypes'),
+  fileTypesModal: document.getElementById('fileTypesModal'),
+  closeFileTypesModal: document.getElementById('closeFileTypesModal'),
+  fileTypePresets: document.getElementById('fileTypePresets'),
+  fileTypeInput: document.getElementById('fileTypeInput'),
+  btnAddFileType: document.getElementById('btnAddFileType'),
+  fileTypeChips: document.getElementById('fileTypeChips'),
+  fileTypeCount: document.getElementById('fileTypeCount'),
+  fileTypeMinDays: document.getElementById('fileTypeMinDays'),
+  btnClearFileTypes: document.getElementById('btnClearFileTypes'),
+  btnCloseFileTypes: document.getElementById('btnCloseFileTypes'),
+  btnSearchFileTypes: document.getElementById('btnSearchFileTypes'),
   btnDeselectAll: document.getElementById('btnDeselectAll'),
   btnExportReport: document.getElementById('btnExportReport'),
   btnDeleteItems: document.getElementById('btnDeleteItems'),
@@ -469,6 +518,7 @@ const SCAN_OPTION_INPUTS = {
   include_duplicates: el.optDuplicates,
   include_old_downloads: el.optOldDownloads,
   include_leftovers: el.optLeftovers,
+  include_file_types: el.optFileTypes,
 };
 
 // Utilities
@@ -561,6 +611,30 @@ function setupEventListeners() {
   el.btnStartScan.addEventListener('click', () => startScan());
   el.btnScanJunk.addEventListener('click', () => startScan({ junkOnly: true }));
   el.btnLargest.addEventListener('click', openLargestModal);
+  el.btnOpenFileTypes.addEventListener('click', openFileTypesModal);
+  el.btnChooseFileTypes.addEventListener('click', openFileTypesModal);
+  el.closeFileTypesModal.addEventListener('click', closeFileTypesModal);
+  el.btnCloseFileTypes.addEventListener('click', closeFileTypesModal);
+  el.btnAddFileType.addEventListener('click', () => addFileTypes(el.fileTypeInput.value));
+  el.fileTypeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addFileTypes(el.fileTypeInput.value);
+  });
+  el.btnClearFileTypes.addEventListener('click', () => setFileTypes([]));
+  el.fileTypeMinDays.addEventListener('change', () => {
+    const days = Math.min(36500, Math.max(0, Math.floor(Number(el.fileTypeMinDays.value) || 0)));
+    el.fileTypeMinDays.value = String(days);
+    state.fileTypeMinDays = days;
+    savePreferences();
+  });
+  el.btnSearchFileTypes.addEventListener('click', () => {
+    if (!state.fileTypes.length) {
+      showToast('Pick at least one file type first', 'error');
+      el.fileTypeInput.focus();
+      return;
+    }
+    closeFileTypesModal();
+    startScan({ typeOnly: true });
+  });
   Object.values(SCAN_OPTION_INPUTS).forEach((input) => input.addEventListener('change', savePreferences));
   el.btnStopScan.addEventListener('click', stopScan);
 
@@ -899,12 +973,18 @@ async function loadAvailableDrives() {
 }
 
 // Scanning Engine Controller
-async function startScan({ junkOnly = false } = {}) {
+async function startScan({ junkOnly = false, typeOnly = false } = {}) {
   const targetPath = junkOnly ? '' : el.targetPathInput.value.trim();
   if (!targetPath && !junkOnly) {
     showToast('Please specify a valid path to scan', 'error');
     return;
   }
+  if (!junkOnly && (typeOnly || el.optFileTypes.checked) && !state.fileTypes.length) {
+    showToast('Pick the file types to look for first', 'error');
+    openFileTypesModal();
+    return;
+  }
+  state.typeSearchOnly = typeOnly;
 
   state.items = [];
   state.filteredItems = [];
@@ -916,7 +996,8 @@ async function startScan({ junkOnly = false } = {}) {
   el.btnScanJunk.classList.add('hidden');
   el.btnStopScan.classList.remove('hidden');
   el.scanProgressContainer.classList.remove('hidden');
-  el.statusText.textContent = junkOnly ? 'Scanning junk locations...' : 'Scanning in progress...';
+  el.statusText.textContent = junkOnly ? 'Scanning junk locations...'
+    : typeOnly ? 'Searching for your file types...' : 'Scanning in progress...';
   document.querySelector('.status-dot').classList.add('scanning');
 
   resetStatsUI();
@@ -931,7 +1012,14 @@ async function startScan({ junkOnly = false } = {}) {
     ...currentScanOptions(),
     scan_junk_locations: junkOnly,
     skip_system_dirs: true,
+    file_types: state.fileTypes,
+    file_type_min_days: state.fileTypeMinDays,
   };
+  if (typeOnly) {
+    // Only the chosen file types (the server turns every other category off too)
+    payload.type_search_only = true;
+    payload.include_file_types = true;
+  }
   if (junkOnly) {
     // Quick Clean looks only for disposable temp and cache content
     Object.keys(SCAN_OPTION_INPUTS).forEach((key) => { payload[key] = false; });
@@ -1026,7 +1114,13 @@ function onScanCompleted(finalStats = null, changes = null) {
       const count = state.newPaths.size;
       note = count ? ` ${count.toLocaleString()} new since the last scan.` : ' Nothing new since the last scan.';
     }
-    showToast(`Scan finished: ${finalStats.garbage_count} garbage items detected!${note}`, 'success');
+    if (state.typeSearchOnly) {
+      const n = finalStats.garbage_count;
+      showToast(n ? `Found ${plural(n, 'file')} of your chosen types. Tick the ones to remove, then Delete.`
+        : 'No files of your chosen types were found here.', n ? 'success' : 'info');
+    } else {
+      showToast(`Scan finished: ${finalStats.garbage_count} garbage items detected!${note}`, 'success');
+    }
   } else {
     showToast(`Scan stopped. Found ${state.items.length} items.`, 'info');
   }
@@ -2393,6 +2487,10 @@ async function loadPreferences() {
   Object.entries(prefs.scan_options || {}).forEach(([key, value]) => {
     if (SCAN_OPTION_INPUTS[key]) SCAN_OPTION_INPUTS[key].checked = Boolean(value);
   });
+  if (Array.isArray(prefs.file_types)) state.fileTypes = parseFileTypes(prefs.file_types.join(' ')).types;
+  state.fileTypeMinDays = Math.max(0, Math.floor(Number(prefs.file_type_min_days) || 0));
+  el.fileTypeMinDays.value = String(state.fileTypeMinDays);
+  updateFileTypesHint();
   if (prefs.target_path) {
     el.targetPathInput.value = prefs.target_path;
     document.querySelectorAll('.drive-pill').forEach((b) => {
@@ -2406,12 +2504,105 @@ async function savePreferences() {
     theme: document.body.classList.contains('light-theme') ? 'light' : 'dark',
     target_path: el.targetPathInput.value.trim(),
     scan_options: currentScanOptions(),
+    file_types: state.fileTypes,
+    file_type_min_days: state.fileTypeMinDays,
   };
   try {
     await apiJson('/api/preferences', { method: 'PUT', body: JSON.stringify(payload) });
   } catch (err) {
     console.warn('Could not save preferences:', err);
   }
+}
+
+// ==========================================
+// File Type Search (results go to the deletion list as "Chosen File Types")
+// ==========================================
+
+function updateFileTypesHint() {
+  const n = state.fileTypes.length;
+  el.fileTypesHint.textContent = n ? plural(n, 'type') : 'none picked';
+  el.fileTypesHint.parentElement.title = n
+    ? `Also list: ${state.fileTypes.map((t) => '.' + t).join(', ')}`
+    : 'Also list files of the types you picked in File Types';
+}
+
+async function openFileTypesModal() {
+  el.fileTypesModal.classList.remove('hidden');
+  el.fileTypeInput.value = '';
+  el.fileTypeMinDays.value = String(state.fileTypeMinDays);
+  if (!state.fileTypePresets.length) {
+    try {
+      const data = await apiJson('/api/file-types/presets');
+      state.fileTypePresets = data.presets || [];
+      state.fileTypesNeverListed = data.never_listed || [];
+    } catch (err) {
+      showToast(`Could not load file type groups: ${err.message}`, 'error');
+    }
+  }
+  renderFileTypes();
+  el.fileTypeInput.focus();
+}
+
+function closeFileTypesModal() {
+  el.fileTypesModal.classList.add('hidden');
+}
+
+function renderFileTypes() {
+  el.fileTypePresets.innerHTML = state.fileTypePresets.map((p) => `
+    <button type="button" class="checkbox-tag btn-file-type-preset" data-preset="${escapeHtml(p.id)}"
+      aria-pressed="${presetState(p.types, state.fileTypes)}"
+      title="${escapeHtml(p.types.map((t) => '.' + t).join(' '))}">${escapeHtml(p.label)}</button>
+  `).join('');
+  el.fileTypePresets.querySelectorAll('.btn-file-type-preset').forEach((btn) => {
+    btn.addEventListener('click', () => togglePreset(btn.dataset.preset));
+  });
+
+  const n = state.fileTypes.length;
+  el.fileTypeCount.textContent = n ? plural(n, 'type') : '';
+  el.btnSearchFileTypes.disabled = !n;
+  el.fileTypeChips.innerHTML = n
+    ? state.fileTypes.map((t) => `
+      <span class="type-chip">.${escapeHtml(t)}
+        <button type="button" class="btn-remove-file-type" data-type="${escapeHtml(t)}"
+          aria-label="Remove .${escapeHtml(t)}" title="Remove"><i data-lucide="x"></i></button>
+      </span>`).join('')
+    : '<span class="list-empty">No file types yet. Pick a group above or type your own.</span>';
+  lucide.createIcons();
+  el.fileTypeChips.querySelectorAll('.btn-remove-file-type').forEach((btn) => {
+    btn.addEventListener('click', () => setFileTypes(state.fileTypes.filter((t) => t !== btn.dataset.type)));
+  });
+}
+
+function setFileTypes(types) {
+  state.fileTypes = types;
+  updateFileTypesHint();
+  renderFileTypes();
+  savePreferences();
+}
+
+function togglePreset(id) {
+  const preset = state.fileTypePresets.find((p) => p.id === id);
+  if (!preset) return;
+  if (presetState(preset.types, state.fileTypes) === 'true') {
+    setFileTypes(state.fileTypes.filter((t) => !preset.types.includes(t)));
+  } else {
+    setFileTypes([...state.fileTypes, ...preset.types.filter((t) => !state.fileTypes.includes(t))]);
+  }
+}
+
+function addFileTypes(text) {
+  const parsed = parseFileTypes(text);
+  const { invalid } = parsed;
+  const refused = parsed.types.filter((t) => state.fileTypesNeverListed.includes(t.split('.').pop()));
+  const types = parsed.types.filter((t) => !refused.includes(t));
+  if (invalid.length) {
+    showToast(`Not a file type: ${invalid.join(', ')}. Use an extension such as .mp4`, 'error');
+  } else if (refused.length) {
+    showToast(`${refused.map((t) => '.' + t).join(', ')}: backup images and virtual machine disks are never listed`, 'error');
+  }
+  if (!types.length) return;
+  setFileTypes([...state.fileTypes, ...types.filter((t) => !state.fileTypes.includes(t))]);
+  el.fileTypeInput.value = invalid.join(' ');
 }
 
 // ==========================================

@@ -24,6 +24,9 @@
       </div>
       <div class="header-right">
         <nav class="header-nav" aria-label="Tools">
+          <button id="btnOpenFileTypes" class="nav-btn" title="Search for files by type (.mp4, .zip, .log...) and add them to the deletion list">
+            <i data-lucide="file-search"></i> File Types
+          </button>
           <button id="btnOpenJunkRules" class="nav-btn" title="Your own patterns and folders to flag as junk">
             <i data-lucide="list-plus"></i> Junk Rules
           </button>
@@ -126,6 +129,13 @@
             <input type="checkbox" id="optLeftovers" />
             <i data-lucide="package-x"></i> Program leftovers
           </label>
+          <span class="file-types-option">
+            <label class="checkbox-tag" title="Also list files of the types you picked in File Types">
+              <input type="checkbox" id="optFileTypes" />
+              <i data-lucide="file-search"></i> Chosen file types <span class="tag-hint" id="fileTypesHint">none picked</span>
+            </label>
+            <button id="btnChooseFileTypes" class="btn btn-ghost btn-sm" title="Pick the file types to look for">Choose</button>
+          </span>
         </div>
       </div>
 
@@ -299,6 +309,7 @@
               <option value="Old Downloads">Old downloads (untouched 90+ days)</option>
               <option value="My Junk Rules">My junk rules (your patterns)</option>
               <option value="Program Leftovers">Program leftovers (uninstalled apps)</option>
+              <option value="Chosen File Types">Chosen file types (your search)</option>
             </select>
 
             <select id="riskFilter" class="select-filter" aria-label="Risk level">
@@ -675,6 +686,50 @@
         </div>
         <div class="modal-footer">
           <button id="btnCloseJunkRules" class="btn btn-secondary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- File Types Modal -->
+    <div id="fileTypesModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-title-group">
+            <div class="modal-icon"><i data-lucide="file-search"></i></div>
+            <div>
+              <h3 class="modal-title">Search by File Type</h3>
+              <p class="modal-subtitle">Find files by extension and add them to the deletion list</p>
+            </div>
+          </div>
+          <button id="closeFileTypesModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
+        </div>
+        <div class="modal-body file-types-body">
+          <div>
+            <span class="field-label">Quick picks</span>
+            <div id="fileTypePresets" class="option-chips preset-chips" aria-label="File type groups"></div>
+          </div>
+          <div>
+            <label class="field-label" for="fileTypeInput">Your own types</label>
+            <div class="input-with-button">
+              <input type="text" id="fileTypeInput" placeholder=".mp4, .mov, tar.gz" spellcheck="false" />
+              <button id="btnAddFileType" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add</button>
+            </div>
+          </div>
+          <div>
+            <span class="field-label">Searching for <span id="fileTypeCount" class="tag-hint"></span></span>
+            <div id="fileTypeChips" class="type-chips"></div>
+          </div>
+          <label class="age-field" for="fileTypeMinDays">
+            Only files unchanged for at least
+            <input type="number" id="fileTypeMinDays" min="0" max="36500" step="1" value="0" />
+            days <span class="tag-hint">(0 = any age)</span>
+          </label>
+          <p class="confirm-note">Searches the scan location above. Matches are listed under "Chosen File Types" as Review Recommended and are never preselected: tick the ones you want, then Delete. Your exclusions, protected system folders, version-control and backup folders are skipped, and personal files still ask for DELETE typed. Backup images and virtual machine disks are never listed. In a deep scan with "Chosen file types" on, files a built-in category already lists stay in that category.</p>
+        </div>
+        <div class="modal-footer">
+          <button id="btnClearFileTypes" class="btn btn-ghost">Clear all</button>
+          <button id="btnCloseFileTypes" class="btn btn-secondary">Done</button>
+          <button id="btnSearchFileTypes" class="btn btn-primary"><i data-lucide="search"></i> Search these types</button>
         </div>
       </div>
     </div>
