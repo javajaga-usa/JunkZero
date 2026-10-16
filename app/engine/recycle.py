@@ -296,8 +296,74 @@ def move_to_holding(path: str, batch: str) -> str:
     rel = os.path.relpath(path, root)
     dest = os.path.join(batch, rel)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    os.rename(path, dest)
+    try:
+        os.rename(path, dest)
+    except OSError:
+        # Don't leave empty folders behind in the holding folder for an item that stayed put
+        _remove_empty_dirs(os.path.dirname(dest), stop_at=batch)
+        raise
     return dest
+
+
+def _remove_empty_dirs(folder: str, stop_at: str) -> None:
+    """Remove folder and its parents while they are empty, up to (not including) stop_at."""
+    stop = os.path.normcase(os.path.abspath(stop_at))
+    folder = os.path.abspath(folder)
+    while os.path.normcase(folder) != stop and os.path.normcase(folder).startswith(stop + os.sep.lower()):
+        try:
+            os.rmdir(folder)
+        except OSError:
+            return
+        folder = os.path.dirname(folder)
+
+
+def _batch_of(held_path: str) -> Optional[Tuple[str, str]]:
+    """(batch folder, drive root) for a path inside a holding batch, or None."""
+    parts = os.path.abspath(held_path).split(os.sep)
+    for i, part in enumerate(parts):
+        if part == HOLDING_DIR_NAME and i + 1 < len(parts) and _BATCH_RE.match(parts[i + 1]):
+            root = os.sep.join(parts[:i]) or os.sep
+            if re.fullmatch(r"[A-Za-z]:", root):
+                root += os.sep
+            return os.sep.join(parts[:i + 2]), root
+    return None
+
+
+def _sweep_batch(batch: str, root: str, restored: List[str], errors: List[Dict[str, str]]) -> None:
+    """Put back everything still in one holding batch (each item's place is its path inside the
+    batch, relative to the drive root), never over something already there."""
+    for dirpath, dirnames, filenames in os.walk(batch, topdown=True):
+        rel_dir = os.path.relpath(dirpath, batch)
+        keep = []
+        for name in dirnames:
+            stored = os.path.join(dirpath, name)
+            original = os.path.normpath(os.path.join(root, rel_dir, name))
+            if os.path.isdir(original) and not os.path.islink(original):
+                keep.append(name)  # the folder is back already: put back what's inside it
+                continue
+            try:
+                _move_back(stored, original)
+                restored.append(original)
+            except _Occupied:
+                errors.append({"path": original, "error": "Something is already at this location; left as it is"})
+            except OSError as e:
+                errors.append({"path": original, "error": str(e)})
+        dirnames[:] = keep
+        for name in filenames:
+            original = os.path.normpath(os.path.join(root, rel_dir, name))
+            try:
+                _move_back(os.path.join(dirpath, name), original)
+                restored.append(original)
+            except _Occupied:
+                errors.append({"path": original, "error": "Something is already at this location; left as it is"})
+            except OSError as e:
+                errors.append({"path": original, "error": str(e)})
+    # What's left is empty folders that are back in place already
+    for dirpath, _dirs, _files in sorted(os.walk(batch), key=lambda w: -len(w[0])):
+        try:
+            os.rmdir(dirpath)
+        except OSError:
+            pass
 
 
 def _remember_holding_root(root: str) -> None:
@@ -547,4 +613,11 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
             errors.append({"path": original, "error": "Something is already at this location; left as it is"})
         except OSError as e:
             errors.append({"path": original, "error": str(e)})
+
+    # Anything still in this cleanup's holding batches goes back too. Older history kept only
+    # the first 500 items of a cleanup, but the batch folder holds all of them.
+    batches = {b for b in (_batch_of(d) for d in held.values() if isinstance(d, str)) if b}
+    for batch, root in sorted(batches):
+        if os.path.isdir(batch):
+            _sweep_batch(batch, root, restored, errors)
     return {"restored": restored, "errors": errors}
