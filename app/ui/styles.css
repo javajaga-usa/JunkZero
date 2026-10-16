@@ -2496,3 +2496,20 @@ input[type="text"]:focus {
 .file-table tbody tr.row-excluded td { opacity: 0.5; }
 .file-table tbody tr.row-excluded td.exclude-cell { opacity: 1; }
 .file-table tbody tr.row-excluded .file-name-text { text-decoration: line-through; text-decoration-color: var(--text-muted); }
+
+/* Note under the scan location: this disk's deletes go to the holding folder, or can't happen */
+.disk-note {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.disk-note[data-level="warning"] {
+  border-color: var(--color-danger-border);
+  color: var(--text-primary);
+}
