@@ -735,6 +735,9 @@ function showToast(message, type = 'info', { details = null, detailsTitle = '' }
   }
 }
 
+// The app window calls this directly (e.g. when it is closed while a delete runs)
+window.showToast = showToast;
+
 // Every item that couldn't be removed (or restored), with its reason and a Copy button
 function openErrorsModal(errors, title = '') {
   state.shownErrors = errors || [];
@@ -2297,7 +2300,8 @@ async function cancelClean() {
   el.btnCancelClean.disabled = true;
   el.btnCancelClean.textContent = 'Stopping after this batch...';
   try {
-    await apiJson('/api/clean/cancel', { method: 'POST' });
+    const answer = await apiJson('/api/clean/cancel', { method: 'POST' });
+    if (answer.status === 'not_running') el.btnCancelClean.textContent = 'Finishing...';
   } catch (err) {
     el.btnCancelClean.disabled = false;
     el.btnCancelClean.textContent = 'Cancel';
@@ -2351,6 +2355,9 @@ function showDeleteOutcome(result) {
         showToast(t(`${held} item(s) on a drive without a Recycle Bin were set aside in a hidden JunkZero folder on that drive for 7 days. Restore them from Cleanup History.`), 'info');
       }
     }
+  }
+  if (result.cancelled && !(result.skipped_count > 0)) {
+    showToast('Cancelled, but everything had already been processed.', 'info');
   }
   if (result.skipped_count > 0) {
     const how = Array.isArray(result.skipped) ? '' : ' Scan again to refresh the list.';
@@ -2502,6 +2509,7 @@ async function openAiInspector(path) {
         </div>
         <p style="font-size: 13px; color: var(--text-primary); margin-bottom: 8px;">${escapeHtml(data.explanation)}</p>
         <p style="font-size: 12px; color: var(--color-primary); font-weight: 500;"><strong>Recommendation:</strong> ${escapeHtml(data.recommendation)}</p>
+        ${data.note ? `<p class="ai-note" style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">${escapeHtml(data.note)}</p>` : ''}
       </div>
 
       <div class="ai-detail-row">
@@ -2832,10 +2840,12 @@ function renderHistory(history) {
     const when = new Date(h.timestamp * 1000).toLocaleString();
     const mode = h.mode === 'permanent' ? 'Permanently deleted' : t('Moved to Recycle Bin');
     const extra = h.paths_truncated ? `<li>...and ${h.paths_truncated} more</li>` : '';
-    const restored = (h.restored || []).length;
-    const canRestore = h.mode !== 'permanent' && restored < h.paths.length;
+    const restored = Number.isFinite(h.restored_count) ? h.restored_count : (h.restored || []).length;
+    const pathCount = Number.isFinite(h.path_count) ? h.path_count : h.paths.length;
+    const canRestore = h.mode !== 'permanent' && restored < pathCount;
     const errors = Array.isArray(h.errors) ? h.errors : [];
-    const errorsOf = h.failed_count > errors.length ? ` (first ${errors.length} of ${h.failed_count})` : '';
+    const errorsTotal = Number.isFinite(h.errors_total) ? h.errors_total : (h.failed_count || errors.length);
+    const errorsOf = errorsTotal > errors.length ? ` (first ${errors.length} of ${errorsTotal})` : '';
     return `
       <li>
         <div class="history-row">
@@ -2980,6 +2990,11 @@ function renderScheduleState(schedule, supported, lastReport) {
     el.scheduleStatus.textContent = `On: scans ${when} at ${schedule.time}.`;
   } else {
     el.scheduleStatus.textContent = 'Off. Save a schedule to have JunkZero scan and report automatically.';
+  }
+  const failed = schedule.last_error;
+  if (failed && failed.error) {
+    const when = failed.at ? ` (${new Date(failed.at * 1000).toLocaleString()})` : '';
+    el.scheduleStatus.textContent += ` The last scheduled scan failed${when}: ${failed.error}`;
   }
   el.btnSaveSchedule.disabled = !supported;
   el.btnDisableSchedule.classList.toggle('hidden', !schedule.enabled);

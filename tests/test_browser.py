@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-sync_api = pytest.importorskip("playwright.sync_api")
+# The CI browser job sets JUNKZERO_REQUIRE_BROWSER so a missing browser fails instead of skipping
+REQUIRED = os.environ.get("JUNKZERO_REQUIRE_BROWSER") == "1"
+if REQUIRED:
+    from playwright import sync_api
+else:
+    sync_api = pytest.importorskip("playwright.sync_api")
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -66,6 +71,8 @@ def page():
         try:
             browser = pw.chromium.launch()
         except Exception as e:  # browser not installed here
+            if REQUIRED:
+                raise
             pytest.skip(f"Chromium is not available: {e}")
         try:
             yield browser.new_page()
@@ -221,15 +228,29 @@ def test_scan_progress_steps_and_a_dropped_stream(server, page):
 def test_history_lists_stored_errors(server, page):
     page.route("**/api/history", lambda route: route.fulfill(json={"history": [{
         "timestamp": 1700000000, "mode": "recycle_bin", "deleted_count": 2, "failed_count": 1,
-        "freed_bytes": 10, "source": "scan results", "paths": ["/x/a.tmp", "/x/b.tmp"], "restored": [],
-        "errors": [{"path": "/x/c.tmp", "error": "Access is denied"}],
+        "freed_bytes": 10, "source": "scan results", "paths": ["/x/a.tmp", "/x/b.tmp"],
+        "restored": ["/x/a.tmp", "/x/b.tmp"], "restored_count": 2, "path_count": 600,
+        "errors": [{"path": "/x/c.tmp", "error": "Access is denied"}], "errors_total": 300,
     }]}))
+    page.route("**/api/schedule", lambda route: route.fulfill(json={
+        "supported": True, "last_report": None,
+        "schedule": {"enabled": True, "frequency": "daily", "day": "MON", "time": "09:00", "paths": ["/x"],
+                     "include_junk_locations": True, "last_error": {"at": 1700000000, "error": "Folder not found"}},
+    }))
     _open(page, server)
     page.click("#btnOpenHistory")
     page.wait_for_selector(".history-errors")
     page.click(".history-errors summary")
     assert "/x/c.tmp" in page.text_content(".history-errors")
     assert "Access is denied" in page.text_content(".history-errors")
+    assert "first 1 of 300" in page.text_content(".history-errors summary")
+    # Only 2 of the 600 paths are listed for display; restore counts from the record's totals
+    assert page.locator(".btn-restore-cleanup").count() == 1
+    page.keyboard.press("Escape")
+    page.click("#btnOpenSchedule")
+    page.wait_for_function("document.getElementById('scheduleStatus').textContent.includes('Folder not found')")
+    # The app window calls showToast directly
+    assert page.evaluate("typeof window.showToast") == "function"
 
 
 def test_dialogs_close_with_escape_and_give_focus_back(server, page):
