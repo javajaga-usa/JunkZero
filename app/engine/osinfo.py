@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import stat as _stat
 import sys
-from typing import Dict
+from typing import Dict, Optional
 
 
 def is_macos() -> bool:
@@ -70,3 +70,29 @@ def platform_terms() -> Dict[str, object]:
         "scheduler": "Windows Task Scheduler",
         "scheduling_supported": is_windows(),
     }
+
+
+# How to add what the macOS Trash needs (shown when it is missing)
+MAC_TRASH_FIX = ("In the JunkZero folder run: .venv/bin/python -m pip install -r requirements.txt "
+                 "(starting JunkZero with run.command does this), then restart JunkZero")
+
+
+def mac_trash_ready() -> bool:
+    """True unless this is a Mac without pyobjc. send2trash moves items to the Trash with Apple's
+    current API only through pyobjc; without it, it falls back to an old API that recent macOS
+    refuses with "Insufficient access privileges for operation"."""
+    if not is_macos():
+        return True
+    try:
+        import Foundation  # noqa: F401  (part of pyobjc-framework-Cocoa)
+        return True
+    except Exception:
+        return False
+
+
+def setup_warning() -> Optional[str]:
+    """A problem with how JunkZero was installed that the user should fix, or None."""
+    if not mac_trash_ready():
+        return ("Moving items to the Trash won't work: JunkZero is missing the pyobjc package. "
+                + MAC_TRASH_FIX + ". Permanent delete still works.")
+    return None

@@ -105,6 +105,17 @@ def _remove_permanently(path: str) -> None:
     shutil.rmtree(path)
 
 
+def _send_to_trash(path: str) -> None:
+    try:
+        send2trash.send2trash(path)
+    except OSError as ex:
+        if osinfo.is_macos() and not osinfo.mac_trash_ready():
+            # The old Trash API send2trash falls back to without pyobjc: say how to fix it
+            raise OSError(f"macOS refused to move it to the Trash ({ex}). JunkZero is missing the pyobjc "
+                          f"package. {osinfo.MAC_TRASH_FIX}") from ex
+        raise
+
+
 def _raise(err: OSError) -> None:
     raise err
 
@@ -271,7 +282,7 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
                 if osinfo.is_macos():
                     st = os.lstat(norm_path)
                     trash_ids[path_str] = [st.st_dev, st.st_ino]
-                send2trash.send2trash(norm_path)
+                _send_to_trash(norm_path)
                 logger.info(f"RecycleBin: {norm_path} ({format_size(size)})")
             else:
                 # USB sticks and network shares have no Recycle Bin, and Windows erases items too big

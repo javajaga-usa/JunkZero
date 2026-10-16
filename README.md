@@ -65,6 +65,7 @@ JunkZero runs on macOS 11 or later with the same screens, and swaps in the Mac's
 - **Drives** are the startup disk (`/`) and any external disks in `/Volumes`.
 - Deleted items go to the **Trash**, the folder buttons open **Finder**, Browse uses the Finder folder picker, and **scheduled scans** run through launchd (a job in `~/Library/LaunchAgents`).
 - Settings and history are kept in `~/Library/Application Support/JunkZero`.
+- **From source**, start JunkZero with `run.command`: it creates `.venv` on the first run and installs `requirements.txt` whenever it changes. The Trash needs `pyobjc-framework-Cocoa` (in `requirements.txt`); without it macOS refuses Trash moves with "Insufficient access privileges for operation", and JunkZero shows how to fix it when it starts.
 
 ---
 

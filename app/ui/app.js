@@ -193,6 +193,16 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
   return lines;
 }
 
+// Same folder, ignoring case and a trailing separator ("C:\\" and "c:", "/Users/me/" and "/Users/me")
+function samePath(a, b) {
+  const norm = (p) => {
+    const text = String(p ?? '').trim().toLowerCase();
+    const stripped = text.replace(/[\\/]+$/, '');
+    return stripped === '' && text !== '' ? '/' : stripped;
+  };
+  return norm(a) !== '' && norm(a) === norm(b);
+}
+
 // File type search input ("mp4, .MOV *.mkv tar.gz") -> lowercase types without the dot.
 // Mirrors app/engine/filetypes.py; the server checks again and has the last word.
 const FILE_TYPE_PATTERN = /^[a-z0-9_+~$-]{1,16}(\.[a-z0-9_+~$-]{1,16}){0,2}$/;
@@ -554,6 +564,19 @@ function showToast(message, type = 'info') {
   }, 3500);
 }
 
+// A problem with how JunkZero was installed: stays on screen until dismissed
+function showSetupWarning(message) {
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-error toast-sticky';
+  toast.setAttribute('role', 'alert');
+  toast.innerHTML = '<i data-lucide="circle-alert" class="toast-icon"></i><span></span>'
+    + '<button type="button" class="toast-close" aria-label="Dismiss" title="Dismiss">&times;</button>';
+  toast.querySelector('span').textContent = message;
+  toast.querySelector('.toast-close').addEventListener('click', () => toast.remove());
+  el.toastContainer.appendChild(toast);
+  lucide.createIcons({ root: toast });
+}
+
 // App Initialization
 async function initApp() {
   await loadPlatform();
@@ -592,20 +615,31 @@ function setupEventListeners() {
     try {
       el.btnBrowse.disabled = true;
       el.btnBrowse.innerHTML = '<div class="spinner"></div> Opening...';
-      const res = await fetch('/api/system/browse-folder', { method: 'POST' });
+      const res = await fetch('/api/system/browse-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: el.targetPathInput.value.trim() }),
+      });
       const data = await res.json();
       if (data.path) {
         el.targetPathInput.value = data.path;
+        syncDrivePills();
+        savePreferences();
         showToast(`Target set to: ${data.path}`, 'success');
+      } else if (data.error) {
+        showToast(data.error, 'error');
       }
     } catch (e) {
       showToast('Could not open folder picker', 'error');
     } finally {
       el.btnBrowse.disabled = false;
-      el.btnBrowse.innerHTML = '<i data-lucide="folder-open"></i> Browse...';
+      el.btnBrowse.innerHTML = '<i data-lucide="folder-open"></i> Browse';
       lucide.createIcons();
     }
   });
+
+  // A typed path that isn't a whole drive no longer leaves the drive highlighted
+  el.targetPathInput.addEventListener('input', syncDrivePills);
 
   // Start / Stop Scan Buttons
   el.btnStartScan.addEventListener('click', () => startScan());
@@ -921,6 +955,7 @@ async function loadPlatform() {
     const res = await fetch('/api/system/info');
     const info = await res.json();
     state.platform = info.platform || 'windows';
+    if (info.setup_warning) showSetupWarning(info.setup_warning);
   } catch (err) {
     console.error('Failed to load system info:', err);
   }
@@ -954,9 +989,8 @@ async function loadAvailableDrives() {
       btn.innerHTML = `<i data-lucide="hard-drive"></i> <strong>${escapeHtml(d.drive)}</strong> <span class="drive-free">${escapeHtml(d.free_formatted)} free</span>`;
 
       btn.addEventListener('click', () => {
-        document.querySelectorAll('.drive-pill').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
         el.targetPathInput.value = d.drive;
+        syncDrivePills();
       });
 
       el.driveButtons.appendChild(btn);
@@ -965,11 +999,20 @@ async function loadAvailableDrives() {
     if (state.drives.length > 0) {
       el.targetPathInput.value = state.drives[0].drive;
     }
+    syncDrivePills();
 
     lucide.createIcons();
   } catch (err) {
     console.error('Failed to load drives:', err);
   }
+}
+
+// Highlight the drive button only when the scan location is that whole drive
+function syncDrivePills() {
+  const current = el.targetPathInput.value.trim();
+  document.querySelectorAll('.drive-pill').forEach((b) => {
+    b.classList.toggle('active', samePath(b.dataset.path, current));
+  });
 }
 
 // Scanning Engine Controller
@@ -2493,9 +2536,7 @@ async function loadPreferences() {
   updateFileTypesHint();
   if (prefs.target_path) {
     el.targetPathInput.value = prefs.target_path;
-    document.querySelectorAll('.drive-pill').forEach((b) => {
-      b.classList.toggle('active', b.dataset.path.toLowerCase() === prefs.target_path.toLowerCase());
-    });
+    syncDrivePills();
   }
 }
 
