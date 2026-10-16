@@ -14,6 +14,7 @@ CAT_DUPLICATES = "Duplicate Files"
 CAT_OLD_DOWNLOADS = "Old Downloads"
 CAT_CUSTOM_RULES = "My Junk Rules"
 CAT_LEFTOVERS = "Program Leftovers"
+CAT_FILE_TYPES = "Chosen File Types"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -178,6 +179,7 @@ CATEGORY_OPTIONS: Dict[str, str] = {
     CAT_OLD_DOWNLOADS: "include_old_downloads",
     CAT_CUSTOM_RULES: "include_custom_rules",
     CAT_LEFTOVERS: "include_leftovers",
+    CAT_FILE_TYPES: "include_file_types",
 }
 
 
@@ -196,6 +198,11 @@ class ScanOptions:
     include_custom_rules: bool = True
     # App data folders left behind by programs that are no longer installed (Windows and macOS)
     include_leftovers: bool = False
+    # File type search: files whose extension is in file_types (e.g. ["mp4", "tar.gz"]),
+    # optionally only those unchanged for file_type_min_days or more
+    include_file_types: bool = False
+    file_types: List[str] = field(default_factory=list)
+    file_type_min_days: int = 0
     old_download_days: int = OLD_DOWNLOAD_DAYS
     # Folders treated as "Downloads" for the Old Downloads category
     downloads_dirs: List[str] = field(default_factory=list)
