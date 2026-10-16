@@ -167,3 +167,12 @@ test('chosen file types take the next color slot after program leftovers', () =>
   assert.equal(JSON.stringify(parts.map((p) => [p.label, p.slot])),
     JSON.stringify([['Leftovers', 9], ['File types', 10]]));
 });
+
+test('drive buttons match the scan location only when it is the whole drive', () => {
+  assert.equal(context.samePath('C:\\', 'c:'), true);
+  assert.equal(context.samePath('/', '/'), true);
+  assert.equal(context.samePath('/Volumes/Backup', '/Volumes/Backup/'), true);
+  assert.equal(context.samePath('/', '/Users/jaga'), false);
+  assert.equal(context.samePath('C:\\', 'C:\\Users'), false);
+  assert.equal(context.samePath('', ''), false);
+});

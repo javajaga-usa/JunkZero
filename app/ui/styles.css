@@ -2468,3 +2468,23 @@ input[type="text"]:focus {
 }
 
 #fileTypesModal .modal-footer #btnClearFileTypes { margin-right: auto; }
+
+/* A setup problem stays until dismissed */
+.toast-sticky { max-width: 440px; }
+
+.toast-close {
+  flex-shrink: 0;
+  margin-left: 4px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast-close:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.toast-close:focus-visible { outline: none; box-shadow: var(--focus-ring); }

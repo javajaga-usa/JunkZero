@@ -218,13 +218,56 @@ def api_get_drives():
 @app.get("/api/system/info")
 def api_system_info():
     """Which system this is, and what the UI calls its trash, file manager and scheduler."""
-    return {**osinfo.platform_terms(), "version": __version__}
+    return {**osinfo.platform_terms(), "version": __version__, "setup_warning": osinfo.setup_warning()}
 
 
-# AppleScript for the macOS folder picker; prints the chosen folder's POSIX path
-MAC_CHOOSE_FOLDER_SCRIPT = (
-    'POSIX path of (choose folder with prompt "Select a drive or folder to scan for garbage files")'
-)
+# AppleScript for the macOS folder picker; prints the chosen folder's POSIX path. "activate"
+# brings the picker to the front: otherwise it opens behind the browser and looks like nothing
+# happened. The folder to start in comes as an argument, never inside the script.
+MAC_CHOOSE_FOLDER_SCRIPT = [
+    "on run argv",
+    "activate",
+    'set promptText to "Select a drive or folder to scan for garbage files"',
+    "if (count of argv) > 0 then",
+    "return POSIX path of (choose folder with prompt promptText default location (POSIX file (item 1 of argv)))",
+    "end if",
+    "return POSIX path of (choose folder with prompt promptText)",
+    "end run",
+]
+# osascript's error number when the user clicks Cancel
+MAC_USER_CANCELLED = "-128"
+
+# The JunkZero window (pywebview), when the app runs in its own window
+gui_window = None
+
+
+class BrowseRequest(BaseModel):
+    # The folder the picker starts in (the current scan location)
+    start: str = Field(default="", max_length=4096)
+
+
+def mac_choose_folder_command(start: str = "") -> List[str]:
+    command = ["osascript"]
+    for line in MAC_CHOOSE_FOLDER_SCRIPT:
+        command += ["-e", line]
+    if start and os.path.isdir(start):
+        command.append(start)
+    return command
+
+
+def _window_folder_dialog(start: str) -> Optional[str]:
+    """Ask JunkZero's own window for a folder. None if there is no window or it can't."""
+    window = gui_window
+    if window is None:
+        return None
+    import webview
+    dialog = getattr(getattr(webview, "FileDialog", None), "FOLDER", None)
+    if dialog is None:
+        dialog = getattr(webview, "FOLDER_DIALOG")
+    chosen = window.create_file_dialog(dialog, directory=start if start and os.path.isdir(start) else "")
+    if not chosen:
+        return ""
+    return chosen[0] if isinstance(chosen, (list, tuple)) else str(chosen)
 
 
 def reveal_command(path: str, is_file: bool) -> List[str]:
@@ -236,18 +279,34 @@ def reveal_command(path: str, is_file: bool) -> List[str]:
 
 
 @app.post("/api/system/browse-folder")
-def api_browse_folder():
-    """Open a native directory picker (Finder on macOS, Windows otherwise) and return the selected path."""
+def api_browse_folder(req: Optional[BrowseRequest] = None):
+    """Open a native directory picker (Finder on macOS, Windows otherwise) and return the selected path.
+    Returns {"path": ""} when the user cancels, plus "error" when the picker could not open."""
+    start = (req.start if req else "").strip()
     if osinfo.is_macos():
         try:
-            res = subprocess.run(["osascript", "-e", MAC_CHOOSE_FOLDER_SCRIPT], capture_output=True, text=True, timeout=300)
-            selected_path = res.stdout.strip()
-            if len(selected_path) > 1:
-                selected_path = selected_path.rstrip("/")
-            if selected_path and os.path.exists(selected_path):
-                return {"path": selected_path}
+            chosen = _window_folder_dialog(start)
         except Exception as e:
-            logger.warning(f"Native folder picker failed: {e}")
+            logger.warning(f"Window folder picker failed, using the Finder picker: {e}")
+            chosen = None
+        if chosen is None:
+            try:
+                res = subprocess.run(mac_choose_folder_command(start), capture_output=True, text=True, timeout=300)
+            except Exception as e:
+                logger.warning(f"Native folder picker failed: {e}")
+                return {"path": "", "error": f"The folder picker could not open ({e}). Type the folder path instead."}
+            if getattr(res, "returncode", 0):
+                stderr = (getattr(res, "stderr", "") or "").strip()
+                if MAC_USER_CANCELLED in stderr:
+                    return {"path": ""}
+                logger.warning(f"Native folder picker failed: {stderr}")
+                return {"path": "", "error": f"The folder picker could not open ({stderr or 'unknown error'}). "
+                                             "Type the folder path instead."}
+            chosen = (res.stdout or "").strip()
+        if len(chosen) > 1:
+            chosen = chosen.rstrip("/")
+        if chosen and os.path.isdir(chosen):
+            return {"path": chosen}
         return {"path": ""}
     try:
         ps_script = (
@@ -861,6 +920,7 @@ def main():
             if hasattr(webview, "settings"):
                 webview.settings["ALLOW_DOWNLOADS"] = True  # Lets "Export CSV" save files
             logger.info("Launching native Desktop GUI window...")
+            global gui_window
             window = webview.create_window(
                 title="JunkZero",
                 url=window_url,
@@ -869,6 +929,7 @@ def main():
                 min_size=(980, 650),
                 confirm_close=True
             )
+            gui_window = window
             webview.start()
             sys.exit(0)
         except Exception as e:
