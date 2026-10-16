@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
-from app.engine import changes, deletecheck, filetypes, osinfo, recycle, safeguards, scheduler, smart, storage
+from app.engine import changes, deletecheck, filetypes, osinfo, permissions, recycle, safeguards, scheduler, smart, storage
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
@@ -443,6 +443,10 @@ async def api_start_scan(req: ScanRequest):
                     "elapsed_seconds": scanner.stats.elapsed_seconds,
                     "is_completed": scanner.stats.is_completed,
                     "is_cancelled": scanner.stats.is_cancelled,
+                    "unreadable_dirs": scanner.stats.unreadable_dirs,
+                    "privacy_blocked_dirs": scanner.stats.privacy_blocked_dirs,
+                    "unreadable_examples": list(scanner.stats.unreadable_examples),
+                    "privacy_fix": permissions.mac_privacy_fix() if scanner.stats.privacy_blocked_dirs else "",
                 }
             }
             # A file type search is not a cleanup scan: it doesn't count for "new since last
@@ -510,6 +514,8 @@ def api_scan_status():
             "category_counts": dict(stats.category_counts),
             "category_bytes": dict(stats.category_bytes),
             "elapsed_seconds": stats.elapsed_seconds,
+            "unreadable_dirs": stats.unreadable_dirs,
+            "privacy_blocked_dirs": stats.privacy_blocked_dirs,
             "items_count": len(current_scanner.garbage_items),
         }
 
@@ -669,6 +675,16 @@ def api_delete_paths(req: DeletePathsRequest) -> CleanResult:
 def api_junk_locations():
     """Known junk locations (temp, caches, crash dumps, logs) that exist for this user."""
     return {"locations": [loc.to_dict() for loc in junk_locations()]}
+
+
+@app.post("/api/system/open-privacy-settings")
+def api_open_privacy_settings():
+    """Open System Settings > Privacy & Security > Full Disk Access (macOS), where the user can
+    let JunkZero (or the Terminal that runs it) see and clean every folder and disk."""
+    if not osinfo.is_macos():
+        raise HTTPException(status_code=501, detail="Privacy settings only apply on a Mac")
+    subprocess.Popen(["open", permissions.MAC_FULL_DISK_ACCESS_URL])
+    return {"success": True, "app": permissions.privacy_app()}
 
 
 @app.post("/api/system/open-recycle-bin")

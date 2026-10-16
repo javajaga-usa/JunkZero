@@ -228,3 +228,12 @@ test('scan location note appears only for disks without a dependable Trash', () 
   assert.match(context.diskNoteText({ destination: 'read_only', name: 'Windows', fs_label: 'NTFS',
     reason: 'macOS can only read NTFS disks, so nothing on it can be deleted' }, 'Trash'), /can scan it, but can't delete anything/);
 });
+
+test('after a scan, unreadable folders are reported, with the privacy fix on a Mac', () => {
+  assert.equal(context.unreadableText({ unreadable_dirs: 0 }), '');
+  assert.equal(context.unreadableText({ unreadable_dirs: 2, unreadable_examples: ['/Users/x/Private'] }),
+    "2 folders couldn't be read (no permission), such as /Users/x/Private, so they weren't scanned.");
+  const mac = context.unreadableText({ unreadable_dirs: 1, privacy_blocked_dirs: 1, unreadable_examples: ['/Volumes/J Red'],
+    privacy_fix: 'Give Terminal Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then restart JunkZero' });
+  assert.match(mac, /^macOS kept JunkZero out of 1 folder, such as \/Volumes\/J Red, so it wasn't scanned\. Give Terminal Full Disk Access/);
+});

@@ -2,6 +2,11 @@
 
 ## [1.2.0] - 2026-10-16
 
+### Permission problems fixed or explained
+- Permanent deletes no longer stop at read-only files or folders that are your own (the read-only attribute on Windows, a read-only folder on a Mac or Linux): JunkZero makes them writable and finishes. It never does this to what belongs to another account or the system, or to what you locked.
+- When a delete is refused, it says why in plain words and what fixes it: macOS privacy settings (with the app to give Full Disk Access and an **Open Privacy & Security** button), a file locked in Finder (how to unlock it), a file that belongs to another account or the system (JunkZero doesn't use administrator rights), a folder you can't change, a read-only disk, or Windows denying access. These messages stay on screen until dismissed.
+- Scans report the folders they weren't allowed to read instead of skipping them silently, and on a Mac tell macOS privacy blocks apart, with the same button.
+
 ### Deletes that fit the disk
 - JunkZero now tells you, before deleting, what will happen on each disk, by name and format: "J Red (exFAT): 12 items go to a hidden JunkZero folder on that disk for 7 days instead of the Trash, because on exFAT disks macOS may erase items instead of keeping them in the Trash." When every selected item goes to the holding folder, the dialog's message, mode and button say so.
 - A note under the scan location says the same as soon as you pick a disk whose deletes won't use the Trash, or that is read-only.

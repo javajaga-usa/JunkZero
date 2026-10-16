@@ -66,6 +66,7 @@ JunkZero runs on macOS 11 or later with the same screens, and swaps in the Mac's
 - **Drives** are the startup disk (`/`) and any external disks in `/Volumes`.
 - Deleted items go to the **Trash** on the startup disk and APFS or Mac OS Extended disks. On exFAT, FAT, NTFS and network disks, where macOS may erase an item instead of keeping it in the Trash, they go to a hidden `.JunkZero-holding` folder on that disk for 7 days (restore them from Cleanup History). The folder buttons open **Finder**, Browse uses the Finder folder picker, and **scheduled scans** run through launchd (a job in `~/Library/LaunchAgents`).
 - Settings and history are kept in `~/Library/Application Support/JunkZero`.
+- **Full Disk Access**: without it, macOS keeps apps out of Desktop, Documents, Downloads, external disks and more. If a scan or delete runs into that, JunkZero says so and its **Open Privacy & Security** button opens the Full Disk Access list; add JunkZero (the app) or Terminal (if you start it with `run.command`), then restart JunkZero.
 - **From source**, start JunkZero with `run.command`: it creates `.venv` on the first run and installs `requirements.txt` whenever it changes. The Trash needs `pyobjc-framework-Cocoa` (in `requirements.txt`); without it macOS refuses Trash moves with "Insufficient access privileges for operation", and JunkZero shows how to fix it when it starts.
 
 ---

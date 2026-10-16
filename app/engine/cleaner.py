@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import shutil
+import sys
 import logging
 import threading
 import uuid
@@ -21,7 +22,7 @@ from app.engine.exclusions import ExclusionMatcher
 from app.engine.inuse import OpenFileCheck
 from app.engine import osinfo
 from app.engine.osinfo import is_hidden
-from app.engine import recycle, storage
+from app.engine import permissions, recycle, storage
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 
 # Kept with the rest of JunkZero's data (%APPDATA%\JunkZero), not in whatever folder the app started from
@@ -111,7 +112,13 @@ def _excluded_path_inside(folder: str, excluder: ExclusionMatcher) -> Optional[s
 
 def _remove_permanently(path: str) -> None:
     if not os.path.isdir(path):
-        os.remove(path)
+        try:
+            os.remove(path)
+        except PermissionError:
+            # A read-only file of the user's own (Windows), or in their own read-only folder
+            if not permissions.make_writable(path):
+                raise
+            os.remove(path)
         return
     if osinfo.is_windows():
         # Windows can't rename a folder while a file inside it is open, so this finds out
@@ -120,9 +127,24 @@ def _remove_permanently(path: str) -> None:
         try:
             os.rename(path, aside)
         except PermissionError as ex:
-            raise OSError("a file inside it is open in another program (close it and try again)") from ex
+            if not permissions.make_writable(path):
+                raise OSError("a file inside it is open in another program, or Windows denied access "
+                              "(close programs using it and try again)") from ex
+            try:
+                os.rename(path, aside)
+            except PermissionError as again:
+                raise OSError("a file inside it is open in another program, or Windows denied access "
+                              "(close programs using it and try again)") from again
         path = aside
-    shutil.rmtree(path)
+    # Read-only files and folders of the user's own inside are made writable as they are reached
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=permissions.retry_writable)
+    else:
+        shutil.rmtree(path, onerror=lambda func, p, exc_info: permissions.retry_writable(func, p, exc_info[1]))
+
+
+class TrashSetupError(OSError):
+    """The Trash can't work because of how JunkZero was installed (not a permission problem)."""
 
 
 def _send_to_trash(path: str) -> None:
@@ -131,8 +153,8 @@ def _send_to_trash(path: str) -> None:
     except OSError as ex:
         if osinfo.is_macos() and not osinfo.mac_trash_ready():
             # The old Trash API send2trash falls back to without pyobjc: say how to fix it
-            raise OSError(f"macOS refused to move it to the Trash ({ex}). JunkZero is missing the pyobjc "
-                          f"package. {osinfo.MAC_TRASH_FIX}") from ex
+            raise TrashSetupError(f"macOS refused to move it to the Trash ({ex}). JunkZero is missing the pyobjc "
+                                  f"package. {osinfo.MAC_TRASH_FIX}") from ex
         raise
 
 
@@ -317,7 +339,8 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
             disks[root] = recycle.disk_info(norm_path)
         destination, why = recycle.item_destination(norm_path, size, permanent, disks[root])
         if destination == recycle.DEST_READ_ONLY:
-            errors.append({"path": path_str, "error": f"Can't delete: {why} ({disks[root]['name']})"})
+            errors.append({"path": path_str, "error": f"Can't delete: {why} ({disks[root]['name']})",
+                           "kind": permissions.KIND_READ_ONLY_DISK})
             failed_count += 1
             continue
 
@@ -354,7 +377,13 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         except Exception as ex:
             failed_count += 1
             err_msg = str(ex)
-            errors.append({"path": path_str, "error": err_msg})
+            error = {"path": path_str, "error": err_msg}
+            # A permission problem: say why in plain words and what fixes it
+            explained = None if isinstance(ex, TrashSetupError) else permissions.explain(ex, norm_path)
+            if explained:
+                error["kind"], why = explained
+                error["error"] = f"Can't delete: {why}"
+            errors.append(error)
             logger.error(f"Failed to delete {norm_path}: {err_msg}")
 
     return CleanResult(
