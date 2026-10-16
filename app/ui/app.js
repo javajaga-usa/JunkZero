@@ -240,6 +240,9 @@ if (!window.lucide) window.lucide = { createIcons() {} };
 
 // The table shows this many rows at a time ("Show more" adds another page), so large scans stay responsive
 const TABLE_PAGE_SIZE = 500;
+// While a scan runs, the results table is redrawn at most this often, so found items show
+// up right away without the table redrawing on every single item
+const LIVE_RENDER_MS = 500;
 const SEARCH_DELAY_MS = 200;
 
 // Every API request carries this launch's app token (the server refuses it otherwise). JunkZero
@@ -295,6 +298,7 @@ const state = {
   fileTypePresets: [],    // Groups from /api/file-types/presets
   fileTypesNeverListed: [], // Backup images and VM disks: the search refuses these
   typeSearchOnly: false,  // The running/last scan looked only for the chosen file types
+  liveRenderTimer: null,  // Pending table redraw while a scan is running
 
   // Hierarchy Explorer State
   currentHierarchy: null,
@@ -1032,6 +1036,7 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
     return;
   }
   state.typeSearchOnly = typeOnly;
+  cancelLiveRender();
 
   state.items = [];
   state.filteredItems = [];
@@ -1108,6 +1113,7 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
               applyFiltersAndRender(false);
               updateMetrics(latestStats);
               updateThrottleTimer = null;
+              scheduleLiveRender();
             }, 100);
           }
         } else if (data.type === 'completed') {
@@ -1130,6 +1136,23 @@ async function startScan({ junkOnly = false, typeOnly = false } = {}) {
   }
 }
 
+// Show what the running scan has found so far: items can be inspected, ticked and deleted
+// without waiting for the scan to finish. Rows already on screen keep their "Show more" page.
+function scheduleLiveRender() {
+  if (state.liveRenderTimer) return;
+  state.liveRenderTimer = setTimeout(() => {
+    state.liveRenderTimer = null;
+    if (!state.isScanning) return;
+    applyFiltersAndRender(false);
+    renderTable();
+  }, LIVE_RENDER_MS);
+}
+
+function cancelLiveRender() {
+  clearTimeout(state.liveRenderTimer);
+  state.liveRenderTimer = null;
+}
+
 async function stopScan() {
   try {
     await fetch('/api/scan/stop', { method: 'POST' });
@@ -1139,6 +1162,7 @@ async function stopScan() {
 
 function onScanCompleted(finalStats = null, changes = null) {
   state.isScanning = false;
+  cancelLiveRender();
   if (state.eventSource) {
     state.eventSource.close();
     state.eventSource = null;
