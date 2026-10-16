@@ -133,6 +133,8 @@ jobs:
           }
           if ($still) { throw "Uninstall left the scheduled scan behind" }
           Write-Host "Installer and uninstaller work; the scheduled scan was removed"
+          # schtasks /Query exits 1 once the task is gone, which would otherwise fail the step
+          exit 0
       # Per-run download for testers: the folder build (unzip, run JunkZero.exe)
       - uses: actions/upload-artifact@v4
         with:
