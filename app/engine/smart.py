@@ -197,8 +197,10 @@ class SmartScorer:
         elif getattr(item, "installer_weak", False):
             adjust(-10, "only its name says setup; no installer fingerprint inside")
 
-        if item.modified_timestamp > 0:
-            age_days = (now - item.modified_timestamp) / DAY
+        # Created (unpacked, copied) counts as changed too
+        changed = max(item.modified_timestamp, getattr(item, "changed_timestamp", 0) or 0)
+        if changed > 0:
+            age_days = (now - changed) / DAY
             if age_days < 1:
                 adjust(-20, "changed in the last day, may still be in use")
             elif age_days < 7:
@@ -232,6 +234,10 @@ class SmartScorer:
         if item.risk_level != RISK_SAFE and score >= SCORE_DELETE:
             score = SCORE_DELETE - 1
             reasons.append(f"Capped at {score}: rated {item.risk_level}, so never marked Delete")
+        # An empty folder can be someone's planned "Photos/2025 trip": never marked Delete
+        if item.category == CAT_EMPTY_FOLDERS and score >= SCORE_DELETE:
+            score = SCORE_DELETE - 1
+            reasons.append(f"Capped at {score}: empty folders are never marked Delete")
         return score, reasons
 
     def apply(self, item: Any) -> Any:

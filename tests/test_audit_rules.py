@@ -151,7 +151,10 @@ def test_wallets_count_as_personal(tmp_path):
     assert is_personal_file("wallet.dat") and is_personal_file("main.wallet")
     (tmp_path / "a" / "wallets").mkdir(parents=True)
     assert holds_personal_files(str(tmp_path / "a"))
-    assert not holds_personal_files(str(tmp_path / "a" / "wallets"))
+    # Round 9: a folder whose own name says wallet (Exodus' "exodus.wallet") counts too
+    assert holds_personal_files(str(tmp_path / "a" / "wallets"))
+    (tmp_path / "b").mkdir()
+    assert not holds_personal_files(str(tmp_path / "b"))
 
 
 def test_inspector_is_no_surer_than_the_scanner(tmp_path):
@@ -179,10 +182,13 @@ def test_library_on_another_disk_is_protected():
 
 @pytest.mark.parametrize("path, risk", [
     ("C:/Users/a/tools/Main.class", RISK_REVIEW),
-    ("C:/proj/target/classes/Main.class", RISK_SAFE),
+    ("{proj}/target/classes/Main.class", RISK_SAFE),
     ("C:/Users/a/app/main.pyc", RISK_REVIEW),
     ("C:/proj/__pycache__/main.cpython-313.pyc", RISK_SAFE),
 ])
-def test_compiled_code_is_safe_only_in_build_folders(path, risk):
+def test_compiled_code_is_safe_only_in_build_folders(path, risk, tmp_path):
+    # "target" counts as build output only next to a project file (round 9)
+    (tmp_path / "pom.xml").write_text("<project/>")
+    path = path.replace("{proj}", tmp_path.as_posix())
     item = classify_item(path, path.rsplit("/", 1)[-1], 10, OLD, False, ScanOptions(target_path="."))
     assert item.risk_level == risk and item.selected is (risk == RISK_SAFE)

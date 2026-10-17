@@ -16,23 +16,25 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install -r requirements.txt -c packaging/release-constraints.txt pyinstaller
+      # A folder build: dist\JunkZero\JunkZero.exe and the files it needs next to it
       - run: pyinstaller --noconfirm packaging/JunkZero.spec
       - name: Smoke test the exe
         shell: pwsh
         env:
           JUNKZERO_DATA_DIR: ${{ runner.temp }}\junkzero-data
         run: |
+          $exe = "dist\JunkZero\JunkZero.exe"
           $target = Join-Path $env:RUNNER_TEMP "junk-target"
           New-Item -ItemType Directory -Force $target | Out-Null
           New-Item -ItemType File -Force (Join-Path $target "old.tmp") | Out-Null
           # Report mode scans without deleting and saves a report
-          $p = Start-Process dist\JunkZero.exe -ArgumentList "--mode", "report", "--path", $target -Wait -PassThru
+          $p = Start-Process $exe -ArgumentList "--mode", "report", "--path", $target -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Report mode exited with $($p.ExitCode)" }
           $report = Get-Content (Join-Path $env:JUNKZERO_DATA_DIR "latest_report.json") | ConvertFrom-Json
           if ($report.item_count -lt 1) { throw "Report found nothing" }
           if (-not (Test-Path (Join-Path $target "old.tmp"))) { throw "Report mode deleted a file" }
           # Server mode serves the bundled UI and icons
-          $server = Start-Process dist\JunkZero.exe -ArgumentList "--mode", "server", "--port", "8765" -PassThru
+          $server = Start-Process $exe -ArgumentList "--mode", "server", "--port", "8765" -PassThru
           try {
             $ok = $false
             for ($i = 0; $i -lt 30 -and -not $ok; $i++) {
@@ -47,10 +49,104 @@ jobs:
           } finally {
             Stop-Process -Id $server.Id -Force
           }
+      - name: Smoke test delete and restore
+        # Scans a folder, moves a file to the Recycle Bin and puts it back through Cleanup
+        # History, using the app token the exe prints in server mode. Not yet blocking: the
+        # windowed exe may print nothing when it has no console, and the runner's Recycle Bin
+        # is untested. Make it blocking once it has passed on the runner.
+        continue-on-error: true
+        shell: pwsh
+        env:
+          JUNKZERO_DATA_DIR: ${{ runner.temp }}\junkzero-data-restore
+        run: |
+          $exe = "dist\JunkZero\JunkZero.exe"
+          $target = Join-Path $env:RUNNER_TEMP "restore-target"
+          New-Item -ItemType Directory -Force $target | Out-Null
+          $file = Join-Path $target "old.tmp"
+          Set-Content -Path $file -Value "junk"
+          (Get-Item $file).LastWriteTime = (Get-Date).AddDays(-90)
+          $out = Join-Path $env:RUNNER_TEMP "server-out.txt"
+          $err = Join-Path $env:RUNNER_TEMP "server-err.txt"
+          $server = Start-Process $exe -ArgumentList "--mode", "server", "--port", "8766" -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $token = $null
+            for ($i = 0; $i -lt 30 -and -not $token; $i++) {
+              Start-Sleep -Seconds 1
+              $m = Select-String -Path $out -Pattern 'token=(\S+)' -ErrorAction SilentlyContinue
+              if ($m) { $token = $m.Matches[0].Groups[1].Value }
+            }
+            if (-not $token) { throw "Could not read the app token from the server output" }
+            $base = "http://127.0.0.1:8766"
+            $h = @{ "X-JunkZero-Token" = $token }
+            $scan = @{ target_path = $target; skip_system_dirs = $true } | ConvertTo-Json
+            Invoke-RestMethod "$base/api/scan/start" -Method Post -Headers $h -ContentType "application/json" -Body $scan | Out-Null
+            for ($i = 0; $i -lt 60; $i++) {
+              Start-Sleep -Seconds 1
+              $status = Invoke-RestMethod "$base/api/scan/status" -Headers $h
+              if ($status.status -ne "running") { break }
+            }
+            $clean = @{ items = @(@{ path = $file }); permanent = $false; confirm_text = "DELETE" } | ConvertTo-Json -Depth 4
+            $result = Invoke-RestMethod "$base/api/clean" -Method Post -Headers $h -ContentType "application/json" -Body $clean
+            if ($result.deleted_count -ne 1) { throw "Delete failed: $($result | ConvertTo-Json -Depth 5)" }
+            if (Test-Path $file) { throw "The file is still there after the delete" }
+            $history = Invoke-RestMethod "$base/api/history" -Headers $h
+            $restore = @{ timestamp = $history.history[0].timestamp } | ConvertTo-Json
+            $restored = Invoke-RestMethod "$base/api/history/restore" -Method Post -Headers $h -ContentType "application/json" -Body $restore
+            if (-not (Test-Path $file)) { throw "Restore did not put the file back: $($restored | ConvertTo-Json -Depth 5)" }
+            Write-Host "Deleted to the Recycle Bin and restored $file"
+          } finally {
+            Stop-Process -Id $server.Id -Force
+          }
+      - name: Build the installer and the portable zip
+        shell: pwsh
+        run: |
+          $version = python -c "import app; print(app.__version__)"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$version" packaging\JunkZero.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          if (-not (Test-Path dist\JunkZero-Setup.exe)) { throw "No installer was made" }
+          # Portable: the same folder in a zip, run JunkZero.exe from wherever it is unpacked
+          Compress-Archive -Path dist\JunkZero -DestinationPath dist\JunkZero-Windows-portable.zip -Force
+      - name: Smoke test the installer and uninstaller
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "JunkZero-installed"
+          $p = Start-Process dist\JunkZero-Setup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Setup exited with $($p.ExitCode)" }
+          if (-not (Test-Path (Join-Path $dir "JunkZero.exe"))) { throw "Setup did not install JunkZero.exe" }
+          # A scheduled scan the uninstaller must remove (name as in app/engine/scheduler.py)
+          $task = "JunkZero Scheduled Scan"
+          schtasks /Create /F /SC DAILY /ST 09:00 /TN $task /TR "cmd /c exit 0" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not create the test task" }
+          Start-Process (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          # The uninstaller hands over to a copy of itself, so wait for it to finish
+          for ($i = 0; $i -lt 60 -and (Test-Path (Join-Path $dir "JunkZero.exe")); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path (Join-Path $dir "JunkZero.exe")) { throw "Uninstall left JunkZero.exe behind" }
+          $still = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            schtasks /Query /TN $task 2>$null | Out-Null
+            $still = ($LASTEXITCODE -eq 0)
+            if (-not $still) { break }
+            Start-Sleep -Seconds 1
+          }
+          if ($still) { throw "Uninstall left the scheduled scan behind" }
+          Write-Host "Installer and uninstaller work; the scheduled scan was removed"
+          # schtasks /Query exits 1 once the task is gone, which would otherwise fail the step
+          exit 0
+      # Per-run download for testers: the folder build (unzip, run JunkZero.exe)
       - uses: actions/upload-artifact@v4
         with:
           name: JunkZero-exe
-          path: dist/JunkZero.exe
+          path: dist/JunkZero/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JunkZero-Windows
+          path: |
+            dist/JunkZero-Setup.exe
+            dist/JunkZero-Windows-portable.zip
           if-no-files-found: error
 
   build-mac:
@@ -109,10 +205,17 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: JunkZero-exe
+          name: JunkZero-Windows
+          path: assets
       - uses: actions/download-artifact@v4
         with:
           name: JunkZero-macOS
+          path: assets
+      - name: Checksums
+        working-directory: assets
+        run: |
+          sha256sum JunkZero-Setup.exe JunkZero-Windows-portable.zip JunkZero-macOS.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
       - name: Work out the version and release notes
         id: version
         run: |
@@ -143,4 +246,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$TAG" JunkZero.exe JunkZero-macOS.zip --title "JunkZero $TAG" --notes-file notes.md --target "$GITHUB_SHA"
+          gh release create "$TAG" assets/JunkZero-Setup.exe assets/JunkZero-Windows-portable.zip \
+            assets/JunkZero-macOS.zip assets/SHA256SUMS.txt \
+            --title "JunkZero $TAG" --notes-file notes.md --target "$GITHUB_SHA"

@@ -192,6 +192,62 @@ test('exclusion rules match like the server: paths cover what is inside, pattern
   assert.equal(context.exclusionRuleFor('/d/x', []), null);
 });
 
+test('a deleted folder covers what is inside it, not a sibling that starts with the same name', () => {
+  assert.equal(context.pathIsWithin('C:\\foo\\bar\\x.tmp', 'C:\\foo\\bar'), true);
+  assert.equal(context.pathIsWithin('c:\\FOO\\bar', 'C:\\foo\\bar\\'), true);
+  assert.equal(context.pathIsWithin('C:\\foo\\bar2\\x.tmp', 'C:\\foo\\bar'), false);
+  assert.equal(context.pathIsWithin('C:\\foo\\bar2', 'C:\\foo\\bar'), false);
+  assert.equal(context.pathIsWithin('/home/me/a/b', '/home/me/a'), true);
+  assert.equal(context.pathIsWithin('/home/me/ab', '/home/me/a'), false);
+  assert.equal(context.pathIsWithin('/home/me', ''), false);
+});
+
+test('scan steps have plain-language labels, unknown steps none', () => {
+  assert.equal(context.scanPhaseLabel('walking'), 'Scanning folders');
+  assert.equal(context.scanPhaseLabel('leftovers'), 'Checking program leftovers');
+  assert.equal(context.scanPhaseLabel('empty_folders'), 'Looking for empty folders');
+  assert.equal(context.scanPhaseLabel('duplicates'), 'Comparing duplicates');
+  assert.equal(context.scanPhaseLabel(undefined), '');
+  assert.equal(context.scanPhaseLabel('something-new'), '');
+});
+
+test('delete progress reads "Deleting 1,200 of 3,000" with a matching bar', () => {
+  assert.equal(context.deleteProgressText({ running: true, done: 1200, total: 3000 }), 'Deleting 1,200 of 3,000');
+  assert.equal(context.deleteProgressPercent({ running: true, done: 1200, total: 3000 }), 40);
+  // Not started yet, finished, or nothing known: no made-up numbers
+  assert.equal(context.deleteProgressText({ running: false, done: 0, total: 0 }), 'Deleting...');
+  assert.equal(context.deleteProgressText(null), 'Deleting...');
+  assert.equal(context.deleteProgressPercent({ running: true, done: 0, total: 0 }), null);
+  assert.equal(context.deleteProgressText({ running: true, done: 5000, total: 3000 }), 'Deleting 3,000 of 3,000');
+});
+
+test('the error list copies as one path and reason per line', () => {
+  assert.equal(context.errorListText([{ path: 'C:\\a.tmp', error: 'In use' }, { path: '/b', error: 'Denied' }]),
+    'C:\\a.tmp\tIn use\n/b\tDenied');
+  assert.equal(context.errorListText([]), '');
+  assert.equal(context.errorListText(undefined), '');
+});
+
+test('update check wording: newer version with a link, up to date, or the error', () => {
+  const newer = context.updateCheckMessage({ current: '1.2.0', latest: '1.3.0', newer: true, url: 'https://x/r', error: '' });
+  assert.equal(newer.text, 'JunkZero 1.3.0 is available (you have 1.2.0).');
+  assert.equal(newer.url, 'https://x/r');
+  const same = context.updateCheckMessage({ current: '1.2.0', latest: '1.2.0', newer: false, url: 'https://x/r', error: '' });
+  assert.equal(same.text, 'You have the latest version (1.2.0).');
+  assert.equal(same.url, '');
+  const failed = context.updateCheckMessage({ current: '1.2.0', latest: null, newer: false, url: '', error: 'offline' });
+  assert.equal(failed.text, 'Could not check for updates: offline');
+});
+
+test('Tab wraps around inside a dialog and leaves the middle alone', () => {
+  assert.equal(context.trappedFocusIndex(3, 2, false), 0);
+  assert.equal(context.trappedFocusIndex(3, 0, true), 2);
+  assert.equal(context.trappedFocusIndex(3, 1, false), -1);
+  assert.equal(context.trappedFocusIndex(3, -1, false), 0);
+  assert.equal(context.trappedFocusIndex(3, -1, true), 2);
+  assert.equal(context.trappedFocusIndex(0, -1, false), -1);
+});
+
 test('delete dialog says what happens on each disk when it is not simply the Trash', () => {
   const lines = context.deletePreviewLines({
     count: 6, bytes_formatted: '6 KB', personal_count: 0, cloud: {}, no_recycle_count: 3, truncated: false,
