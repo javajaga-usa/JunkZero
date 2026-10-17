@@ -526,3 +526,14 @@ def test_cleanup_hints(monkeypatch):
     assert api_client().get("/api/system/cleanup-hints").json() == {"hints": []}
     monkeypatch.setattr(main.locations, "system_cleanup_hints", lambda: [{"name": "Windows Update"}], raising=False)
     assert api_client().get("/api/system/cleanup-hints").json() == {"hints": [{"name": "Windows Update"}]}
+
+
+def test_full_lists_saved_before_round_9_are_still_used(tmp_path):
+    # Records saved with "full_details" keep their full list in cleanups/<timestamp with 3 decimals>.json
+    ts = 1792000000.25
+    storage.write_json("history.json", [{"timestamp": ts, "source": "test", "paths": ["a"], "full_details": True}])
+    (storage.data_dir() / storage.CLEANUPS_DIR).mkdir(parents=True, exist_ok=True)
+    storage.write_json(f"{storage.CLEANUPS_DIR}/{ts:.3f}.json", {"paths": ["a", "b", "c"], "held": {}, "trash_ids": {}})
+    assert storage.find_cleanup(ts)["paths"] == ["a", "b", "c"]
+    storage.clear_history()
+    assert os.listdir(storage.data_dir() / storage.CLEANUPS_DIR) == []

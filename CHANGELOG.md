@@ -13,7 +13,7 @@
 - Junk only an administrator can remove (Windows Update downloads, `Windows.old`, `C:\Windows\Temp`) is shown in a read-only **Windows cleanup that needs admin** panel that points to Windows Disk Cleanup and Storage Sense. JunkZero still doesn't delete it.
 
 ### Deleting and restoring
-- Big cleanups can be fully restored: history keeps every path, not just the first 500.
+- Items set aside in a holding folder are erased after 7 days only when a cleanup record names them; a cleanup's full list is kept until its set-aside items are gone, even after its history entry is cleared, so nothing in a holding folder is erased without a record.
 - Large deletes are much faster (items go to the Recycle Bin in batches of about 100, and drive settings are looked up once per drive), and restoring reads the Recycle Bin once instead of once per item.
 - While a delete runs, the dialog shows "Deleting 1,200 of 3,000" with a progress bar and a **Cancel** button. Cancel stops after the current batch; what wasn't reached is left in place and the result says how many.
 - Closing the window while a delete runs is blocked until it finishes, and only one copy of JunkZero runs at a time (opening it again brings up the running one).
@@ -46,6 +46,30 @@
 
 ## [1.2.0] - 2026-10-16
 
+### Restore brings back everything
+- Cleanup History kept only the first 500 items of a cleanup, so Restore could put back only those. Every item of a cleanup, and where it went, is now kept in its own file next to the history, and Restore uses all of it.
+- For cleanups recorded before this, Restore also puts back everything still in that cleanup's holding folder batch (each item's place is its path inside the batch), never over something that is already there.
+- A move to the holding folder that fails no longer leaves empty folders behind in it.
+
+### Read-only and locked files
+- On a Mac, FAT, exFAT, NTFS and network disks show the Windows read-only attribute as Finder's Locked flag, so old Windows files there could not be deleted ("locked"). JunkZero now clears that attribute on your own files and finishes the delete, as it does on Windows.
+- Files you locked in Finder on a Mac disk are still never unlocked on their own: the message offers **Unlock and delete**, which unlocks only those items (never the folder holding them, and never system-locked files) and deletes them.
+
+### Seeing what you delete
+- The results show "Showing 500 of 7,002" whenever the list hasn't drawn every matching item, and **Show all** draws them (up to 20,000).
+- **Select All** says when it ticked items further down the list than shown, and the delete dialog warns about them and asks for DELETE typed before going ahead.
+
+### Permission problems fixed or explained
+- Permanent deletes no longer stop at read-only files or folders that are your own (the read-only attribute on Windows, a read-only folder on a Mac or Linux): JunkZero makes them writable and finishes. It never does this to what belongs to another account or the system, or to what you locked.
+- When a delete is refused, it says why in plain words and what fixes it: macOS privacy settings (with the app to give Full Disk Access and an **Open Privacy & Security** button), a file locked in Finder (how to unlock it), a file that belongs to another account or the system (JunkZero doesn't use administrator rights), a folder you can't change, a read-only disk, or Windows denying access. These messages stay on screen until dismissed.
+- Scans report the folders they weren't allowed to read instead of skipping them silently, and on a Mac tell macOS privacy blocks apart, with the same button.
+
+### Deletes that fit the disk
+- JunkZero now tells you, before deleting, what will happen on each disk, by name and format: "J Red (exFAT): 12 items go to a hidden JunkZero folder on that disk for 7 days instead of the Trash, because on exFAT disks macOS may erase items instead of keeping them in the Trash." When every selected item goes to the holding folder, the dialog's message, mode and button say so.
+- A note under the scan location says the same as soon as you pick a disk whose deletes won't use the Trash, or that is read-only.
+- Read-only disks (a CD or DVD, or an NTFS disk on a Mac, which macOS can only read) are named as such, and nothing is attempted there; when every selected item is on one, the delete button stays off.
+- The delete does exactly what the dialog said: Windows fixed drives and APFS/Mac OS Extended disks use the Recycle Bin or Trash; USB drives, memory cards, network drives, RAM disks, and on a Mac exFAT, FAT and NTFS disks use the holding folder; items too big for a Windows drive's Recycle Bin, or on one set to erase files at once, also go to the holding folder, with the reason given.
+
 ### Exclude from the results table
 - Each result has an **Exclude** checkbox before its category. Ticking it adds the item to Exclusions: the row is greyed out and can't be ticked for deletion, and later scans don't list it until it is removed under **Exclusions** at the top. Unticking undoes it. This replaces the hide icon in the row's actions.
 - Excluded items can't be deleted from any screen, including Folder Explorer, and neither can a folder that holds one; the delete says which exclusion is in the way.
@@ -54,6 +78,8 @@
 - Found items appear in the results table while a scan or file type search is still running (refreshed twice a second), instead of only when it finishes. They can be inspected, ticked and deleted right away; empty folders and duplicates still appear at the end, since finding them needs the whole scan.
 
 ### Mac fixes
+- Deleting from an exFAT, FAT or NTFS disk (most USB drives and memory cards, and disks shared with Windows) no longer risks erasing items for good. On those disks macOS can erase an item at once when asked to move it to the Trash, so JunkZero now keeps it in its hidden holding folder on that disk for 7 days instead, restorable from Cleanup History, as it already did for network drives. Only the startup disk and APFS or Mac OS Extended disks use the Trash.
+- Carbon Copy Cloner's `_CCC SafetyNet` folder counts as a backup: it is never scanned or deleted from.
 - Deleting to the Trash no longer fails with "Insufficient access privileges for operation" when running from source. `requirements.txt` now includes `pyobjc-framework-Cocoa` on macOS, which lets the Trash use Apple's current API, and `run.command` installs anything missing on launch (creating `.venv` the first time). If the package is still missing, JunkZero says so when it starts and in the delete error, with the command that fixes it.
 - Browse opens the folder picker in front instead of behind the browser, starts at the current scan location (or without one, if macOS won't open it there), and says when the picker can't open. In JunkZero's own window it uses the window's folder picker.
 - The drive button is highlighted only while the scan location is that whole drive, so a chosen subfolder no longer looks like the drive is still selected.

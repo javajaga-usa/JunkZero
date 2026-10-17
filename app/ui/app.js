@@ -173,7 +173,13 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
   Object.entries(summary.cloud || {}).forEach(([provider, n]) => {
     lines.push({ level: 'warning', text: `${plural(n, 'item')} in ${provider}: deleting also removes ${n === 1 ? 'it' : 'them'} from the cloud and your other devices` });
   });
-  if (summary.no_recycle_count) {
+  if (Array.isArray(summary.disks)) {
+    // What happens on each disk: say it whenever it isn't simply "goes to the Trash"
+    const unusual = summary.disks.some((d) => d.destination === 'holding' || d.destination === 'read_only');
+    if (unusual || summary.disks.length > 1) {
+      summary.disks.forEach((d) => lines.push(diskLine(d, trashName)));
+    }
+  } else if (summary.no_recycle_count) {
     lines.push({ level: 'info', text: `${plural(summary.no_recycle_count, 'item')} on a drive without a ${trashName} (USB or network): JunkZero keeps ${summary.no_recycle_count === 1 ? 'it' : 'them'} in a hidden folder on that drive for 7 days, and you can restore ${summary.no_recycle_count === 1 ? 'it' : 'them'} from Cleanup History` });
   }
   if (summary.truncated) {
@@ -191,6 +197,51 @@ function deletePreviewLines(summary, trashName = 'Recycle Bin') {
     lines.push({ level: 'info', text: `Types: ${summary.types.map((t) => `${t.type} ${t.count.toLocaleString()}`).join(', ')}` });
   }
   return lines;
+}
+
+// What to say after a scan about folders it couldn't read ('' when there were none)
+function unreadableText(stats) {
+  const n = Number(stats?.unreadable_dirs) || 0;
+  if (!n) return '';
+  const folders = `${n.toLocaleString()} folder${n === 1 ? '' : 's'}`;
+  const example = (stats.unreadable_examples || [])[0];
+  const such = example ? `, such as ${example}` : '';
+  const blocked = Number(stats.privacy_blocked_dirs) || 0;
+  if (blocked) {
+    return `macOS kept JunkZero out of ${folders}${such}, so ${n === 1 ? 'it wasn\'t' : 'they weren\'t'} scanned. ${stats.privacy_fix || 'Give JunkZero Full Disk Access in System Settings > Privacy & Security > Full Disk Access, then restart JunkZero'}.`;
+  }
+  return `${folders} couldn't be read (no permission)${such}, so ${n === 1 ? 'it wasn\'t' : 'they weren\'t'} scanned.`;
+}
+
+// The delete dialog's warning when some selected items were never drawn in the list
+function unseenLine(unseen, total) {
+  return `${Number(unseen).toLocaleString()} of these ${Number(total).toLocaleString()} items are further down the list and haven't been shown. Cancel and use Show all to look through them first, or type DELETE to go ahead.`;
+}
+
+// One line of the delete dialog for one disk (from /api/delete-preview "disks")
+function diskLine(d, trashName = 'Recycle Bin', holdingDays = 7) {
+  const where = `${d.name}${d.fs_label ? ` (${d.fs_label})` : ''}`;
+  const n = `${Number(d.count).toLocaleString()} item${Number(d.count) === 1 ? '' : 's'}`;
+  const size = d.bytes_formatted ? ` (${d.bytes_formatted})` : '';
+  if (d.destination === 'read_only') {
+    return { level: 'warning', text: `${where}: ${n} can't be deleted: ${d.reason}` };
+  }
+  if (d.destination === 'holding') {
+    return { level: 'info', text: `${where}: ${n}${size} go to a hidden JunkZero folder on that disk for ${holdingDays} days instead of the ${trashName}, because ${d.reason}. Restore them from Cleanup History.` };
+  }
+  if (d.destination === 'erase') return { level: 'info', text: `${where}: ${n}${size} erased permanently` };
+  return { level: 'info', text: `${where}: ${n}${size} go to the ${trashName}` };
+}
+
+// The note under the scan location when deleting there won't simply use the Trash (or can't delete)
+function diskNoteText(info, trashName = 'Recycle Bin') {
+  if (!info || !info.destination || info.destination === 'trash') return '';
+  const fs = info.fs_label ? ` (${info.fs_label})` : '';
+  const days = info.holding_days || 7;
+  if (info.destination === 'read_only') {
+    return `${info.name}${fs}: JunkZero can scan it, but can't delete anything on it, because ${info.reason}.`;
+  }
+  return `${info.name}${fs}: deleted items go to a hidden JunkZero folder on this disk for ${days} days instead of the ${trashName}, because ${info.reason}. You can restore them from Cleanup History.`;
 }
 
 // Exclusion rules, as app/engine/exclusions.py matches them: a rule with *, ? or [ is a pattern
@@ -343,6 +394,8 @@ if (!window.lucide) window.lucide = { createIcons() {} };
 
 // The table shows this many rows at a time ("Show more" adds another page), so large scans stay responsive
 const TABLE_PAGE_SIZE = 500;
+// "Show all" draws every row up to this many (more would make the window sluggish)
+const SHOW_ALL_LIMIT = 20000;
 // While a scan runs, the results table is redrawn at most this often, so found items show
 // up right away without the table redrawing on every single item
 const LIVE_RENDER_MS = 500;
@@ -418,6 +471,8 @@ const state = {
   hierarchySelectedPaths: new Set(),
   initialTargetFilePath: null,
   deleteConfirmCallback: null,
+  confirmNothingDeletable: false, // Every selected item is on a read-only disk
+  confirmUnseen: 0,       // Selected items the table hasn't drawn yet (in the open delete dialog)
 
   // Delete mode: Recycle Bin unless the user explicitly switches to permanent.
   // Deliberately not persisted, so every launch starts in the safe mode.
@@ -432,6 +487,8 @@ const el = {
   statusText: document.getElementById('statusText'),
   driveButtons: document.getElementById('driveButtons'),
   targetPathInput: document.getElementById('targetPathInput'),
+  shownCount: document.getElementById('shownCount'),
+  diskNote: document.getElementById('diskNote'),
   btnBrowse: document.getElementById('btnBrowse'),
 
   // Option Checkboxes
@@ -817,17 +874,46 @@ function setupDialogs() {
   });
 }
 
-// A problem with how JunkZero was installed: stays on screen until dismissed
-function showSetupWarning(message) {
+// A message that stays on screen until dismissed, optionally with one action button
+function showStickyToast(message, { type = 'error', actionLabel = '', onAction = null } = {}) {
   const toast = document.createElement('div');
-  toast.className = 'toast toast-error toast-sticky';
-  toast.setAttribute('role', 'alert');
-  toast.innerHTML = '<i data-lucide="circle-alert" class="toast-icon"></i><span></span>'
+  toast.className = `toast toast-${type} toast-sticky`;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  toast.innerHTML = `<i data-lucide="${type === 'error' ? 'circle-alert' : 'info'}" class="toast-icon"></i>`
+    + '<div class="toast-body"><span></span></div>'
     + '<button type="button" class="toast-close" aria-label="Dismiss" title="Dismiss">&times;</button>';
   toast.querySelector('span').textContent = message;
+  if (actionLabel && onAction) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-secondary btn-sm toast-action';
+    btn.textContent = actionLabel;
+    btn.addEventListener('click', onAction);
+    toast.querySelector('.toast-body').appendChild(btn);
+  }
   toast.querySelector('.toast-close').addEventListener('click', () => toast.remove());
   el.toastContainer.appendChild(toast);
   lucide.createIcons({ root: toast });
+  return toast;
+}
+
+// A problem with how JunkZero was installed: stays on screen until dismissed
+function showSetupWarning(message) {
+  showStickyToast(message);
+}
+
+// macOS privacy settings kept JunkZero out of something: say so, with a way to fix it
+function showPrivacyNotice(message) {
+  showStickyToast(message, {
+    actionLabel: 'Open Privacy & Security',
+    onAction: async () => {
+      try {
+        await apiJson('/api/system/open-privacy-settings', { method: 'POST' });
+      } catch (err) {
+        showToast(`Could not open System Settings: ${err.message}`, 'error');
+      }
+    },
+  });
 }
 
 // App Initialization
@@ -990,6 +1076,10 @@ function setupEventListeners() {
     state.filteredItems.forEach((i) => { if (!i.excluded_by) state.selectedIds.add(i.id); });
     renderTable();
     updateSelectionSummary();
+    const unseen = unseenSelected(visibleSelectedItems()).length;
+    if (unseen) {
+      showToast(`Selected ${visibleSelectedItems().length.toLocaleString()} items. ${unseen.toLocaleString()} of them are further down the list than shown: use Show all to look through them before deleting.`, 'info');
+    }
   });
 
   el.btnSelectAllSafe.addEventListener('click', () => {
@@ -1035,9 +1125,10 @@ function setupEventListeners() {
     const totalBytes = selectedItems.reduce((acc, i) => acc + i.size_bytes, 0);
     requestDeleteConfirmation({
       title: 'Confirm Deletion',
-      subtitle: `${selectedItems.length} garbage items will be removed`,
+      subtitle: `${selectedItems.length.toLocaleString()} items will be removed`,
       count: selectedItems.length,
       size: formatSize(totalBytes),
+      unseen: unseenSelected(selectedItems).length,
       preview: { source: 'scan', paths: selectedItems.map((i) => i.path) },
       onConfirm: async (confirmText) => {
         await executeBatchDelete(selectedItems, confirmText);
@@ -1306,12 +1397,39 @@ async function loadAvailableDrives() {
   }
 }
 
+// Say under the scan location when deleting there won't use the Trash, or can't delete at all
+let diskNoteTimer = null;
+function scheduleDiskNote() {
+  clearTimeout(diskNoteTimer);
+  diskNoteTimer = setTimeout(updateDiskNote, 400);
+}
+
+async function updateDiskNote() {
+  const path = el.targetPathInput.value.trim();
+  let text = '';
+  let level = 'info';
+  if (path) {
+    try {
+      const info = await apiJson(`/api/system/disk-info?path=${encodeURIComponent(path)}`);
+      if (el.targetPathInput.value.trim() !== path) return;  // the path changed meanwhile
+      text = diskNoteText(info, t('Recycle Bin'));
+      level = info.destination === 'read_only' ? 'warning' : 'info';
+    } catch (err) {
+      text = '';
+    }
+  }
+  el.diskNote.textContent = text;
+  el.diskNote.dataset.level = level;
+  el.diskNote.classList.toggle('hidden', !text);
+}
+
 // Highlight the drive button only when the scan location is that whole drive
 function syncDrivePills() {
   const current = el.targetPathInput.value.trim();
   document.querySelectorAll('.drive-pill').forEach((b) => {
     b.classList.toggle('active', samePath(b.dataset.path, current));
   });
+  scheduleDiskNote();
 }
 
 // Scanning Engine Controller
@@ -1516,6 +1634,7 @@ function onScanCompleted(finalStats = null, changes = null, error = '', { stream
       const count = state.newPaths.size;
       note = count ? ` ${count.toLocaleString()} new since the last scan.` : ' Nothing new since the last scan.';
     }
+    notifyUnreadable(finalStats);
     if (state.typeSearchOnly) {
       const n = finalStats.garbage_count;
       showToast(n ? `Found ${plural(n, 'file')} of your chosen types. Tick the ones to remove, then Delete.`
@@ -1536,6 +1655,14 @@ function updateScanProgress(stats) {
   el.scanMetricsRate.textContent = `${(Number(stats.garbage_count) || 0).toLocaleString()} found (${formatSize(stats.garbage_bytes)})`;
   const label = scanPhaseLabel(stats.phase);
   if (label && state.isScanning) el.scanProgressText.textContent = `${label}...`;
+}
+
+// Folders the scan wasn't allowed to read are reported, never silently skipped
+function notifyUnreadable(stats) {
+  const message = unreadableText(stats);
+  if (!message) return;
+  if (stats.privacy_blocked_dirs) showPrivacyNotice(message);
+  else showStickyToast(message, { type: 'info' });
 }
 
 function updateMetrics(stats) {
@@ -1833,11 +1960,28 @@ function renderTable() {
           <button type="button" class="btn btn-secondary btn-show-more">
             Show ${Math.min(remaining, TABLE_PAGE_SIZE).toLocaleString()} more (${remaining.toLocaleString()} not shown yet)
           </button>
+          ${remaining > TABLE_PAGE_SIZE && state.filteredItems.length <= SHOW_ALL_LIMIT ? `
+          <button type="button" class="btn btn-ghost btn-show-all">Show all ${state.filteredItems.length.toLocaleString()}</button>` : ''}
         </td>
       </tr>` : '';
 
   el.fileTableBody.innerHTML = html + moreRow;
   lucide.createIcons({ root: el.fileTableBody });
+  updateShownCount(shown.length);
+}
+
+// "Showing 500 of 7,002" whenever the table hasn't drawn every matching item yet
+function updateShownCount(shownCount) {
+  const total = state.filteredItems.length;
+  el.shownCount.textContent = shownCount < total
+    ? `Showing ${shownCount.toLocaleString()} of ${total.toLocaleString()}` : '';
+  el.shownCount.classList.toggle('hidden', shownCount >= total);
+}
+
+// Ticked items that the table hasn't drawn yet (further down than "Show more")
+function unseenSelected(items) {
+  const drawn = new Set(state.filteredItems.slice(0, state.renderLimit).map((i) => i.id));
+  return items.filter((i) => !drawn.has(i.id));
 }
 
 // Table events are handled once on the table body (rows are re-rendered often)
@@ -1864,6 +2008,11 @@ function bindTableEvents() {
   el.fileTableBody.addEventListener('click', async (e) => {
     if (e.target.closest('.btn-show-more')) {
       state.renderLimit += TABLE_PAGE_SIZE;
+      renderTable();
+      return;
+    }
+    if (e.target.closest('.btn-show-all')) {
+      state.renderLimit = state.filteredItems.length;
       renderTable();
       return;
     }
@@ -2189,11 +2338,11 @@ function closeHierarchyModal() {
 }
 
 // Delete Entire Folder Level Handler
-async function executeDeleteFolder(folderPath, confirmText = '') {
+async function executeDeleteFolder(folderPath, confirmText = '', { unlock = false } = {}) {
   try {
     const result = await apiJson('/api/filesystem/delete-folder', {
       method: 'POST',
-      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete, confirm_text: confirmText }),
+      body: JSON.stringify({ path: folderPath, permanent: state.permanentDelete, confirm_text: confirmText, unlock }),
     });
     if (result.deleted_count > 0) {
       const verb = result.mode === 'permanent' ? 'Permanently deleted'
@@ -2211,8 +2360,7 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
         closeHierarchyModal();
       }
     } else if (result.failed_count > 0) {
-      showToast(`Could not delete folder: ${result.errors[0]?.error || 'Locked or permission denied'}`, 'error',
-        { details: result.errors });
+      showDeleteOutcome(result, { retryUnlock: () => executeDeleteFolder(folderPath, confirmText, { unlock: true }) });
     }
   } catch (err) {
     showToast(`Folder deletion failed: ${err.message}`, 'error');
@@ -2220,7 +2368,7 @@ async function executeDeleteFolder(folderPath, confirmText = '') {
 }
 
 // Batch Deletion of scan results (Recycle Bin or permanent, per the current delete mode)
-async function executeBatchDelete(items, confirmText = '') {
+async function executeBatchDelete(items, confirmText = '', { unlock = false } = {}) {
   const job = startCleanProgress();
   try {
     const result = await apiJson('/api/clean', {
@@ -2229,9 +2377,12 @@ async function executeBatchDelete(items, confirmText = '') {
         items: items.map((i) => ({ path: i.path })),
         permanent: state.permanentDelete,
         confirm_text: confirmText,
+        unlock,
       }),
     });
-    showDeleteOutcome(result);
+    showDeleteOutcome(result, {
+      retryUnlock: (paths) => executeBatchDelete(items.filter((i) => paths.includes(i.path)), confirmText, { unlock: true }),
+    });
 
     // After Cancel, items not reached yet were left alone. Without their paths we can't tell
     // which rows are gone, so the table stays as it is until the next scan.
@@ -2322,13 +2473,15 @@ function setDeleting(deleting) {
 }
 
 // Files and folders picked in Folder Explorer
-async function executeExplorerDelete(paths, confirmText = '') {
+async function executeExplorerDelete(paths, confirmText = '', { unlock = false } = {}) {
   try {
     const result = await apiJson('/api/filesystem/delete-paths', {
       method: 'POST',
-      body: JSON.stringify({ paths, permanent: state.permanentDelete, confirm_text: confirmText }),
+      body: JSON.stringify({ paths, permanent: state.permanentDelete, confirm_text: confirmText, unlock }),
     });
-    showDeleteOutcome(result);
+    showDeleteOutcome(result, {
+      retryUnlock: (locked) => executeExplorerDelete(paths.filter((p) => locked.includes(p)), confirmText, { unlock: true }),
+    });
     if (result.deleted_count > 0) {
       const failed = new Set((result.errors || []).map((e) => e.path));
       const gone = paths.filter((p) => !failed.has(p));
@@ -2341,7 +2494,7 @@ async function executeExplorerDelete(paths, confirmText = '') {
   }
 }
 
-function showDeleteOutcome(result) {
+function showDeleteOutcome(result, { retryUnlock = null } = {}) {
   const held = Object.keys(result.held || {}).length;
   if (result.deleted_count > 0) {
     if (result.mode === 'permanent') {
@@ -2352,7 +2505,7 @@ function showDeleteOutcome(result) {
         showToast(t(`Moved ${binned} item(s) to the Recycle Bin. Empty it to free the space.`), 'success');
       }
       if (held > 0) {
-        showToast(t(`${held} item(s) on a drive without a Recycle Bin were set aside in a hidden JunkZero folder on that drive for 7 days. Restore them from Cleanup History.`), 'info');
+        showToast(t(`${held} item(s) were moved to a hidden JunkZero folder on their disk for 7 days instead of the Recycle Bin, because that disk can't keep them there safely. Restore them from Cleanup History.`), 'info');
       }
     }
   }
@@ -2365,8 +2518,26 @@ function showDeleteOutcome(result) {
   }
   if (result.failed_count > 0) {
     const errors = result.errors || [];
-    const reason = errors.length === 1 ? `: ${errors[0].error}` : '';
-    showToast(`${plural(result.failed_count, 'item')} couldn't be removed${reason}`, 'error', { details: errors });
+    const privacy = errors.filter((e) => e.kind === 'mac_privacy');
+    const locked = retryUnlock ? errors.filter((e) => e.kind === 'locked') : [];
+    const rest = errors.filter((e) => e.kind !== 'mac_privacy' && !locked.includes(e));
+    if (locked.length) {
+      // Locked on purpose (Finder's Locked): only unlocked when the user says so
+      const toast = showStickyToast(`${locked.length.toLocaleString()} item(s) were not deleted because they are locked (in Finder, File > Get Info > Locked). Unlock them and delete them as well?`, {
+        actionLabel: 'Unlock and delete',
+        onAction: () => { toast.remove(); retryUnlock(locked.map((e) => e.path)); },
+      });
+    }
+    if (privacy.length) {
+      showPrivacyNotice(`${privacy.length} item(s) were not deleted: ${privacy[0].error.replace(/^Can't delete: /, '')}`);
+    }
+    if (rest.length) {
+      const first = rest[0]?.error || 'locked or protected';
+      const more = rest.length > 1 ? ` (and ${rest.length - 1} more)` : '';
+      const message = `${plural(rest.length, 'item')} couldn't be removed: ${first}${more}`;
+      // Errors stay on screen until dismissed, with every item and its reason under Show details
+      showToast(message, 'error', { details: rest });
+    }
   }
 }
 
@@ -2384,8 +2555,9 @@ function setDeleteMode(permanent) {
 }
 
 // Universal Deletion Confirmation Modal
-function requestDeleteConfirmation({ title, subtitle, count, size, preview, onConfirm }) {
+function requestDeleteConfirmation({ title, subtitle, count, size, preview, onConfirm, unseen = 0 }) {
   const permanent = state.permanentDelete;
+  state.confirmUnseen = unseen;
   el.confirmModalTitle.textContent = title;
   el.confirmModalSubtitle.textContent = subtitle;
   el.confirmCount.textContent = count.toLocaleString();
@@ -2415,6 +2587,7 @@ function requestDeleteConfirmation({ title, subtitle, count, size, preview, onCo
   el.confirmTyped.classList.add('hidden');
   el.confirmTypedInput.value = '';
   state.confirmNeedsTyped = false;
+  state.confirmNothingDeletable = false;
   state.confirmPreviewPending = Boolean(preview);
   updateExecuteEnabled();
 
@@ -2428,7 +2601,23 @@ function requestDeleteConfirmation({ title, subtitle, count, size, preview, onCo
 function updateExecuteEnabled() {
   const ackOk = !state.permanentDelete || el.confirmPermanentAckInput.checked;
   const typedOk = !state.confirmNeedsTyped || el.confirmTypedInput.value.trim().toUpperCase() === 'DELETE';
-  el.btnExecuteDelete.disabled = state.confirmPreviewPending || !ackOk || !typedOk;
+  el.btnExecuteDelete.disabled = state.confirmPreviewPending || state.confirmNothingDeletable || !ackOk || !typedOk;
+}
+
+// The dialog's main message and button follow what will really happen on these disks
+function applyDiskOutcome(disks) {
+  const dests = new Set(disks.map((d) => d.destination));
+  state.confirmNothingDeletable = disks.length > 0 && dests.size === 1 && dests.has('read_only');
+  if (state.confirmNothingDeletable) {
+    el.confirmWarningText.textContent = `Nothing selected can be deleted: ${disks[0].reason}.`;
+    return;
+  }
+  if (!state.permanentDelete && disks.length > 0 && [...dests].every((d) => d === 'holding' || d === 'read_only')) {
+    el.confirmMode.textContent = 'JunkZero holding folder (7 days)';
+    el.confirmWarningText.textContent = `These items can't safely go to the ${t('Recycle Bin')} on their disk, so JunkZero moves them to a hidden folder on that disk for 7 days. Restore them from Cleanup History until then; after that they are erased.`;
+    el.btnExecuteDelete.innerHTML = '<i data-lucide="archive"></i> Move to holding folder';
+    lucide.createIcons({ root: el.btnExecuteDelete });
+  }
 }
 
 async function loadDeletePreview(preview) {
@@ -2445,8 +2634,13 @@ async function loadDeletePreview(preview) {
       el.confirmCount.textContent = summary.count.toLocaleString();
       el.confirmSize.textContent = summary.bytes_formatted;
     }
-    state.confirmNeedsTyped = summary.needs_typed_confirm;
+    // Items the user hasn't seen in the list: say so, and ask for DELETE typed
+    state.confirmNeedsTyped = summary.needs_typed_confirm || state.confirmUnseen > 0;
+    applyDiskOutcome(summary.disks || []);
     lines = deletePreviewLines(summary, t('Recycle Bin'));
+    if (state.confirmUnseen > 0) {
+      lines.unshift({ level: 'warning', text: unseenLine(state.confirmUnseen, summary.count) });
+    }
   } catch (err) {
     if (state.confirmPreviewRequest !== request) return;
     // Couldn't check: be safe and ask for DELETE

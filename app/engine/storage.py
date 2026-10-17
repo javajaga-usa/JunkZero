@@ -15,6 +15,7 @@ HISTORY_LIMIT = 200          # Cleanup records kept
 HISTORY_PATHS_LIMIT = 500    # Paths shown per cleanup record (every path is kept in its own file)
 HISTORY_ERRORS_LIMIT = 200   # Errors kept per cleanup record
 CLEANUPS_DIR = "cleanups"    # One file per cleanup holding all of its paths, under the data folder
+CLEANUP_DETAILS_DIR = CLEANUPS_DIR  # Name used by records written before round 9
 SCAN_MEMORY_LIMIT = 20       # Scan targets remembered for "new since last scan"
 SCAN_MEMORY_PATHS_LIMIT = 50000  # Flagged paths remembered per target
 
@@ -208,10 +209,24 @@ def _cleanup_file(timestamp: float) -> Path:
     return folder / f"{timestamp:.6f}.json"
 
 
+def _cleanup_file_name(record: Dict[str, Any]) -> Optional[str]:
+    """The name of a cleanup's own file: "full_record", or for records saved with "full_details"
+    (before round 9) the timestamp with three decimals."""
+    name = record.get("full_record")
+    if isinstance(name, str) and name:
+        return os.path.basename(name)
+    if record.get("full_details"):
+        try:
+            return f"{float(record.get('timestamp')):.3f}.json"
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _read_cleanup_file(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Every path, held item and Trash id of a cleanup, from its own file (None for old records)."""
-    name = record.get("full_record")
-    if not isinstance(name, str) or not name:
+    name = _cleanup_file_name(record)
+    if not name:
         return None
     try:
         with open(data_dir() / CLEANUPS_DIR / os.path.basename(name), "r", encoding="utf-8") as f:
@@ -286,7 +301,7 @@ def _forget_cleanup_file(record: Dict[str, Any]) -> None:
     if full is None or full.get("held"):
         return
     try:
-        os.remove(data_dir() / CLEANUPS_DIR / os.path.basename(record["full_record"]))
+        os.remove(data_dir() / CLEANUPS_DIR / _cleanup_file_name(record))
     except OSError:
         pass
 
@@ -368,7 +383,7 @@ def forget_purged_cleanups(gone_batches: Iterable[str]) -> None:
     if not gone:
         return
     with _lock:
-        in_history = {r.get("full_record") for r in load_history()}
+        in_history = {_cleanup_file_name(r) for r in load_history()}
         folder = data_dir() / CLEANUPS_DIR
         try:
             names = [n for n in os.listdir(folder) if n.endswith(".json")]

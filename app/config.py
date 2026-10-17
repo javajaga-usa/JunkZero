@@ -128,8 +128,9 @@ BROKEN_DOWNLOAD_EXTENSIONS: Set[str] = {
 # (Git keeps empty folders such as .git/refs/heads that it needs to recognise the repo.)
 VCS_DIR_NAMES: Set[str] = {".git", ".svn", ".hg", ".bzr"}
 
-# Backup folders (Windows File History and system images, Time Machine): never scanned or deleted from
-BACKUP_DIR_NAMES: Set[str] = {"filehistory", "windowsimagebackup", "backups.backupdb"}
+# Backup folders (lowercase names): never scanned or deleted from. Windows File History and system
+# images, Time Machine, and Carbon Copy Cloner's SafetyNet (what CCC kept aside on a backup disk)
+BACKUP_DIR_NAMES: Set[str] = {"filehistory", "windowsimagebackup", "backups.backupdb", "_ccc safetynet"}
 BACKUP_DIR_SUFFIXES = (".backupbundle", ".sparsebundle")
 
 # Where JunkZero sets deleted items aside on drives that have no Recycle Bin (USB sticks, network shares)

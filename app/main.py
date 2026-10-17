@@ -30,9 +30,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.config import MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
+from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import (
-    changes, cleaner, deletecheck, filetypes, locations, osinfo, recycle, safeguards, scheduler, smart, storage,
+    changes, cleaner, deletecheck, filetypes, locations, osinfo, permissions, recycle, safeguards, scheduler, smart,
+    storage,
 )
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
@@ -193,12 +194,15 @@ class CleanRequest(BaseModel):
     permanent: bool = False
     # "DELETE", when the confirm dialog asked the user to type it
     confirm_text: str = ""
+    # The user chose "Unlock and delete" for items they had locked in Finder
+    unlock: bool = False
 
 
 class DeletePathsRequest(BaseModel):
     paths: List[str]
     permanent: bool = False
     confirm_text: str = ""
+    unlock: bool = False
 
 
 class DeletePreviewRequest(BaseModel):
@@ -220,6 +224,7 @@ class DeleteFolderRequest(BaseModel):
     path: str
     permanent: bool = False
     confirm_text: str = ""
+    unlock: bool = False
 
 
 class OpenFolderRequest(BaseModel):
@@ -642,6 +647,10 @@ async def api_start_scan(req: ScanRequest):
                     "is_completed": stats.is_completed,
                     "is_cancelled": stats.is_cancelled,
                     "phase": getattr(stats, "phase", "done"),
+                    "unreadable_dirs": stats.unreadable_dirs,
+                    "privacy_blocked_dirs": stats.privacy_blocked_dirs,
+                    "unreadable_examples": list(stats.unreadable_examples),
+                    "privacy_fix": permissions.mac_privacy_fix() if stats.privacy_blocked_dirs else "",
                 },
                 "error": error,
             }
@@ -750,6 +759,8 @@ def api_scan_status():
             "category_counts": dict(stats.category_counts),
             "category_bytes": dict(stats.category_bytes),
             "elapsed_seconds": stats.elapsed_seconds,
+            "unreadable_dirs": stats.unreadable_dirs,
+            "privacy_blocked_dirs": stats.privacy_blocked_dirs,
             "items_count": len(current_scanner.garbage_items),
         }
 
@@ -831,7 +842,7 @@ def api_clean_items(req: CleanRequest) -> CleanResult:
 
     _check_confirmation(deletecheck.summarize(_scan_entries(items), req.permanent, safeguards.cloud_folders()),
                         req.confirm_text)
-    result = _with_errors(delete_items(items, permanent=req.permanent), unknown)
+    result = _with_errors(delete_items(items, permanent=req.permanent, unlock=req.unlock), unknown)
     # Items a Cancel left untouched are the last ones: they were not deleted
     items = items[:len(items) - result.skipped_count]
     _record_history(result, [i["path"] for i in items], "scan results")
@@ -902,7 +913,8 @@ def api_delete_folder(req: DeleteFolderRequest) -> CleanResult:
         raise HTTPException(status_code=400, detail="Path does not exist")
     _check_confirmation(deletecheck.summarize(
         _explorer_entries([req.path]), req.permanent, safeguards.cloud_folders(), look_inside=True), req.confirm_text)
-    result = delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent)
+    result = delete_items([{"path": req.path, "is_directory": True, "size_bytes": 0}], permanent=req.permanent,
+                          unlock=req.unlock)
     _record_history(result, [req.path], "folder explorer")
     return result
 
@@ -915,7 +927,7 @@ def api_delete_paths(req: DeletePathsRequest) -> CleanResult:
     entries = _explorer_entries(req.paths)
     _check_confirmation(deletecheck.summarize(
         entries, req.permanent, safeguards.cloud_folders(), look_inside=True), req.confirm_text)
-    result = delete_items(entries, permanent=req.permanent)
+    result = delete_items(entries, permanent=req.permanent, unlock=req.unlock)
     _record_history(result, [e["path"] for e in entries[:len(entries) - result.skipped_count]], "folder explorer")
     return result
 
@@ -924,6 +936,16 @@ def api_delete_paths(req: DeletePathsRequest) -> CleanResult:
 def api_junk_locations():
     """Known junk locations (temp, caches, crash dumps, logs) that exist for this user."""
     return {"locations": [loc.to_dict() for loc in junk_locations()]}
+
+
+@app.post("/api/system/open-privacy-settings")
+def api_open_privacy_settings():
+    """Open System Settings > Privacy & Security > Full Disk Access (macOS), where the user can
+    let JunkZero (or the Terminal that runs it) see and clean every folder and disk."""
+    if not osinfo.is_macos():
+        raise HTTPException(status_code=501, detail="Privacy settings only apply on a Mac")
+    subprocess.Popen(["open", permissions.MAC_FULL_DISK_ACCESS_URL])
+    return {"success": True, "app": permissions.privacy_app()}
 
 
 @app.post("/api/system/open-recycle-bin")
@@ -1042,6 +1064,15 @@ def api_largest_items(req: LargestItemsRequest):
         return largest_items(req.path, req.file_limit, req.folder_limit, exclusions=storage.get_exclusions())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/system/disk-info")
+def api_disk_info(path: str = ""):
+    """The disk holding path, and what deleting from it does (Trash, holding folder or read-only)."""
+    path = path.strip()
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Path not found")
+    return {**recycle.disk_info(path), "holding_days": HOLDING_DAYS}
 
 
 @app.get("/api/system/downloads-folder")

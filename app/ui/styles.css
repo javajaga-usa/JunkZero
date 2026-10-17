@@ -2531,7 +2531,7 @@ input[type="text"]:focus {
 .delete-progress .progress-bar-fill:not(.indeterminate) { transition: width 0.25s; }
 
 /* Toast actions ("Show details") */
-.toast-action {
+.toast-text .toast-action {
   margin-top: 6px;
   display: inline-block;
   border: none;
@@ -2543,7 +2543,7 @@ input[type="text"]:focus {
   cursor: pointer;
   text-decoration: underline;
 }
-.toast-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.toast-text .toast-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .toast-text { display: flex; flex-direction: column; align-items: flex-start; }
 
 /* Error details list */
@@ -2562,3 +2562,37 @@ input[type="text"]:focus {
 .cleanup-hints-note { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 .cleanup-hints li { display: flex; justify-content: space-between; gap: 12px; }
 .cleanup-hints .hint-path { color: var(--text-muted); font-size: 12px; word-break: break-all; }
+/* Note under the scan location: this disk's deletes go to the holding folder, or can't happen */
+.disk-note {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.disk-note[data-level="warning"] {
+  border-color: var(--color-danger-border);
+  color: var(--text-primary);
+}
+
+/* Sticky toasts can carry one action (e.g. open Privacy & Security) */
+.toast-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
+.toast-action { pointer-events: auto; }
+
+/* "Showing 500 of 7,002": the table hasn't drawn every matching item */
+.shown-count {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-surface);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.more-row td { text-align: center; }
+.more-row .btn-show-all { margin-left: 8px; }

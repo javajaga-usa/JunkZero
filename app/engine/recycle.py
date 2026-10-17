@@ -29,6 +29,9 @@ from app.engine import osinfo, storage
 
 _DRIVE_REMOVABLE, _DRIVE_FIXED, _DRIVE_REMOTE, _DRIVE_CDROM, _DRIVE_RAMDISK = 2, 3, 4, 5, 6
 _MAC_NETWORK_FS = {"smbfs", "afpfs", "nfs", "webdav", "ftp", "cifs"}
+# File systems whose Trash macOS keeps reliably. On others (exFAT, FAT, NTFS, and the FSKit
+# drivers macOS uses for them), "move to Trash" can erase the item at once instead.
+_MAC_TRASH_FS = {"apfs", "hfs"}
 _mac_mounts_cache: Tuple[float, Dict[str, str]] = (0.0, {})
 
 
@@ -100,7 +103,9 @@ def _cached(kind: str, root: str, lookup):
 
 def has_recycle_bin(path: str) -> bool:
     """False for USB sticks, memory cards, CDs and network shares, where a "recycled" item is
-    erased for good. Fixed disks (and anything that can't be told) count as having one."""
+    erased for good. Fixed disks (and, on Windows, anything that can't be told) count as having
+    one. On a Mac only the startup disk and APFS or Mac OS Extended disks do: an exFAT or FAT
+    disk, or one whose file system can't be told, gets JunkZero's holding folder instead."""
     if osinfo.is_windows():
         if os.path.abspath(path).startswith("\\\\"):
             return False  # \\server\share
@@ -111,7 +116,11 @@ def has_recycle_bin(path: str) -> bool:
             return True
         return kind not in (_DRIVE_REMOVABLE, _DRIVE_REMOTE, _DRIVE_CDROM, _DRIVE_RAMDISK)
     if osinfo.is_macos():
-        return _mac_mounts().get(mount_point(path), "apfs") not in _MAC_NETWORK_FS
+        root = mount_point(path)
+        fs = (_mac_mounts().get(root) or "").lower()
+        if fs in _MAC_NETWORK_FS:
+            return False
+        return root == "/" or fs in _MAC_TRASH_FS
     return True
 
 
@@ -172,6 +181,125 @@ def recycle_bin_takes(path: str, size: int) -> bool:
     return size < limit
 
 
+# ---------------------------------------------------------------- What a delete does on each disk
+
+# Where a deleted item goes: the system's Recycle Bin / Trash, JunkZero's holding folder on the
+# same disk (kept HOLDING_DAYS days), erased (permanent mode), or nowhere: the disk is read-only
+DEST_TRASH, DEST_HOLDING, DEST_ERASE, DEST_READ_ONLY = "trash", "holding", "erase", "read_only"
+
+_FS_LABELS = {
+    "apfs": "APFS", "hfs": "Mac OS Extended", "exfat": "exFAT", "msdos": "FAT", "fat": "FAT",
+    "fat32": "FAT32", "vfat": "FAT", "ntfs": "NTFS", "ufsd_ntfs": "NTFS", "tuxera_ntfs": "NTFS",
+    "refs": "ReFS", "smbfs": "SMB network share", "afpfs": "AFP network share", "nfs": "NFS network share",
+    "webdav": "WebDAV share", "cifs": "network share", "cd9660": "CD/DVD", "udf": "CD/DVD", "cdfs": "CD/DVD",
+    "ext4": "ext4", "btrfs": "Btrfs", "xfs": "XFS",
+}
+_FILE_READ_ONLY_VOLUME = 0x00080000
+
+
+def fs_label(fs: str) -> str:
+    fs = (fs or "").strip()
+    return _FS_LABELS.get(fs.lower(), fs.upper() if len(fs) <= 5 else fs)
+
+
+def _windows_volume(root: str) -> Tuple[str, str, bool]:
+    """(volume label, file system name, read-only) for a Windows drive root."""
+    import ctypes
+    name, fs = ctypes.create_unicode_buffer(261), ctypes.create_unicode_buffer(261)
+    flags = ctypes.c_ulong(0)
+    ok = ctypes.windll.kernel32.GetVolumeInformationW(root, name, 261, None, None, ctypes.byref(flags), fs, 261)
+    if not ok:
+        return "", "", False
+    return name.value, fs.value, bool(flags.value & _FILE_READ_ONLY_VOLUME)
+
+
+def is_read_only(path: str) -> bool:
+    """True if nothing can be deleted where path is: a read-only disk (a CD, or an NTFS disk on a
+    Mac, which macOS can only read)."""
+    folder = os.path.dirname(os.path.abspath(path)) or path
+    if osinfo.is_windows():
+        try:
+            root = mount_point(path)
+            if _windows_drive_type(root) == _DRIVE_CDROM:
+                return True
+            return _windows_volume(root)[2]
+        except (OSError, AttributeError, ValueError):
+            return False
+    try:
+        # The folder holding the item, not the disk root: on a Mac "/" is the read-only system
+        # volume while the files in /Users live on the writable data volume
+        return bool(os.statvfs(folder).f_flag & os.ST_RDONLY)
+    except (OSError, AttributeError):
+        return False
+
+
+def disk_info(path: str) -> Dict[str, Any]:
+    """The disk holding path, and what deleting from it does (ignoring permanent mode and the
+    Windows Recycle Bin's size limit, which depend on the item): name, file system, destination
+    (DEST_TRASH, DEST_HOLDING or DEST_READ_ONLY) and, unless it is the Trash, why."""
+    root = mount_point(path)
+    name, fs = "", ""
+    if osinfo.is_windows():
+        try:
+            name, fs, _ = _windows_volume(root)
+        except (OSError, AttributeError, ValueError):
+            pass
+        name = f"{name} ({root.rstrip(chr(92))})" if name else root
+    else:
+        if osinfo.is_macos():
+            fs = _mac_mounts().get(root) or ""
+        name = ("Macintosh HD" if osinfo.is_macos() else "/") if root == "/" else os.path.basename(root.rstrip("/")) or root
+    label = fs_label(fs)
+    trash = "Trash" if not osinfo.is_windows() else "Recycle Bin"
+    info = {"root": root, "name": name, "fs": fs, "fs_label": label, "destination": DEST_TRASH, "reason": ""}
+
+    if is_read_only(path):
+        info["destination"] = DEST_READ_ONLY
+        if osinfo.is_macos() and fs.lower() in ("ntfs", "ufsd_ntfs", "tuxera_ntfs"):
+            info["reason"] = "macOS can only read NTFS disks, so nothing on it can be deleted"
+        else:
+            info["reason"] = "the disk is read-only, so nothing on it can be deleted"
+        return info
+    if has_recycle_bin(path):
+        return info
+
+    info["destination"] = DEST_HOLDING
+    if osinfo.is_windows():
+        kind = None
+        try:
+            kind = _windows_drive_type(root)
+        except (OSError, AttributeError, ValueError):
+            pass
+        if os.path.abspath(path).startswith("\\\\") or kind == _DRIVE_REMOTE:
+            info["reason"] = f"network drives have no {trash}"
+        elif kind == _DRIVE_RAMDISK:
+            info["reason"] = f"RAM disks have no {trash}"
+        else:
+            info["reason"] = f"USB drives and memory cards have no {trash}"
+    elif fs.lower() in _MAC_NETWORK_FS:
+        info["reason"] = f"network drives have no {trash}"
+    elif fs:
+        info["reason"] = f"on {label} disks macOS may erase items instead of keeping them in the {trash}"
+    else:
+        info["reason"] = f"JunkZero can't tell how this disk is formatted, so it doesn't rely on the {trash}"
+    return info
+
+
+def item_destination(path: str, size: int, permanent: bool, info: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """(destination, why) for deleting one item: what the delete will really do with it."""
+    info = info if info is not None else disk_info(path)
+    if info["destination"] == DEST_READ_ONLY:
+        return DEST_READ_ONLY, info["reason"]
+    if permanent:
+        return DEST_ERASE, ""
+    if recycle_bin_takes(path, size):
+        return DEST_TRASH, ""
+    if info["destination"] == DEST_HOLDING and info["reason"]:
+        return DEST_HOLDING, info["reason"]
+    # Windows: bigger than this drive's Recycle Bin, or the Recycle Bin removes files at once
+    return DEST_HOLDING, "the Recycle Bin on this drive would erase it (too big for it, or set to remove files immediately)"
+
+
 # ---------------------------------------------------------------- Holding folder
 
 _BATCH_RE = re.compile(r"^(\d{8}-\d{6})-[0-9a-f]{6}$")
@@ -205,8 +333,74 @@ def move_to_holding(path: str, batch: str) -> str:
     rel = os.path.relpath(path, root)
     dest = os.path.join(batch, rel)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    os.rename(path, dest)
+    try:
+        os.rename(path, dest)
+    except OSError:
+        # Don't leave empty folders behind in the holding folder for an item that stayed put
+        _remove_empty_dirs(os.path.dirname(dest), stop_at=batch)
+        raise
     return dest
+
+
+def _remove_empty_dirs(folder: str, stop_at: str) -> None:
+    """Remove folder and its parents while they are empty, up to (not including) stop_at."""
+    stop = os.path.normcase(os.path.abspath(stop_at))
+    folder = os.path.abspath(folder)
+    while os.path.normcase(folder) != stop and os.path.normcase(folder).startswith(stop + os.sep.lower()):
+        try:
+            os.rmdir(folder)
+        except OSError:
+            return
+        folder = os.path.dirname(folder)
+
+
+def _batch_of(held_path: str) -> Optional[Tuple[str, str]]:
+    """(batch folder, drive root) for a path inside a holding batch, or None."""
+    parts = os.path.abspath(held_path).split(os.sep)
+    for i, part in enumerate(parts):
+        if part == HOLDING_DIR_NAME and i + 1 < len(parts) and _BATCH_RE.match(parts[i + 1]):
+            root = os.sep.join(parts[:i]) or os.sep
+            if re.fullmatch(r"[A-Za-z]:", root):
+                root += os.sep
+            return os.sep.join(parts[:i + 2]), root
+    return None
+
+
+def _sweep_batch(batch: str, root: str, restored: List[str], errors: List[Dict[str, str]]) -> None:
+    """Put back everything still in one holding batch (each item's place is its path inside the
+    batch, relative to the drive root), never over something already there."""
+    for dirpath, dirnames, filenames in os.walk(batch, topdown=True):
+        rel_dir = os.path.relpath(dirpath, batch)
+        keep = []
+        for name in dirnames:
+            stored = os.path.join(dirpath, name)
+            original = os.path.normpath(os.path.join(root, rel_dir, name))
+            if os.path.isdir(original) and not os.path.islink(original):
+                keep.append(name)  # the folder is back already: put back what's inside it
+                continue
+            try:
+                _move_back(stored, original)
+                restored.append(original)
+            except _Occupied:
+                errors.append({"path": original, "error": "Something is already at this location; left as it is"})
+            except OSError as e:
+                errors.append({"path": original, "error": str(e)})
+        dirnames[:] = keep
+        for name in filenames:
+            original = os.path.normpath(os.path.join(root, rel_dir, name))
+            try:
+                _move_back(os.path.join(dirpath, name), original)
+                restored.append(original)
+            except _Occupied:
+                errors.append({"path": original, "error": "Something is already at this location; left as it is"})
+            except OSError as e:
+                errors.append({"path": original, "error": str(e)})
+    # What's left is empty folders that are back in place already
+    for dirpath, _dirs, _files in sorted(os.walk(batch), key=lambda w: -len(w[0])):
+        try:
+            os.rmdir(dirpath)
+        except OSError:
+            pass
 
 
 def _remember_holding_root(root: str) -> None:
@@ -494,4 +688,11 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
             errors.append({"path": original, "error": "Something is already at this location; left as it is"})
         except OSError as e:
             errors.append({"path": original, "error": str(e)})
+
+    # Anything still in this cleanup's holding batches goes back too. Older history kept only
+    # the first 500 items of a cleanup, but the batch folder holds all of them.
+    batches = {b for b in (_batch_of(d) for d in held.values() if isinstance(d, str)) if b}
+    for batch, root in sorted(batches):
+        if os.path.isdir(batch):
+            _sweep_batch(batch, root, restored, errors)
     return {"restored": restored, "errors": errors}

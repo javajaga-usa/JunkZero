@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 import logging
 import logging.handlers
 import threading
@@ -22,7 +23,7 @@ from app.engine.exclusions import ExclusionMatcher
 from app.engine.inuse import OpenFileCheck
 from app.engine import osinfo
 from app.engine.osinfo import is_hidden
-from app.engine import recycle, storage
+from app.engine import permissions, recycle, storage
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 
 # Kept with the rest of JunkZero's data (%APPDATA%\JunkZero), not in whatever folder the app started from
@@ -204,9 +205,11 @@ def _excluded_path_inside(folder: str, excluder: ExclusionMatcher) -> Optional[s
     return None
 
 
-def _remove_permanently(path: str) -> None:
+def _remove_permanently(path: str, unlock: bool = False) -> None:
     if not os.path.isdir(path):
-        os.remove(path)
+        # A read-only file of the user's own (Windows read-only attribute, also shown as Locked
+        # on FAT, exFAT, NTFS and network disks on a Mac), or one in their own read-only folder
+        permissions.with_retry(lambda: os.remove(path), path, unlock)
         return
     if osinfo.is_windows():
         # Windows can't rename a folder while a file inside it is open, so this finds out
@@ -215,9 +218,24 @@ def _remove_permanently(path: str) -> None:
         try:
             os.rename(path, aside)
         except PermissionError as ex:
-            raise OSError("a file inside it is open in another program (close it and try again)") from ex
+            if not permissions.make_writable(path, unlock):
+                raise OSError("a file inside it is open in another program, or Windows denied access "
+                              "(close programs using it and try again)") from ex
+            try:
+                os.rename(path, aside)
+            except PermissionError as again:
+                raise OSError("a file inside it is open in another program, or Windows denied access "
+                              "(close programs using it and try again)") from again
         path = aside
-    shutil.rmtree(path)
+    # Read-only files and folders of the user's own inside are made writable as they are reached
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=lambda func, p, exc: permissions.retry_writable(func, p, exc, unlock))
+    else:
+        shutil.rmtree(path, onerror=lambda func, p, exc_info: permissions.retry_writable(func, p, exc_info[1], unlock))
+
+
+class TrashSetupError(OSError):
+    """The Trash can't work because of how JunkZero was installed (not a permission problem)."""
 
 
 def _send_to_trash(path) -> None:
@@ -227,8 +245,8 @@ def _send_to_trash(path) -> None:
     except OSError as ex:
         if osinfo.is_macos() and not osinfo.mac_trash_ready():
             # The old Trash API send2trash falls back to without pyobjc: say how to fix it
-            raise OSError(f"macOS refused to move it to the Trash ({ex}). JunkZero is missing the pyobjc "
-                          f"package. {osinfo.MAC_TRASH_FIX}") from ex
+            raise TrashSetupError(f"macOS refused to move it to the Trash ({ex}). JunkZero is missing the pyobjc "
+                                  f"package. {osinfo.MAC_TRASH_FIX}") from ex
         raise
 
 
@@ -259,6 +277,7 @@ def delete_items(
     permanent: bool = False,
     open_check: Optional[OpenFileCheck] = None,
     exclusions: Optional[List[str]] = None,
+    unlock: bool = False,
 ) -> CleanResult:
     """
     Delete a batch of files and directories. Items go to the Recycle Bin by default (or, on
@@ -274,7 +293,7 @@ def delete_items(
             # The user's exclusions (the list under Exclusions) are never deleted, from any screen
             excluder = ExclusionMatcher(storage.get_exclusions() if exclusions is None else exclusions)
             with recycle.per_drive_lookups():
-                return _delete_items(items, permanent, open_check, excluder)
+                return _delete_items(items, permanent, open_check, excluder, unlock)
         finally:
             _set_progress(running=False)
             _cancel.clear()
@@ -282,7 +301,8 @@ def delete_items(
 
 
 def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Optional[OpenFileCheck],
-                  excluder: Optional[ExclusionMatcher] = None) -> CleanResult:
+                  excluder: Optional[ExclusionMatcher] = None, unlock: bool = False) -> CleanResult:
+    """unlock: the user chose Unlock and delete, so their own Finder-locked items are unlocked first."""
     started_at = time.time()
     open_check = OpenFileCheck() if open_check is None else open_check
     deleted_keys = set()
@@ -298,6 +318,7 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
     # Checked and waiting to go to the Recycle Bin together: (path as asked, path, size)
     pending: List[Tuple[str, str, int]] = []
     skipped = 0
+    disks: Dict[str, Dict[str, Any]] = {}
 
     def flush() -> None:
         """Send the waiting items to the Recycle Bin in one call; if that fails, the ones still
@@ -307,27 +328,39 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
             return
         batch = list(pending)
         pending.clear()
-        failures: Dict[str, str] = {}
+        failures: Dict[str, Exception] = {}
         try:
-            _send_to_trash(batch[0][1] if len(batch) == 1 else [p for _, p, _ in batch])
+            if len(batch) == 1:
+                norm = batch[0][1]
+                permissions.with_retry(lambda: _send_to_trash(norm), norm, unlock)
+            else:
+                _send_to_trash([p for _, p, _ in batch])
         except Exception as ex:
             if len(batch) == 1:
-                failures[batch[0][1]] = str(ex)
+                failures[batch[0][1]] = ex
             else:
                 for _, norm, _ in batch:
                     if not os.path.lexists(norm):
                         continue  # Moved before the call failed
                     try:
-                        _send_to_trash(norm)
+                        # One at a time, clearing a read-only attribute if that is what stops it
+                        permissions.with_retry(lambda: _send_to_trash(norm), norm, unlock)
                     except Exception as one:
-                        failures[norm] = str(one)
+                        failures[norm] = one
         for asked, norm, size in batch:
             if norm in failures:
                 failed_count += 1
-                errors.append({"path": asked, "error": failures[norm]})
+                ex = failures[norm]
+                error = {"path": asked, "error": str(ex)}
+                # A permission problem: say why in plain words and what fixes it
+                explained = None if isinstance(ex, TrashSetupError) else permissions.explain(ex, norm)
+                if explained:
+                    error["kind"], why = explained
+                    error["error"] = f"Can't delete: {why}"
+                errors.append(error)
                 trash_ids.pop(asked, None)
                 deleted_keys.discard(_key(norm))
-                logger.error(f"Failed to delete {norm}: {failures[norm]}")
+                logger.error(f"Failed to delete {norm}: {ex}")
             else:
                 deleted_count += 1
                 freed_bytes += size
@@ -462,12 +495,23 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
             except OSError:
                 pass
 
+        # What this disk allows: the Trash, the holding folder, or nothing (read-only)
+        root = recycle.mount_point(norm_path)
+        if root not in disks:
+            disks[root] = recycle.disk_info(norm_path)
+        destination, why = recycle.item_destination(norm_path, size, permanent, disks[root])
+        if destination == recycle.DEST_READ_ONLY:
+            errors.append({"path": path_str, "error": f"Can't delete: {why} ({disks[root]['name']})",
+                           "kind": permissions.KIND_READ_ONLY_DISK})
+            failed_count += 1
+            continue
+
         try:
-            if permanent:
+            if destination == recycle.DEST_ERASE:
                 # Permanent deletion direct from disk
-                _remove_permanently(norm_path)
+                _remove_permanently(norm_path, unlock)
                 logger.info(f"PermanentDelete: {norm_path} ({format_size(size)})")
-            elif recycle.recycle_bin_takes(norm_path, size):
+            elif destination == recycle.DEST_TRASH:
                 # Default: move to the Recycle Bin so the user can restore it
                 if osinfo.is_macos():
                     st = os.lstat(norm_path)
@@ -486,7 +530,8 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
                 try:
                     if root not in batches:
                         batches[root] = recycle.new_holding_batch(root)
-                    held[path_str] = recycle.move_to_holding(norm_path, batches[root])
+                    held[path_str] = permissions.with_retry(
+                        lambda: recycle.move_to_holding(norm_path, batches[root]), norm_path, unlock)
                 except OSError as ex:
                     raise OSError("The Recycle Bin can't take this item and JunkZero could not set it aside "
                                   f"on this drive ({ex}); use Permanent delete to remove it") from ex
@@ -499,7 +544,13 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         except Exception as ex:
             failed_count += 1
             err_msg = str(ex)
-            errors.append({"path": path_str, "error": err_msg})
+            error = {"path": path_str, "error": err_msg}
+            # A permission problem: say why in plain words and what fixes it
+            explained = None if isinstance(ex, TrashSetupError) else permissions.explain(ex, norm_path)
+            if explained:
+                error["kind"], why = explained
+                error["error"] = f"Can't delete: {why}"
+            errors.append(error)
             logger.error(f"Failed to delete {norm_path}: {err_msg}")
 
     flush()

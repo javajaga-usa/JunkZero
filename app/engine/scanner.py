@@ -1,5 +1,6 @@
 """High-performance multi-threaded directory scanner."""
 from __future__ import annotations
+import errno
 import fnmatch
 import os
 import shutil
@@ -93,6 +94,10 @@ class ScanStats:
     phase: str = "walking"
     # Why the scan stopped early, in plain words ("" when it ran to the end or was stopped)
     error: str = ""
+    # Folders the scan wasn't allowed to read, and how many of those macOS privacy settings blocked
+    unreadable_dirs: int = 0
+    privacy_blocked_dirs: int = 0
+    unreadable_examples: List[str] = field(default_factory=list)
 
 
 class FastScanner:
@@ -397,7 +402,10 @@ class FastScanner:
                     has_content = True
                     continue
 
-        except (PermissionError, FileNotFoundError, OSError):
+        except PermissionError as err:
+            has_content = True
+            self._note_unreadable(dir_path, err)
+        except (FileNotFoundError, OSError):
             has_content = True
 
         if self._stop_event.is_set():
@@ -409,6 +417,18 @@ class FastScanner:
             self._dup_candidates.extend(dup_candidates)
 
         return found_items, subdirs
+
+    def _note_unreadable(self, dir_path: str, err: OSError) -> None:
+        """Count a folder the scan wasn't allowed to list, so the user hears about it."""
+        # On a Mac, "Operation not permitted" on a folder is macOS privacy settings (Full Disk
+        # Access); "Permission denied" is ordinary file permissions (another account's folder)
+        privacy = osinfo.is_macos() and getattr(err, "errno", None) == errno.EPERM
+        with self._lock:
+            self.stats.unreadable_dirs += 1
+            if privacy:
+                self.stats.privacy_blocked_dirs += 1
+            if len(self.stats.unreadable_examples) < 5:
+                self.stats.unreadable_examples.append(dir_path)
 
     def _leftover_item(self, leftover) -> GarbageItem:
         return build_item(

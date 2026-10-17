@@ -71,9 +71,19 @@ def test_refused_trash_move_explains_the_missing_package(mac, monkeypatch, tmp_p
 
 def test_other_trash_errors_are_left_as_they_are(mac, monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "Foundation", types.ModuleType("Foundation"))
+    monkeypatch.setattr(cleaner.send2trash, "send2trash", lambda p: (_ for _ in ()).throw(OSError("The volume is full")))
+    monkeypatch.setattr(recycle, "recycle_bin_takes", lambda path, size: True)
+    target = tmp_path / "old.tmp"
+    target.write_text("junk")
+    error = cleaner.delete_items([{"path": str(target), "size_bytes": 4}]).errors[0]
+    assert error["error"] == "The volume is full" and "kind" not in error
+
+
+def test_a_permission_refusal_with_pyobjc_installed_is_explained(mac, monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "Foundation", types.ModuleType("Foundation"))
     target = _refusing_trash(monkeypatch, tmp_path)
-    error = cleaner.delete_items([{"path": str(target), "size_bytes": 4}]).errors[0]["error"]
-    assert error == "Insufficient access privileges for operation"
+    error = cleaner.delete_items([{"path": str(target), "size_bytes": 4}]).errors[0]
+    assert error["kind"] and error["error"].startswith("Can't delete:")
 
 
 def test_requirements_add_pyobjc_on_mac_only():

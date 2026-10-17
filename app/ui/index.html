@@ -92,6 +92,9 @@
         </div>
       </div>
 
+      <!-- What deleting does on the scan location's disk, when it isn't the usual Trash -->
+      <p id="diskNote" class="disk-note hidden" role="status" aria-live="polite"></p>
+
       <!-- Detection Options Toggles -->
       <div class="options-row">
         <span class="section-label"><i data-lucide="sliders-horizontal"></i> Look for</span>
@@ -339,6 +342,7 @@
           <button id="btnByFolder" class="btn btn-ghost" title="Which folders hold the most junk">
             <i data-lucide="folders"></i> By Folder
           </button>
+          <span id="shownCount" class="shown-count hidden" aria-live="polite"></span>
           <span id="folderFilterChip" class="filter-chip hidden">
             <i data-lucide="folder"></i> <span id="folderFilterText"></span>
             <button id="clearFolderFilter" class="clear-chip-btn" title="Show all folders" aria-label="Show all folders">&times;</button>
