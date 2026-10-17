@@ -7,7 +7,8 @@ import shutil
 import time
 import threading
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -34,9 +35,13 @@ from app.config import (
 )
 from app.engine.classifier import (
     GarbageItem,
+    _in_app_folder,
     build_item,
     classify_item,
     format_size,
+    is_build_dir,
+    is_leveldb_listing,
+    is_skipped_store,
     is_system_protected_path,
 )
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_reason, pick_keeper
@@ -45,7 +50,7 @@ from app.engine.filetypes import FileTypeMatcher
 from app.engine import osinfo
 from app.engine.leftovers import find_program_leftovers
 from app.engine.locations import is_protected_user_folder, protected_user_folders
-from app.engine.safeguards import Safeguards
+from app.engine.safeguards import Safeguards, last_changed
 from app.engine.smart import SmartScorer
 
 
@@ -85,6 +90,10 @@ class ScanStats:
     drive_used_bytes: int = 0
     drive_free_bytes: int = 0
     target_path: str = ""
+    # What the scan is doing now: "walking", "leftovers", "empty_folders", "duplicates", "done"
+    phase: str = "walking"
+    # Why the scan stopped early, in plain words ("" when it ran to the end or was stopped)
+    error: str = ""
     # Folders the scan wasn't allowed to read, and how many of those macOS privacy settings blocked
     unreadable_dirs: int = 0
     privacy_blocked_dirs: int = 0
@@ -211,14 +220,20 @@ class FastScanner:
             reason += f", unchanged for {self._file_types.min_age_days}+ days"
         return build_item(path, name, CAT_FILE_TYPES, size, mtime, RISK_REVIEW, reason, selected=False)
 
-    def _location_item(self, path: str, name: str, size: int, mtime: float, locations: List) -> Optional[GarbageItem]:
-        """Flag a file that sits inside a known junk location."""
+    def _location_item(self, path: str, name: str, size: int, mtime: float, locations: List,
+                       changed: Optional[float] = None) -> Optional[GarbageItem]:
+        """Flag a file that sits inside a known junk location. changed: the later of its modified
+        and created time (a file just unpacked from an old archive keeps the archive's date)."""
         if size < self.options.min_file_size_bytes:
             return None
+        # Folder settings Windows keeps in special folders (INetCache): not junk
+        if name.lower() == "desktop.ini":
+            return None
+        changed = mtime if changed is None else max(mtime, changed)
         for loc in locations:
             if loc.pattern and not fnmatch.fnmatchcase(name.lower(), loc.pattern):
                 continue
-            recent = mtime > 0 and (time.time() - mtime) < 86400
+            recent = changed > 0 and (time.time() - changed) < 86400
             reason = f"File in {loc.label}"
             if recent:
                 reason += " (changed in the last 24 hours, may still be in use)"
@@ -243,126 +258,149 @@ class FastScanner:
         if self._stop_event.is_set():
             return found_items, subdirs
 
+        # App databases, Package Cache and conda packages are never looked inside
+        if is_skipped_store(dir_path):
+            with self._lock:
+                self._dir_tree[dir_path] = (True, [])
+            return found_items, subdirs
+        # Big files in installed programs, games, Python environments and model stores are
+        # program data: not compared as duplicates (worked out once per folder, when needed)
+        app_folder: Optional[bool] = None
+
         try:
-            with os.scandir(dir_path) as entries:
-                for entry in entries:
-                    if self._stop_event.is_set():
-                        break
+            with os.scandir(dir_path) as it:
+                entries = list(it)
+            # A LevelDB database (CURRENT + MANIFEST-*): its .log files hold the newest data
+            if is_leveldb_listing(e.name for e in entries):
+                entries = []
+                has_content = True
+            for entry in entries:
+                if self._stop_event.is_set():
+                    break
 
-                    try:
-                        is_dir = entry.is_dir(follow_symlinks=False)
-                        is_file = entry.is_file(follow_symlinks=False)
-                        name = entry.name
-                        path = entry.path
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                    is_file = entry.is_file(follow_symlinks=False)
+                    name = entry.name
+                    path = entry.path
 
-                        # Check system blacklist
-                        if self.options.skip_system_dirs and is_system_protected_path(path):
-                            has_content = True
-                            continue
-
-                        # Version-control folders hold state the tool needs, even empty folders.
-                        # Backup folders are a safety net, and JunkZero's own holding folder keeps
-                        # items set aside on drives without a Recycle Bin.
-                        lower = name.lower()
-                        if lower in VCS_DIR_NAMES or lower in BACKUP_DIR_NAMES or \
-                                lower.endswith(BACKUP_DIR_SUFFIXES) or name == HOLDING_DIR_NAME:
-                            has_content = True
-                            continue
-
-                        # User exclusions: never flagged, never descended into
-                        if self._excluder.matches(path, name):
-                            has_content = True
-                            continue
-
-                        # Read metadata
-                        stat = entry.stat(follow_symlinks=False)
-                        mtime = stat.st_mtime
-
-                        if is_dir:
-                            with self._lock:
-                                self.stats.total_dirs_scanned += 1
-
-                            # A hidden subfolder (even an empty one) means this folder is not
-                            # empty, and is never reported as empty itself: apps create them on purpose
-                            if osinfo.is_hidden(name, stat):
-                                has_content = True
-                                with self._lock:
-                                    self._hidden_dirs.add(path)
-
-                            # Windows junctions point elsewhere (even back up the tree): never followed
-                            if _is_junction(entry):
-                                has_content = True
-                                continue
-
-                            leftover = self._leftovers.get(_norm_path(path)) if self._leftovers else None
-                            if leftover:
-                                has_content = True
-                                found_items.append(self._leftover_item(leftover))
-                                continue
-
-                            # Check if the directory itself is a build artifact (e.g. node_modules, target, __pycache__)
-                            # Known cache folders that apps rebuild are flagged as one item
-                            location = self._dir_locations.get(_norm_path(path)) if self.options.include_temp_junk else None
-                            if location:
-                                has_content = True
-                                found_items.append(build_item(
-                                    path, name, CAT_TEMP_JUNK, self._calc_dir_size(path), mtime, RISK_SAFE,
-                                    f"{location.label} (rebuilt automatically; close the app first)", is_dir=True,
-                                ))
-                                continue
-
-                            if name.lower() in BUILD_DIR_NAMES:
-                                has_content = True
-                            if self.options.include_java_builds and name.lower() in BUILD_DIR_NAMES:
-                                dir_size = self._calc_dir_size(path)
-                                item = classify_item(path, name, dir_size, mtime, is_dir=True, options=self.options)
-                                if item:
-                                    found_items.append(item)
-                                # Do not recurse inside marked build directory
-                                continue
-
-                            # A folder matching a user junk rule is listed as one item
-                            if self._junk_rules and self._junk_rules.matches(path, name):
-                                has_content = True
-                                item = self._custom_rule_item(path, name, self._calc_dir_size(path), mtime, is_dir=True)
-                                if item:
-                                    found_items.append(item)
-                                continue
-
-                            subdirs.append(path)
-
-                        elif is_file:
-                            has_content = True
-                            with self._lock:
-                                self.stats.total_files_scanned += 1
-
-                            # Cloud files kept only online free no space here, and opening them
-                            # (to look inside or compare) would download them: never listed
-                            if osinfo.is_online_only(stat):
-                                continue
-
-                            size = stat.st_size
-                            item = self._location_item(path, name, size, mtime, file_locations) if file_locations else None
-                            if item is None:
-                                item = classify_item(path, name, size, mtime, is_dir=False, options=self.options)
-                            if item is None and in_downloads:
-                                item = self._old_download_item(path, name, size, stat)
-                            if item is None and self._junk_rules:
-                                item = self._custom_rule_item(path, name, size, mtime)
-                            if item is None and self._file_types:
-                                item = self._file_type_item(path, name, size, mtime)
-                            if item:
-                                found_items.append(item)
-                            elif self.options.include_duplicates and size >= DUPLICATE_MIN_BYTES:
-                                dup_candidates.append(FileCandidate(path, name, size, mtime))
-
-                        else:
-                            # Symlinks and other special entries
-                            has_content = True
-
-                    except (PermissionError, FileNotFoundError, OSError):
+                    # Check system blacklist
+                    if self.options.skip_system_dirs and is_system_protected_path(path):
                         has_content = True
                         continue
+
+                    # Version-control folders hold state the tool needs, even empty folders.
+                    # Backup folders are a safety net, and JunkZero's own holding folder keeps
+                    # items set aside on drives without a Recycle Bin.
+                    lower = name.lower()
+                    if lower in VCS_DIR_NAMES or lower in BACKUP_DIR_NAMES or \
+                            lower.endswith(BACKUP_DIR_SUFFIXES) or name == HOLDING_DIR_NAME:
+                        has_content = True
+                        continue
+
+                    # User exclusions: never flagged, never descended into
+                    if self._excluder.matches(path, name):
+                        has_content = True
+                        continue
+
+                    # Read metadata
+                    stat = entry.stat(follow_symlinks=False)
+                    mtime = stat.st_mtime
+
+                    if is_dir:
+                        with self._lock:
+                            self.stats.total_dirs_scanned += 1
+
+                        # A hidden subfolder (even an empty one) means this folder is not
+                        # empty, and is never reported as empty itself: apps create them on purpose
+                        if osinfo.is_hidden(name, stat):
+                            has_content = True
+                            with self._lock:
+                                self._hidden_dirs.add(path)
+
+                        # Windows junctions point elsewhere (even back up the tree): never followed
+                        if _is_junction(entry):
+                            has_content = True
+                            continue
+
+                        leftover = self._leftovers.get(_norm_path(path)) if self._leftovers else None
+                        if leftover:
+                            has_content = True
+                            found_items.append(self._leftover_item(leftover))
+                            continue
+
+                        # Check if the directory itself is a build artifact (e.g. node_modules, target, __pycache__)
+                        # Known cache folders that apps rebuild are flagged as one item
+                        location = self._dir_locations.get(_norm_path(path)) if self.options.include_temp_junk else None
+                        if location:
+                            has_content = True
+                            found_items.append(build_item(
+                                path, name, CAT_TEMP_JUNK, self._calc_dir_size(path), mtime, RISK_SAFE,
+                                f"{location.label} (rebuilt automatically; close the app first)", is_dir=True,
+                            ))
+                            continue
+
+                        if name.lower() in BUILD_DIR_NAMES:
+                            has_content = True
+                        # bin, out, build, target count only next to a project file
+                        if self.options.include_java_builds and is_build_dir(path, name):
+                            dir_size = self._calc_dir_size(path)
+                            item = classify_item(path, name, dir_size, mtime, is_dir=True, options=self.options)
+                            if item:
+                                found_items.append(item)
+                            # Do not recurse inside marked build directory
+                            continue
+
+                        # A folder matching a user junk rule is listed as one item
+                        if self._junk_rules and self._junk_rules.matches(path, name):
+                            has_content = True
+                            item = self._custom_rule_item(path, name, self._calc_dir_size(path), mtime, is_dir=True)
+                            if item:
+                                found_items.append(item)
+                            continue
+
+                        subdirs.append(path)
+
+                    elif is_file:
+                        has_content = True
+                        with self._lock:
+                            self.stats.total_files_scanned += 1
+
+                        # Cloud files kept only online free no space here, and opening them
+                        # (to look inside or compare) would download them: never listed
+                        if osinfo.is_online_only(stat):
+                            continue
+
+                        size = stat.st_size
+                        changed = last_changed(stat)
+                        item = self._location_item(path, name, size, mtime, file_locations, changed) \
+                            if file_locations else None
+                        if item is None:
+                            item = classify_item(path, name, size, mtime, is_dir=False, options=self.options)
+                        if item is None and in_downloads:
+                            item = self._old_download_item(path, name, size, stat)
+                        if item is None and self._junk_rules:
+                            item = self._custom_rule_item(path, name, size, mtime)
+                        if item is None and self._file_types:
+                            item = self._file_type_item(path, name, size, mtime)
+                        if item:
+                            # "Changed in the last 24 hours" also counts when it was created (unpacked, copied)
+                            item.changed_timestamp = changed
+                            found_items.append(item)
+                        elif self.options.include_duplicates and size >= DUPLICATE_MIN_BYTES:
+                            if app_folder is None:
+                                app_folder = _in_app_folder(path)
+                            if not app_folder:
+                                dup_candidates.append(FileCandidate(
+                                    path, name, size, mtime, stat.st_dev, stat.st_ino))
+
+                    else:
+                        # Symlinks and other special entries
+                        has_content = True
+
+                except (PermissionError, FileNotFoundError, OSError):
+                    has_content = True
+                    continue
 
         except PermissionError as err:
             has_content = True
@@ -549,7 +587,10 @@ class FastScanner:
         return items
 
     def run_scan(self) -> List[GarbageItem]:
-        """Execute parallel multi-threaded scan starting at options.target_path."""
+        """Execute parallel multi-threaded scan starting at options.target_path.
+
+        Never raises: an error stops the scan and is kept in stats.error, and stats.is_running
+        is always False once this returns."""
         self.stats = ScanStats(target_path=self.options.target_path)
         self.stats.start_time = time.time()
         self.stats.is_running = True
@@ -558,7 +599,50 @@ class FastScanner:
         self.garbage_items.clear()
         self._dir_tree.clear()
         self._dup_candidates.clear()
+        try:
+            self._run_scan_steps()
+        except Exception as e:  # Any failure ends the scan with a message instead of a stuck spinner
+            with self._lock:
+                self.stats.error = f"The scan stopped because of an error: {type(e).__name__}: {e}"[:300]
+        finally:
+            with self._lock:
+                self.stats.elapsed_seconds = round(time.time() - self.stats.start_time, 2)
+                self.stats.is_running = False
+                self.stats.is_completed = not self._stop_event.is_set() and not self.stats.error
+                self.stats.phase = "done"
+        return self.garbage_items
 
+    def _set_phase(self, phase: str) -> None:
+        with self._lock:
+            self.stats.phase = phase
+
+    def _walk(self, roots: List[str]) -> None:
+        """Scan every folder under roots, keeping all workers busy: a new folder starts as soon as
+        any one finishes, so one huge folder never holds up the others."""
+        workers = max(1, self.options.max_workers)
+        pending = deque(roots)
+        running: Set = set()
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            while (pending or running) and not self._stop_event.is_set():
+                # Keep about two folders per worker in flight
+                while pending and len(running) < 2 * workers:
+                    running.add(executor.submit(self._scan_directory_shallow, pending.popleft()))
+                done, running = wait(running, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        items, new_subdirs = future.result()
+                    except Exception:
+                        continue
+                    pending.extend(new_subdirs)
+                    if items:
+                        with self._lock:
+                            for item in items:
+                                self._record_item(item)
+            if self._stop_event.is_set():
+                for future in running:
+                    future.cancel()
+
+    def _run_scan_steps(self) -> None:
         # Gather drive usage
         try:
             drive_stat = shutil.disk_usage(self.options.target_path)
@@ -570,9 +654,7 @@ class FastScanner:
 
         root_path = os.path.abspath(self.options.target_path) if self.options.target_path else None
         if root_path and not os.path.exists(root_path):
-            self.stats.is_running = False
-            self.stats.is_completed = True
-            return []
+            return
 
         extra_paths = list(self.options.extra_paths)
         if self.options.scan_junk_locations and self.options.include_temp_junk:
@@ -586,38 +668,17 @@ class FastScanner:
                     self._record_item(item)
 
         if self.options.include_leftovers and not self._stop_event.is_set():
+            self._set_phase("leftovers")
             for item in self._load_leftovers(roots):
                 with self._lock:
                     self._record_item(item)
 
-        # Directory queue to scan
-        pending_dirs: List[str] = list(roots)
-
-        # Use ThreadPoolExecutor for concurrent batch scanning
-        with ThreadPoolExecutor(max_workers=self.options.max_workers) as executor:
-            while pending_dirs and not self._stop_event.is_set():
-                # Take batch of directories to scan concurrently
-                batch = pending_dirs[:32]
-                pending_dirs = pending_dirs[32:]
-
-                futures = {executor.submit(self._scan_directory_shallow, d): d for d in batch}
-
-                for future in as_completed(futures):
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        items, new_subdirs = future.result()
-                        pending_dirs.extend(new_subdirs)
-
-                        if items:
-                            with self._lock:
-                                for item in items:
-                                    self._record_item(item)
-                    except Exception:
-                        continue
+        self._set_phase("walking")
+        self._walk(roots)
 
         # Empty folders can only be known once the whole tree has been traversed
         if self.options.include_empty_folders and not self._stop_event.is_set():
+            self._set_phase("empty_folders")
             empty_items = self._find_empty_folders(roots)
             with self._lock:
                 for item in empty_items:
@@ -625,16 +686,10 @@ class FastScanner:
 
         # Duplicates need every candidate file, so they are also found after traversal
         if self.options.include_duplicates and not self._stop_event.is_set():
+            self._set_phase("duplicates")
             for item in self._find_duplicates():
                 with self._lock:
                     self._record_item(item)
-
-        with self._lock:
-            self.stats.elapsed_seconds = round(time.time() - self.stats.start_time, 2)
-            self.stats.is_running = False
-            self.stats.is_completed = not self._stop_event.is_set()
-
-        return self.garbage_items
 
 
 def _drive_info(path: str, label: str) -> Dict[str, any]:

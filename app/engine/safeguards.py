@@ -32,6 +32,14 @@ _NOT_PERSONAL_NAMES = {"thumbs.db", "desktop.ini", ".ds_store", "ehthumbs.db"}
 RECENT_SECONDS = 24 * 3600
 
 
+def last_changed(st: os.stat_result) -> float:
+    """The later of a file's modified time and when it was created here. Files unpacked from a zip
+    or copied keep their old modified date; their creation time (Windows, macOS) or change time
+    (st_ctime, set by copying, unpacking or moving on macOS and Linux) shows they are new."""
+    times = [st.st_mtime, getattr(st, "st_birthtime", 0) or 0, st.st_ctime]
+    return max(t for t in times if isinstance(t, (int, float)))
+
+
 def is_personal_file(name: str) -> bool:
     lower = name.lower()
     if lower in _NOT_PERSONAL_NAMES:
@@ -164,7 +172,8 @@ class Safeguards:
         if not item.is_directory and is_personal_file(item.name):
             item.personal = True
             notes.append("it looks like a personal file (document, photo, video or save)")
-        if not item.is_directory and item.modified_timestamp > 0 and now - item.modified_timestamp < RECENT_SECONDS:
+        changed = max(item.modified_timestamp, getattr(item, "changed_timestamp", 0) or 0)
+        if not item.is_directory and changed > 0 and now - changed < RECENT_SECONDS:
             notes.append("it changed in the last 24 hours")
 
         if notes:

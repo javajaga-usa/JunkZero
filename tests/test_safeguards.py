@@ -153,14 +153,15 @@ def test_online_only_files_are_never_listed_or_opened(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------- 4. Backups and virtual machines
 
-def test_backup_folders_and_vm_disks_are_never_listed(tmp_path):
+def test_backup_folders_and_vm_disks_are_never_listed(home):
     for folder in ("FileHistory", "WindowsImageBackup", "Backups.backupdb"):
-        (tmp_path / folder / "sub").mkdir(parents=True)
-        (tmp_path / folder / "sub" / "old.tmp").write_text("x")
+        (home / folder / "sub").mkdir(parents=True)
+        (home / folder / "sub" / "old.tmp").write_text("x")
     for name in ("win.vhdx", "linux.qcow2", "disk.vmdk", "c-drive.tib", "image.mrimg", "ubuntu.iso"):
-        (tmp_path / name).write_bytes(b"x" * 10)
-        _old(tmp_path / name)
-    items = _scan(tmp_path)
+        # A real ISO carries "CD001" at 0x8001 (round 9: checked, not taken from the name)
+        (home / name).write_bytes(b"x" * 0x8001 + b"CD001")
+        _old(home / name)
+    items = _scan(home)
     assert {i.name for i in items} == {"ubuntu.iso"}
 
 
@@ -196,11 +197,18 @@ def test_items_on_drives_without_a_recycle_bin_are_set_aside_and_restored(tmp_pa
     assert out["history"][0]["restored"] == [str(item_path)]
 
 
-def test_held_items_are_removed_after_seven_days(tmp_path):
+def test_held_items_are_removed_after_seven_days(tmp_path, monkeypatch):
     batch = recycle.new_holding_batch(str(tmp_path), now=time.time() - 8 * DAY)
     fresh = recycle.new_holding_batch(str(tmp_path))
+    # Round 9: only batches a cleanup record mentions are ever erased
+    unrecorded = recycle.new_holding_batch(str(tmp_path), now=time.time() - 9 * DAY)
+    real_time = time.time
+    monkeypatch.setattr(storage.time, "time", lambda: real_time() - 8 * DAY)
+    storage.record_cleanup({"deleted_count": 1, "held": {"/a": os.path.join(batch, "a")}}, ["/a"], "test")
+    monkeypatch.setattr(storage.time, "time", real_time)
+    storage.record_cleanup({"deleted_count": 1, "held": {"/b": os.path.join(fresh, "b")}}, ["/b"], "test")
     assert recycle.purge_holding() == 1
-    assert not os.path.exists(batch) and os.path.exists(fresh)
+    assert not os.path.exists(batch) and os.path.exists(fresh) and os.path.exists(unrecorded)
     assert storage.load_settings()["holding_roots"] == [str(tmp_path)]
 
 
@@ -249,11 +257,15 @@ def test_thumbs_db_is_not_a_personal_file():
     ("C:/Users/a/Documents/scratch.tmp", False),
     ("C:/Users/a/AppData/Local/Temp/x.tmp", True),
     ("C:/Users/a/.npm/_logs/debug.log", True),
-    ("C:/Users/a/project/build/out.log", True),
+    ("{proj}/build/out.log", True),
+    ("C:/Users/a/project/build/out.log", False),  # No project file next to "build" (round 9)
+    ("C:/Users/a/AppData/Local/Code/Local Storage/leveldb/000003.log", False),  # LevelDB data (round 9)
     ("C:/Users/a/Pictures/Thumbs.db", True),
     ("/Users/a/Library/Caches/app/x.log", True),
 ])
-def test_temp_style_files_outside_temp_folders_are_not_listed(path, listed):
+def test_temp_style_files_outside_temp_folders_are_not_listed(path, listed, tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    path = path.replace("{proj}", tmp_path.as_posix())
     item = classify_item(path, path.rsplit("/", 1)[-1], 10, OLD, False, ScanOptions(target_path="."))
     assert (item is not None) is listed
 

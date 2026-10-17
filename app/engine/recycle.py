@@ -17,6 +17,7 @@ import struct
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
@@ -72,6 +73,34 @@ def mount_point(path: str) -> str:
     return path
 
 
+# While a delete runs: drive root -> what was looked up for it, so a cleanup of thousands of
+# items asks Windows about each drive once instead of once per item
+_drive_cache: Optional[Dict[Tuple[str, str], Any]] = None
+
+
+@contextmanager
+def per_drive_lookups():
+    """Look up each drive's type and Recycle Bin settings once while this is open."""
+    global _drive_cache
+    outer = _drive_cache
+    if outer is None:
+        _drive_cache = {}
+    try:
+        yield
+    finally:
+        _drive_cache = outer
+
+
+def _cached(kind: str, root: str, lookup):
+    cache = _drive_cache
+    if cache is None:
+        return lookup()
+    key = (kind, root)
+    if key not in cache:
+        cache[key] = lookup()
+    return cache[key]
+
+
 def has_recycle_bin(path: str) -> bool:
     """False for USB sticks, memory cards, CDs and network shares, where a "recycled" item is
     erased for good. Fixed disks (and, on Windows, anything that can't be told) count as having
@@ -80,8 +109,9 @@ def has_recycle_bin(path: str) -> bool:
     if osinfo.is_windows():
         if os.path.abspath(path).startswith("\\\\"):
             return False  # \\server\share
+        root = mount_point(path)
         try:
-            kind = _windows_drive_type(mount_point(path))
+            kind = _cached("type", root, lambda: _windows_drive_type(root))
         except (OSError, AttributeError, ValueError):
             return True
         return kind not in (_DRIVE_REMOVABLE, _DRIVE_REMOTE, _DRIVE_CDROM, _DRIVE_RAMDISK)
@@ -129,18 +159,25 @@ def recycle_bin_takes(path: str, size: int) -> bool:
     if not osinfo.is_windows():
         return True
     root = mount_point(path)
-    try:
-        limit, nuke = _windows_recycle_settings(root)
-    except (OSError, AttributeError, ImportError, ValueError):
-        limit, nuke = None, False
+
+    def settings() -> Tuple[Optional[int], bool]:
+        try:
+            limit, nuke = _windows_recycle_settings(root)
+        except (OSError, AttributeError, ImportError, ValueError):
+            limit, nuke = None, False
+        if limit is None and not nuke:
+            # Not set: Windows uses a share of the drive. Assume the smallest it picks (5%).
+            try:
+                limit = shutil.disk_usage(root).total // 20
+            except OSError:
+                limit = None
+        return limit, nuke
+
+    limit, nuke = _cached("settings", root, settings)
     if nuke:
         return False
     if limit is None:
-        # Not set: Windows uses a share of the drive. Assume the smallest it picks (5%).
-        try:
-            limit = shutil.disk_usage(root).total // 20
-        except OSError:
-            return True
+        return True
     return size < limit
 
 
@@ -373,11 +410,15 @@ def _remember_holding_root(root: str) -> None:
 
 
 def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
-    """Remove holding batches older than `days`; returns how many were removed. Drives that
+    """Remove holding batches older than `days` whose cleanup is recorded (in the history or the
+    cleanup's own file) and was at least `days` ago; returns how many were removed. A batch no
+    cleanup record mentions is never erased: nothing would say what it held. Drives that
     aren't plugged in are kept in the list for next time."""
     now = time.time() if now is None else now
     removed = 0
     keep_roots = []
+    recorded = storage.recorded_holding_batches()
+    purged: List[str] = []
     for root in storage.load_settings().get("holding_roots") or []:
         holding = os.path.join(root, HOLDING_DIR_NAME)
         if not os.path.isdir(root):
@@ -390,14 +431,20 @@ def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
             if not m or not entry.is_dir(follow_symlinks=False):
                 continue
             made = time.mktime(datetime.strptime(m.group(1), "%Y%m%d-%H%M%S").timetuple())
-            if now - made >= days * 86400:
+            recorded_at = recorded.get(entry.name)
+            if recorded_at is None:
+                continue
+            if now - made >= days * 86400 and now - recorded_at >= days * 86400:
                 shutil.rmtree(entry.path, ignore_errors=True)
+                if not os.path.exists(entry.path):
+                    purged.append(entry.name)
                 removed += 1
         try:
             os.rmdir(holding)  # only succeeds once nothing is left in it
         except OSError:
             keep_roots.append(root)
     storage.update_settings(holding_roots=keep_roots)
+    storage.forget_purged_cleanups(purged)
     return removed
 
 
@@ -426,14 +473,17 @@ def _same(a: str, b: str) -> bool:
     return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
-def find_in_windows_recycle_bin(original: str, since: float, bin_root: Optional[str] = None) -> Optional[Tuple[str, List[str]]]:
-    """(stored item, files to remove after restoring) for the newest matching item deleted after since."""
-    bin_root = bin_root or os.path.join(mount_point(original), "$Recycle.Bin")
-    best: Optional[Tuple[float, str, str]] = None
+RecycleIndex = Dict[str, List[Tuple[float, str, str]]]
+
+
+def windows_recycle_index(bin_root: str) -> RecycleIndex:
+    """Every item in a drive's Recycle Bin, read once: original path (normalised) ->
+    [(deleted at, stored item, its $I file)]."""
+    index: RecycleIndex = {}
     try:
         user_bins = [e.path for e in os.scandir(bin_root) if e.is_dir(follow_symlinks=False)]
     except OSError:
-        return None
+        return index
     for user_bin in user_bins:
         try:
             entries = list(os.scandir(user_bin))  # Only the current user's own folder can be read
@@ -447,11 +497,28 @@ def find_in_windows_recycle_bin(original: str, since: float, bin_root: Optional[
                     info = parse_recycle_info(f.read(4096))
             except OSError:
                 continue
-            if not info or not _same(info[0], original) or info[1] < since:
+            if not info:
                 continue
             stored = os.path.join(user_bin, "$R" + entry.name[2:])
-            if os.path.lexists(stored) and (best is None or info[1] > best[0]):
-                best = (info[1], stored, entry.path)
+            index.setdefault(_norm(info[0]), []).append((info[1], stored, entry.path))
+    return index
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def find_in_windows_recycle_bin(original: str, since: float, bin_root: Optional[str] = None,
+                                index: Optional[RecycleIndex] = None) -> Optional[Tuple[str, List[str]]]:
+    """(stored item, files to remove after restoring) for the newest matching item deleted after since."""
+    if index is None:
+        index = windows_recycle_index(bin_root or os.path.join(mount_point(original), "$Recycle.Bin"))
+    best: Optional[Tuple[float, str, str]] = None
+    for deleted, stored, info_file in index.get(_norm(original), []):
+        if deleted < since:
+            continue
+        if os.path.lexists(stored) and (best is None or deleted > best[0]):
+            best = (deleted, stored, info_file)
     return (best[1], [best[2]]) if best else None
 
 
@@ -540,9 +607,16 @@ def find_in_mac_trash(original: str, since: float, trash: Optional[str] = None,
 
 
 def find_in_trash(original: str, since: float, file_id: Optional[List[int]] = None,
-                  until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
+                  until: Optional[float] = None, bins: Optional[Dict[str, RecycleIndex]] = None
+                  ) -> Optional[Tuple[str, List[str]]]:
+    """bins: Recycle Bins already read during this restore (bin folder -> index), filled as needed."""
     if osinfo.is_windows():
-        return find_in_windows_recycle_bin(original, since)
+        bin_root = os.path.join(mount_point(original), "$Recycle.Bin")
+        if bins is None:
+            return find_in_windows_recycle_bin(original, since, bin_root)
+        if bin_root not in bins:
+            bins[bin_root] = windows_recycle_index(bin_root)
+        return find_in_windows_recycle_bin(original, since, index=bins[bin_root])
     if osinfo.is_macos():
         return find_in_mac_trash(original, since, file_id=file_id, until=until)
     return find_in_xdg_trash(original, since)
@@ -583,6 +657,7 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
     held = record.get("held") or {}
     trash_ids = record.get("trash_ids") or {}
     already = set(record.get("restored") or [])
+    bins: Dict[str, RecycleIndex] = {}  # Each Recycle Bin is read once for the whole restore
     for original in record.get("paths") or []:
         if original in already:
             continue
@@ -597,7 +672,7 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
                     continue
                 _move_back(stored, original)
             else:
-                found = find_in_trash(original, since, trash_ids.get(original), until)
+                found = find_in_trash(original, since, trash_ids.get(original), until, bins)
                 if not found:
                     errors.append({"path": original, "error": "Not found in the Recycle Bin (it may have been emptied)"})
                     continue

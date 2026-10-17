@@ -16,7 +16,7 @@ from typing import Iterable, List, Optional
 from app.config import DISK_IMAGE_EXTENSIONS, INSTALLER_EXTENSIONS
 
 MAX_ENTRIES = 20000                         # Bigger listings are not judged
-MAX_COMPRESSED_TAR_BYTES = 512 * 1024 ** 2  # Listing a .tar.gz means decompressing it all
+MAX_COMPRESSED_TAR_BYTES = 64 * 1024 ** 2   # Listing a .tar.gz means decompressing it all: bigger ones are not listed
 MAX_OTHER_SHARE = 0.10                      # Unrecognized files allowed next to setup files
 
 # Files that by themselves make an archive a software package

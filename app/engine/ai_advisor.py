@@ -1,5 +1,7 @@
 """Intelligent file inspector using local heuristics and optional Gemini AI analysis."""
 from __future__ import annotations
+import concurrent.futures
+import json
 import os
 from pathlib import Path
 from typing import Dict, Optional
@@ -20,6 +22,15 @@ class AIAnalysisResult(BaseModel):
     explanation: str
     recommendation: str
     ai_powered: bool = False
+    # Why Gemini wasn't used or was overruled, in plain words ("" when nothing to say)
+    note: str = ""
+
+
+# Seconds Gemini gets to answer before the offline verdict is shown instead
+GEMINI_TIMEOUT_SECONDS = 20
+VERDICTS = ["Safe to Delete", "Review Carefully", "Keep File"]  # Least to most careful
+GEMINI_NOT_AVAILABLE = ("Gemini AI is not available in this build of JunkZero (the google-genai "
+                        "library is not included), so this is JunkZero's own offline verdict.")
 
 
 # Known extension intelligence database for instant offline analysis
@@ -125,68 +136,111 @@ OFFLINE_KNOWLEDGE_BASE: Dict[str, Dict[str, str]] = {
 }
 
 
+def _more_careful(a: str, b: str) -> str:
+    rank = {v: i for i, v in enumerate(VERDICTS)}
+    return a if rank.get(a, 1) >= rank.get(b, 1) else b
+
+
+def _ask_gemini(api_key: str, path_str: str, file_name: str) -> Dict[str, str]:
+    from google import genai
+    try:
+        from google.genai import types
+        client = genai.Client(api_key=api_key,
+                              http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_SECONDS * 1000))
+    except (ImportError, AttributeError, TypeError):
+        client = genai.Client(api_key=api_key)
+
+    path = Path(path_str)
+    stat_info = ""
+    if path.exists():
+        stat = path.stat()
+        stat_info = f"Size: {stat.st_size} bytes, Modified: {stat.st_mtime}"
+
+    prompt = f"""
+    Analyze the following file found on a user's computer during a disk cleanup scan:
+    File Name: {file_name}
+    Full Path: {path_str}
+    {stat_info}
+
+    Provide an analysis in this exact JSON structure:
+    {{
+        "detected_type": "Short name of file type",
+        "origin_application": "Likely creator or software",
+        "safety_verdict": "Safe to Delete" OR "Review Carefully" OR "Keep File",
+        "explanation": "1-2 sentences explaining what this file is",
+        "recommendation": "Clear recommendation on whether to delete or keep"
+    }}
+    Return only valid JSON.
+    """
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    cleaned = response.text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    data = json.loads(cleaned.strip())
+    if not isinstance(data, dict):
+        raise ValueError("Gemini's answer was not a JSON object")
+    return data
+
+
+def _gemini_available() -> bool:
+    try:
+        from google import genai  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 def analyze_item(path_str: str) -> AIAnalysisResult:
-    """Analyze a file or folder using Gemini if configured, or offline heuristic database."""
+    """Analyze a file or folder using Gemini if configured, or offline heuristic database.
+    Gemini's verdict is never more confident than JunkZero's own offline verdict."""
+    offline = _offline_analysis(path_str)
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return offline
+    if not _gemini_available():
+        return offline.model_copy(update={"note": GEMINI_NOT_AVAILABLE})
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        data = pool.submit(_ask_gemini, api_key, path_str, offline.file_name).result(timeout=GEMINI_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        return offline.model_copy(update={
+            "note": f"Gemini did not answer within {GEMINI_TIMEOUT_SECONDS} seconds; this is the offline verdict."})
+    except Exception:
+        # Fall back to offline knowledge base if API fails or lacks internet
+        return offline.model_copy(update={"note": "Gemini could not be reached; this is the offline verdict."})
+    finally:
+        pool.shutdown(wait=False)
+
+    said = data.get("safety_verdict")
+    said = said if said in VERDICTS else "Review Carefully"
+    verdict = _more_careful(said, offline.safety_verdict)
+    note = ""
+    recommendation = str(data.get("recommendation", ""))
+    if verdict != said:
+        note = (f"Gemini said \"{said}\", but JunkZero's own check says \"{verdict}\"; "
+                "the more careful verdict is shown.")
+        recommendation = offline.recommendation
+    return AIAnalysisResult(
+        file_name=offline.file_name,
+        file_path=path_str,
+        detected_type=str(data.get("detected_type", "Unknown")),
+        origin_application=str(data.get("origin_application", "Unknown")),
+        safety_verdict=verdict,
+        explanation=str(data.get("explanation", "")),
+        recommendation=recommendation,
+        ai_powered=True,
+        note=note,
+    )
+
+
+def _offline_analysis(path_str: str) -> AIAnalysisResult:
+    """JunkZero's own verdict, from what it knows about the file type and where it is."""
     path = Path(path_str)
     file_name = path.name
     suffix = path.suffix.lower()
-
-    # Check for Gemini API Key in environment
-    api_key = os.environ.get("GEMINI_API_KEY")
-
-    if api_key:
-        try:
-            from google import genai
-            client = genai.Client(api_key=api_key)
-
-            stat_info = ""
-            if path.exists():
-                stat = path.stat()
-                stat_info = f"Size: {stat.st_size} bytes, Modified: {stat.st_mtime}"
-
-            prompt = f"""
-            Analyze the following file found on a user's Windows computer during a disk cleanup scan:
-            File Name: {file_name}
-            Full Path: {path_str}
-            {stat_info}
-
-            Provide an analysis in this exact JSON structure:
-            {{
-                "detected_type": "Short name of file type",
-                "origin_application": "Likely creator or software",
-                "safety_verdict": "Safe to Delete" OR "Review Carefully" OR "Keep File",
-                "explanation": "1-2 sentences explaining what this file is",
-                "recommendation": "Clear recommendation on whether to delete or keep"
-            }}
-            Return only valid JSON.
-            """
-
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-
-            import json
-            cleaned = response.text.strip()
-            if cleaned.startswith("```json"):
-                cleaned = cleaned[7:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-
-            data = json.loads(cleaned.strip())
-            return AIAnalysisResult(
-                file_name=file_name,
-                file_path=path_str,
-                detected_type=data.get("detected_type", "Unknown"),
-                origin_application=data.get("origin_application", "Unknown"),
-                safety_verdict=data.get("safety_verdict", "Review Carefully"),
-                explanation=data.get("explanation", ""),
-                recommendation=data.get("recommendation", ""),
-                ai_powered=True
-            )
-        except Exception:
-            # Fall back to offline knowledge base if API fails or lacks internet
-            pass
 
     # Offline Heuristic Analysis
     info = OFFLINE_KNOWLEDGE_BASE.get(suffix)

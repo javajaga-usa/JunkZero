@@ -83,16 +83,19 @@ def test_personal_folders_are_protected(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("path, risk", [
     ("C:/Users/a/models/car.obj", RISK_REVIEW),
-    ("C:/proj/x64/Debug/main.obj", RISK_SAFE),
+    ("{proj}/x64/Debug/main.obj", RISK_SAFE),
+    ("C:/proj/x64/Debug/main.obj", RISK_REVIEW),  # No project file around it (round 9)
     ("C:/Users/a/science/1abc.pdb", RISK_REVIEW),
-    ("C:/proj/bin/Debug/app.pdb", RISK_SAFE),
+    ("{proj}/bin/Debug/app.pdb", RISK_SAFE),
     ("C:/Users/a/thesis.docx.bak", RISK_REVIEW),
     ("C:/Users/a/settings.old", RISK_REVIEW),
     ("C:/Users/a/App.csproj.user", RISK_REVIEW),
     ("C:/Users/a/AppData/Local/Temp/cache.tmp", RISK_SAFE),
     ("C:/Users/a/Main.class", RISK_REVIEW),
 ])
-def test_ambiguous_file_types_need_review(path, risk):
+def test_ambiguous_file_types_need_review(path, risk, tmp_path):
+    (tmp_path / "app.sln").write_text("")
+    path = path.replace("{proj}", tmp_path.as_posix())
     item = classify_item(path, path.rsplit("/", 1)[-1], 10, 1.0, False, ScanOptions(target_path="."))
     assert item.risk_level == risk
     assert item.selected is (risk == RISK_SAFE)

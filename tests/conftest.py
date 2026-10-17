@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+import shutil
+import tempfile
 import pytest
 
 
@@ -13,3 +17,15 @@ def no_open_files(monkeypatch):
     from app.engine import cleaner
     from app.engine.inuse import OpenFileCheck
     monkeypatch.setattr(cleaner, "OpenFileCheck", lambda: OpenFileCheck(open_files=set()))
+
+
+@pytest.fixture
+def home():
+    """A folder outside any temp folder or app data folder (pytest's tmp_path is in /tmp, or AppData\\Local\\Temp on Windows)."""
+    base = Path(tempfile.mkdtemp(prefix="round9-", dir=os.path.dirname(os.path.abspath(__file__))))
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+

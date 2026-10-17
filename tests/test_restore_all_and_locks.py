@@ -84,6 +84,14 @@ def test_clearing_history_removes_the_full_lists(tmp_path, monkeypatch):
     folder = storage.data_dir() / storage.CLEANUP_DETAILS_DIR
     assert len(os.listdir(folder)) == 1
     storage.clear_history()
+    # Its items are still in the holding folder: the list stays their record until they are purged
+    assert len(os.listdir(folder)) == 1
+    # A cleanup with nothing set aside loses its list with the history
+    for name in os.listdir(folder):
+        os.remove(folder / name)
+    storage.record_cleanup({"deleted_count": 1}, [paths[0]], "test")
+    assert len(os.listdir(folder)) == 1
+    storage.clear_history()
     assert os.listdir(folder) == []
 
 

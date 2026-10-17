@@ -116,7 +116,11 @@ def test_windows_junk_locations_only_lists_existing_folders(tmp_path):
     assert windows_junk_locations({}) == []
 
 
-def test_junk_location_scan_flags_temp_files_and_cache_folders(tmp_path):
+def test_junk_location_scan_flags_temp_files_and_cache_folders(tmp_path, monkeypatch):
+    # Files made by the test were created just now; pretend setup123.dat was made when it was modified
+    # (round 9: "changed in the last 24 hours" also looks at the creation time)
+    from app.engine import scanner
+    monkeypatch.setattr(scanner, "last_changed", lambda st: st.st_mtime)
     local, locations = _make_locations(tmp_path)
     old = time.time() - 3 * 86400
     temp_file = local / "Temp" / "setup123.dat"
@@ -179,11 +183,14 @@ def test_failed_cleanup_is_not_recorded(tmp_path):
 # ------------------------------------------------------------- Scheduled reports
 
 def test_schtasks_arguments():
-    daily = scheduler.schtasks_create_args("daily", "08:30", "MON", '"C:\\py\\pythonw.exe" "C:\\d\\s.pyw"')
-    assert daily[daily.index("/SC") + 1] == "DAILY"
-    assert daily[daily.index("/TR") + 1] == '"C:\\py\\pythonw.exe" "C:\\d\\s.pyw"'
-    weekly = scheduler.schtasks_create_args("weekly", "08:30", "FRI", "cmd")
-    assert weekly[-3:] == ["WEEKLY", "/D", "FRI"]
+    # Round 9: the task is made from XML (runs on battery, makes up missed runs)
+    assert scheduler.schtasks_create_args("C:\\d\\t.xml") == [
+        "schtasks", "/Create", "/F", "/TN", scheduler.TASK_NAME, "/XML", "C:\\d\\t.xml"]
+    daily = scheduler.task_xml("daily", "08:30", "MON", "C:\\py\\pythonw.exe", '"C:\\d\\s.pyw"')
+    assert "<DaysInterval>1</DaysInterval>" in daily and "T08:30:00" in daily
+    assert "<Arguments>&quot;C:\\d\\s.pyw&quot;</Arguments>" in daily or '<Arguments>"C:\\d\\s.pyw"</Arguments>' in daily
+    weekly = scheduler.task_xml("weekly", "08:30", "FRI", "cmd", "")
+    assert "<Friday />" in weekly and "<WeeksInterval>1</WeeksInterval>" in weekly
 
 
 def test_task_command_for_packaged_exe(monkeypatch):

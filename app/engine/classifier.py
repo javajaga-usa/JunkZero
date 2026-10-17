@@ -5,6 +5,7 @@ import ntpath
 import re
 import time
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel
@@ -42,6 +43,14 @@ from app.config import (
     BUILD_EXTENSIONS,
     BUILD_OUTPUT_FOLDER_NAMES,
     BUILD_DIR_NAMES,
+    APP_DATA_DIR_NAMES,
+    DATABASE_DIR_NAMES,
+    DATABASE_DIR_SUFFIXES,
+    DISC_IMAGE_SHEETS,
+    PACKAGE_CACHE_DIR_NAMES,
+    PROJECT_BOUND_FOLDER_NAMES,
+    PROJECT_MARKER_NAMES,
+    PROJECT_MARKER_SUFFIXES,
     TEMP_EXTENSIONS,
     BROKEN_DOWNLOAD_EXTENSIONS,
     SYSTEM_BLACKLIST_DIRS,
@@ -60,6 +69,9 @@ class GarbageItem(BaseModel):
     size_formatted: str
     modified_timestamp: float
     modified_date: str
+    # The later of modified and created time (0: unknown). A file unpacked from an old archive
+    # keeps the archive's modified date, but was created just now.
+    changed_timestamp: float = 0.0
     risk_level: str
     reason: str
     is_directory: bool = False
@@ -120,10 +132,21 @@ def build_item(
     )
 
 
+_USER_WINDOWS_CACHES = re.compile(
+    r"/users/[^/]+/appdata/local/microsoft/windows/"
+    r"(?:inetcache(?:/|$)|wer/reportarchive(?:/|$)|wer/reportqueue(?:/|$)|explorer/thumbcache_[^/]*\.db$)"
+)
+
+
 def is_system_protected_path(path_str: str) -> bool:
     """Check if path is inside a protected Windows or macOS system folder or application critical path."""
     normalized = ntpath.normpath(path_str).lower().replace("\\", "/")
     parts = normalized.split("/")
+
+    # The user's own caches inside AppData\Local\Microsoft\Windows (IE/Edge INetCache, thumbnail
+    # cache files, Windows Error Reporting archives): exact allow list, everything else stays protected
+    if _USER_WINDOWS_CACHES.search(normalized) and not any(p.startswith("$") for p in parts):
+        return False
 
     for part in parts:
         if part in SYSTEM_BLACKLIST_DIRS:
@@ -193,29 +216,158 @@ def _library_parts(rel: List[str]) -> Optional[List[str]]:
     return None
 
 
+def _parent_parts(path: str) -> List[str]:
+    """Lowercase names of the folders a path sits in (Windows or POSIX separators)."""
+    return ntpath.normpath(path).replace("\\", "/").lower().split("/")[:-1]
+
+
+@lru_cache(maxsize=8192)
+def _listing(folder: str, stamp: int) -> frozenset:
+    """Lowercase names in a folder (cached; stamp is the folder's mtime so changes are seen)."""
+    try:
+        return frozenset(n.lower() for n in os.listdir(folder))
+    except OSError:
+        return frozenset()
+
+
+def folder_names(folder: str) -> frozenset:
+    try:
+        stamp = os.stat(folder).st_mtime_ns
+    except OSError:
+        return frozenset()
+    return _listing(folder, stamp)
+
+
+def has_project_marker(folder: str) -> bool:
+    """True if the folder holds a project file (package.json, *.sln, CMakeLists.txt, Cargo.toml...)."""
+    return any(n in PROJECT_MARKER_NAMES or n.endswith(PROJECT_MARKER_SUFFIXES) for n in folder_names(folder))
+
+
+def _project_above(folder: str, levels: int) -> bool:
+    """True if one of the `levels` folders above `folder` holds a project file."""
+    for _ in range(levels):
+        parent = ntpath.dirname(folder)
+        if not parent or parent == folder:
+            return False
+        if has_project_marker(parent):
+            return True
+        folder = parent
+    return False
+
+
+def is_build_dir(path: str, name: str) -> bool:
+    """True for a build or dependency folder (node_modules, __pycache__...). Names people also use
+    for their own folders (bin, out, build, target, .gradle) count only next to a project file."""
+    lower = name.lower()
+    if lower not in BUILD_DIR_NAMES:
+        return False
+    return lower not in PROJECT_BOUND_FOLDER_NAMES or _project_above(path, 1)
+
+
 def _in_build_output_folder(path: str) -> bool:
-    """True if any parent folder is a typical build output folder (bin, obj, build, Debug...)."""
-    parents = ntpath.normpath(path).replace("\\", "/").lower().split("/")[:-1]
-    return any(p in BUILD_OUTPUT_FOLDER_NAMES for p in parents)
+    """True if a parent folder is a build output folder (__pycache__, node_modules, or bin, obj,
+    build, Debug, Release, x64... with a project file next to it or a few levels above)."""
+    folder = ntpath.dirname(path)
+    while folder and ntpath.dirname(folder) != folder:
+        name = ntpath.basename(folder).lower()
+        if name in BUILD_OUTPUT_FOLDER_NAMES:
+            if name not in PROJECT_BOUND_FOLDER_NAMES or _project_above(folder, 3):
+                return True
+        folder = ntpath.dirname(folder)
+    return False
 
 
-# Folders whose files are disposable by nature: temp, cache, log and crash-dump folders, app data
+# Folders whose files are disposable by nature: temp, cache, log and crash-dump folders.
+# App-data folders (AppData, Local, Application Support, dot-folders) are not: apps keep their
+# databases and settings there.
 _DISPOSABLE_FOLDER_NAMES = {
-    "temp", "tmp", "logs", "log", "crashdumps", "crash reports", "diagnosticreports", "appdata",
-    "application support", "local", "localappdata", "var",
+    "temp", "tmp", "logs", "log", "crashdumps", "crash reports", "crashes", "crashpad", "minidump",
+    "minidumps", "diagnosticreports", "_logs",
 }
 # Temp-style names that are system clutter wherever they are
 _SYSTEM_CLUTTER_NAMES = {"thumbs.db", ".ds_store"}
 
 
 def _in_disposable_folder(path: str) -> bool:
-    """True if a parent folder is a temp, cache, log, build output or hidden app-data folder."""
-    parents = ntpath.normpath(path).replace("\\", "/").lower().split("/")[:-1]
-    return any(
-        p in _DISPOSABLE_FOLDER_NAMES or p in BUILD_OUTPUT_FOLDER_NAMES or "cache" in p
-        or (p.startswith(".") and p not in (".", ".."))
-        for p in parents
+    """True if a parent folder is a temp, cache, log, crash-dump or build output folder."""
+    parents = _parent_parts(path)
+    if any(p in _DISPOSABLE_FOLDER_NAMES or "cache" in p for p in parents):
+        return True
+    # macOS per-user temp folder: /var/folders/xx/yyyy/T
+    for i, p in enumerate(parents[:-3]):
+        if p == "var" and parents[i + 1] == "folders" and parents[i + 4:i + 5] == ["t"]:
+            return True
+    return _in_build_output_folder(path)
+
+
+def is_database_folder(name: str) -> bool:
+    """True for a LevelDB / IndexedDB / Local Storage folder name."""
+    lower = name.lower()
+    return lower in DATABASE_DIR_NAMES or lower.endswith(DATABASE_DIR_SUFFIXES)
+
+
+def is_leveldb_listing(names) -> bool:
+    """True if a folder's names show a LevelDB database (a CURRENT file and a MANIFEST-* file)."""
+    lowered = {n.lower() for n in names}
+    return "current" in lowered and any(n.startswith("manifest-") for n in lowered)
+
+
+def is_skipped_store(path: str) -> bool:
+    """True for folders JunkZero never looks inside: app databases (LevelDB, IndexedDB, Local
+    Storage), Windows' installer Package Cache and conda's package store."""
+    parts = ntpath.normpath(path).replace("\\", "/").lower().split("/")
+    for i, p in enumerate(parts):
+        if is_database_folder(p) or p in PACKAGE_CACHE_DIR_NAMES:
+            return True
+        if p == "pkgs" and any(re.search(r"conda|mamba|miniforge", q) for q in parts[:i]):
+            return True
+    return False
+
+
+def _in_app_folder(path: str) -> bool:
+    """Big files that belong to an installed program, game, Python environment or AI model store."""
+    parents = _parent_parts(path)
+    if any(p in APP_DATA_DIR_NAMES for p in parents):
+        return True
+    return inside_installed_program(path)
+
+
+def _disc_image_location_ok(path: str) -> bool:
+    """Disc images are never looked for in app data or SDK folders (emulator and SDK images)."""
+    return not any(
+        p in {"appdata", "application support", "library"} or "sdk" in p or p in APP_DATA_DIR_NAMES
+        for p in _parent_parts(path)
     )
+
+
+# Volume descriptor ids at sectors 16-19 of an ISO 9660 or UDF disc image
+_ISO_IDS = {b"CD001", b"BEA01", b"NSR02", b"NSR03", b"TEA01"}
+
+
+def has_iso_signature(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            for sector in range(16, 20):
+                f.seek(sector * 2048 + 1)
+                if f.read(5) in _ISO_IDS:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _is_disc_image(path: str, suffix: str) -> bool:
+    if not _disc_image_location_ok(path):
+        return False
+    if suffix == ".iso":
+        return has_iso_signature(path)
+    if suffix == ".cue":
+        return False  # A cue sheet alone is a few bytes; its .bin is what is listed
+    sheets = DISC_IMAGE_SHEETS.get(suffix)
+    if sheets:
+        stem = path[: -len(suffix)]
+        return any(os.path.isfile(stem + s) or os.path.isfile(stem + s.upper()) for s in sheets)
+    return True
 
 
 def classify_item(
@@ -232,6 +384,9 @@ def classify_item(
     """
     if options.skip_system_dirs and is_system_protected_path(path):
         return None
+    # App databases (LevelDB, IndexedDB), Package Cache, conda packages: never listed
+    if is_skipped_store(path):
+        return None
 
     lower_name = name.lower()
     suffix = Path(lower_name).suffix
@@ -240,7 +395,7 @@ def classify_item(
 
     # 1. Directory Checks (e.g. node_modules, __pycache__, target, build)
     if is_dir:
-        if options.include_java_builds and lower_name in BUILD_DIR_NAMES:
+        if options.include_java_builds and is_build_dir(path, name):
             reason = f"Automated build or dependency directory ({name})"
             risk = RISK_SAFE if lower_name in {"__pycache__", ".pytest_cache", ".next", ".turbo"} else RISK_REVIEW
             mod_dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown"
@@ -291,6 +446,9 @@ def classify_item(
         elif lower_name not in _SYSTEM_CLUTTER_NAMES and not _in_disposable_folder(path):
             # A .log or .tmp in Documents can be someone's own file: not listed at all
             return None
+        elif is_leveldb_listing(folder_names(os.path.dirname(path))):
+            # A LevelDB database's .log is its newest data, not a log
+            return None
         else:
             risk_level = RISK_SAFE
             reason = f"Temporary/cache file ({suffix or lower_name})"
@@ -314,17 +472,19 @@ def classify_item(
             risk_level = RISK_SAFE
             reason = f"Compiler/build intermediate artifact ({suffix})"
         elif suffix == ".jar":
-            # Determine if jar is in a downloads or temp folder or general location
-            norm_path = path.lower().replace("\\", "/")
-            if "download" in norm_path or "temp" in norm_path or "target" in norm_path:
+            # Only in downloads, temp or build output folders; elsewhere a .jar is a program,
+            # a Minecraft mod or a Maven library: not listed
+            parents = _parent_parts(path)
+            if any("download" in p or p in {"temp", "tmp", "target"} for p in parents):
                 risk_level = RISK_REVIEW
                 reason = "Java Archive (.jar) in temporary/build location"
             else:
-                risk_level = RISK_CAUTION
-                reason = "Java Archive (.jar) executable"
+                return None
 
-    # 5. OS ISO Disk Images and Installation Media
+    # 5. OS ISO Disk Images and Installation Media (checked: ISO signature, or a cue sheet next to it)
     elif options.include_installers and suffix in DISK_IMAGE_EXTENSIONS:
+        if not _is_disc_image(path, suffix):
+            return None
         category = CAT_INSTALLERS
         risk_level = RISK_REVIEW
         reason = f"OS / Disc image file ({suffix.upper()})"
@@ -379,7 +539,8 @@ def classify_item(
                     installer_weak = True
 
     # 9. Stale Large Files
-    elif options.include_stale_large and size_bytes >= LARGE_FILE_BYTES_THRESHOLD and age_days >= options.stale_days:
+    elif options.include_stale_large and size_bytes >= LARGE_FILE_BYTES_THRESHOLD and age_days >= options.stale_days \
+            and not _in_app_folder(path):
         category = CAT_STALE_LARGE
         risk_level = RISK_REVIEW
         reason = f"Large file ({format_size(size_bytes)}) unedited for {int(age_days)} days"
