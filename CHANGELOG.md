@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed on Linux
+- **Deleting from a Linux-formatted USB disk** (ext4 under `/media`) no longer fails for every item with "you don't have permission to change it". The top folder of such a disk belongs to root, so JunkZero couldn't make its holding folder there; it now uses the highest folder on that disk you can change, and Restore puts items back as before. Internal Linux disks whose top folder belongs to root use the holding folder too, since the Trash can't be made there.
+- **Junk you can't remove isn't listed**: items in folders that belong to another account or the system are left out of the results, and a note after the scan says how many and why. Your own read-only folders still count, because JunkZero makes them writable before deleting.
+- **`.war` and `.ear` files are listed only inside a project's build folder**: elsewhere (an old backup, a Tomcat `webapps` folder) they can be the only copy.
+- **`run.sh` on a fresh MX Linux or Debian**: without `python3-venv` it now makes the environment with the system's pip; when something is missing it says what to install and keeps the terminal open (or shows a message box when started without one). README notes `bash run.sh` for when the file manager opens it in an editor.
+
 ## [1.3.0] - 2026-10-19
 
 This release also includes everything listed under 1.2.0 below, which was never published on its own. Downloads: Windows `JunkZero-Setup.exe` (or the portable zip), Mac `JunkZero-macOS.dmg`, Linux `junkzero_1.3.0_amd64.deb` (or the tar.gz). The apps are not code-signed, so Windows SmartScreen and macOS Gatekeeper warn on first start.

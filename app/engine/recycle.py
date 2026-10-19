@@ -3,7 +3,8 @@
 USB sticks, memory cards and network shares have no Recycle Bin, and Windows erases items
 there for good when asked to recycle them quietly. JunkZero never sends anything there:
 on such drives it moves items into a hidden holding folder on the same drive instead
-(<drive>/.JunkZero-holding/<when>/...), keeps them for HOLDING_DAYS days, then removes them.
+(<drive>/.JunkZero-holding/<when>/..., or in the highest folder the user can change when the
+drive's top folder belongs to root), keeps them for HOLDING_DAYS days, then removes them.
 
 Restoring puts items back where they were, from the holding folder or from the system's
 Recycle Bin / Trash, and never overwrites something that is already at that location.
@@ -321,6 +322,35 @@ def _hide_on_windows(path: str) -> None:
             pass
 
 
+def _writable_dir(folder: str) -> bool:
+    return os.path.isdir(folder) and os.access(folder, os.W_OK | os.X_OK)
+
+
+def holding_root(path: str) -> str:
+    """The folder whose .JunkZero-holding takes path: the drive's top folder, or, where the user
+    can't change that (the top folder of a Linux-formatted USB disk belongs to root), the
+    highest folder above path on the same disk that they can, so the move stays on one disk."""
+    path = os.path.abspath(path)
+    root = mount_point(path)
+    if osinfo.is_windows() or _writable_dir(root):
+        return root
+    try:
+        device = os.lstat(path).st_dev
+    except OSError:
+        return root
+    rel = os.path.relpath(os.path.dirname(path), root)
+    folder = root
+    for part in ([] if rel == os.curdir else rel.split(os.sep)):
+        folder = os.path.join(folder, part)
+        try:
+            same_disk = os.stat(folder).st_dev == device
+        except OSError:
+            continue
+        if same_disk and _writable_dir(folder):
+            return folder
+    return root
+
+
 def new_holding_batch(root: str, now: Optional[float] = None) -> str:
     """A fresh folder for one cleanup inside <root>/.JunkZero-holding."""
     now = time.time() if now is None else now
@@ -336,7 +366,9 @@ def new_holding_batch(root: str, now: Optional[float] = None) -> str:
 def move_to_holding(path: str, batch: str) -> str:
     """Move path into the batch folder, keeping its folders, and return where it went."""
     path = os.path.abspath(path)
-    root = mount_point(path)
+    found = _batch_of(batch)
+    # Kept at its path below the folder holding the batch, which is where Restore puts it back
+    root = found[1] if found else mount_point(path)
     rel = os.path.relpath(path, root)
     dest = os.path.join(batch, rel)
     os.makedirs(os.path.dirname(dest), exist_ok=True)

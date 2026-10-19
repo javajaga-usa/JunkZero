@@ -89,7 +89,7 @@ JunkZero runs on MX Linux 23, Debian 12, Ubuntu 22.04 and later, Linux Mint and 
 - **Browse** uses zenity, kdialog or yad, whichever is installed (`sudo apt install zenity` if none is); the folder buttons open your file manager. **Scheduled scans** use a systemd user timer when the desktop runs systemd, and your crontab otherwise (MX Linux starts with SysVinit by default, so it uses cron).
 - Settings and history are kept in `~/.junkzero`.
 - **Install**: download `junkzero_<version>_amd64.deb` from the release and open it (or run `sudo apt install ./junkzero_<version>_amd64.deb`). JunkZero then appears in the menu under System, and `junkzero` starts it from a terminal. Removing the package also removes its scheduled scan. Or unpack `JunkZero-Linux-x86_64.tar.gz` anywhere and run `JunkZero/JunkZero`. The downloads are for 64-bit PCs (x86_64) and open JunkZero in your web browser.
-- **From source**, run `./run.sh`: it creates `.venv` on the first run and installs `requirements.txt` whenever it changes. With `python3-gi` and `gir1.2-webkit2-4.1` installed (`sudo apt install python3-gi gir1.2-webkit2-4.1`) JunkZero opens in its own window, otherwise in the web browser.
+- **From source**, run `./run.sh` (or `bash run.sh` if the file manager opens it in an editor or it isn't marked executable, which happens after copying it from a Windows disk or zip): it creates `.venv` on the first run and installs `requirements.txt` whenever it changes. On a fresh MX Linux or Debian without `python3-venv` it uses the system's pip instead; if neither is there it says to run `sudo apt install python3-venv python3-pip`. With `python3-gi` and `gir1.2-webkit2-4.1` installed (`sudo apt install python3-gi gir1.2-webkit2-4.1`) JunkZero opens in its own window, otherwise in the web browser.
 
 ---
 
@@ -122,7 +122,7 @@ You need Python 3.10 or later (tested on 3.10, 3.12 and 3.13) on Windows 10 / 11
 
 - Windows: `run.bat`
 - Mac: `run.command`
-- Linux: `./run.sh` (from a terminal, or your file manager's **Run** option)
+- Linux: `./run.sh` (from a terminal, or your file manager's **Run** option), or `bash run.sh` if it opens in an editor instead
 
 The first time, the launcher creates a `.venv` folder and installs what `requirements.txt` lists; after that it starts straight away, and it installs again only when `requirements.txt` changes. If Python is missing it says where to get it. On Windows and Linux JunkZero then offers to add itself to the Start menu and desktop, or the applications menu, so you don't need the launcher again.
 

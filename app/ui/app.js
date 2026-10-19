@@ -232,6 +232,15 @@ function unreadableText(stats) {
   return `${folders} couldn't be read (no permission)${such}, so ${n === 1 ? 'it wasn\'t' : 'they weren\'t'} scanned.`;
 }
 
+// What to say after a scan about junk left out because the user can't remove it ('' when none)
+function notAllowedText(stats) {
+  const n = Number(stats?.not_allowed_items) || 0;
+  if (!n) return '';
+  const example = (stats.not_allowed_examples || [])[0];
+  const such = example ? ` One of them: ${example}.` : '';
+  return `${n.toLocaleString()} item${n === 1 ? '' : 's'} (${formatBytesShort(stats.not_allowed_bytes)}) looked like junk but aren't listed, because you don't have permission to remove ${n === 1 ? 'it' : 'them'}.${such}`;
+}
+
 // The delete dialog's warning when some selected items were never drawn in the list
 function unseenLine(unseen, total) {
   return `${Number(unseen).toLocaleString()} of these ${Number(total).toLocaleString()} items are further down the list and haven't been shown. Cancel and use Show all to look through them first, or type DELETE to go ahead.`;
@@ -1874,6 +1883,8 @@ function updateScanProgress(stats) {
 
 // Folders the scan wasn't allowed to read are reported, never silently skipped
 function notifyUnreadable(stats) {
+  const notAllowed = notAllowedText(stats);
+  if (notAllowed) showStickyToast(notAllowed, { type: 'info' });
   const message = unreadableText(stats);
   if (!message) return;
   if (stats.privacy_blocked_dirs) showPrivacyNotice(message);

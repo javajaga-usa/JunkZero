@@ -295,7 +295,18 @@ def has_trash(path: str, root: str, fs: str) -> bool:
         return True
     if is_removable_mount(root):
         return False
-    return fs in LOCAL_FS
+    return fs in LOCAL_FS and trash_usable(root)
+
+
+def trash_usable(root: str) -> bool:
+    """True if the Trash can keep items from this disk: its top folder has this user's Trash
+    (.Trash-<uid>, or .Trash/<uid>) or lets the user make one. A disk formatted on another
+    computer often has a top folder only root can change, where the Trash can't be made."""
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    for trash in (os.path.join(root, f".Trash-{uid}"), os.path.join(root, ".Trash", str(uid))):
+        if os.path.isdir(trash) and os.access(trash, os.W_OK | os.X_OK):
+            return True
+    return os.access(root, os.W_OK | os.X_OK)
 
 
 def holding_reason(root: str, fs: str, label: str) -> str:
@@ -305,6 +316,8 @@ def holding_reason(root: str, fs: str, label: str) -> str:
         return "network drives have no Trash"
     if is_removable_mount(root):
         return "on USB drives and memory cards the Trash is easy to lose, so JunkZero keeps items itself"
+    if fs in LOCAL_FS:
+        return "the top folder of this disk belongs to another account, so the Trash can't be used there"
     if fs:
         return f"on {label} disks JunkZero doesn't rely on the Trash"
     return "JunkZero can't tell how this disk is formatted, so it doesn't rely on the Trash"

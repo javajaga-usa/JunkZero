@@ -177,7 +177,12 @@ def test_trash_is_used_on_home_disk_and_linux_disks_only(monkeypatch, tmp_path):
     assert not linux.has_trash("/media/alex/USB/x", "/media/alex/USB", "ext4")
     assert not linux.has_trash("/run/media/alex/USB/x", "/run/media/alex/USB", "vfat")
     assert not linux.has_trash("/mnt/windows/x", "/mnt/windows", "fuseblk")
+    monkeypatch.setattr(linux, "trash_usable", lambda root: True)
     assert linux.has_trash("/data/x", "/data", "ext4")
+    # A disk whose top folder only root can change can't hold the user's Trash
+    monkeypatch.setattr(linux, "trash_usable", lambda root: False)
+    assert not linux.has_trash("/data/x", "/data", "ext4")
+    assert "belongs to another account" in linux.holding_reason("/data", "ext4", "ext4")
     monkeypatch.setattr(linux, "_same_disk", lambda a, b: True)
     assert linux.has_trash(str(tmp_path / "x"), "/", "ext4")
 
@@ -441,3 +446,84 @@ def test_no_windows_app_caches_on_linux(linux_os, tmp_path):
     from app.engine import appcaches
     (tmp_path / "Slack" / "Cache").mkdir(parents=True)
     assert appcaches.app_cache_entries({"APPDATA": str(tmp_path)}, running=set()) == []
+
+
+# ---------------------------------------------------------------- Disks whose top folder belongs to root
+
+@posix_only
+def test_trash_usable_needs_the_users_trash_or_a_writable_top_folder(tmp_path, monkeypatch):
+    disk = tmp_path / "disk"
+    disk.mkdir()
+    monkeypatch.setattr(linux.os, "access", lambda p, mode: str(p) != str(disk))
+    assert not linux.trash_usable(str(disk))
+    (disk / f".Trash-{os.getuid()}").mkdir()
+    assert linux.trash_usable(str(disk))
+
+
+def _root_owned_usb(tmp_path, monkeypatch):
+    """An ext4 USB disk (as MX Linux mounts it under /media) whose top folder belongs to root,
+    with the user's own old project inside, like a backup copied from another computer."""
+    disk = tmp_path / "files"
+    target = disk / "EXT4" / "Red" / "Old-HD" / "app" / "target"
+    (target / "classes").mkdir(parents=True)
+    (target / "classes" / "Main.class").write_text("x")
+    monkeypatch.setattr(recycle, "has_recycle_bin", lambda p: False)
+    monkeypatch.setattr(recycle, "mount_point", lambda p: str(disk))
+    monkeypatch.setattr(recycle, "_writable_dir", lambda f: os.path.isdir(f) and str(f) != str(disk))
+    return disk, target
+
+
+@posix_only
+def test_items_on_a_disk_with_a_root_owned_top_folder_are_set_aside_and_restored(linux_os, tmp_path, monkeypatch):
+    from app.engine import cleaner
+    disk, target = _root_owned_usb(tmp_path, monkeypatch)
+    assert recycle.holding_root(str(target)) == str(disk / "EXT4")
+    result = cleaner.delete_items([{"path": str(target), "size_bytes": 1, "is_directory": True}], exclusions=[])
+    assert result.errors == [] and result.deleted_count == 1 and not target.exists()
+    held = result.held[str(target)]
+    assert held.startswith(str(disk / "EXT4" / ".JunkZero-holding") + os.sep)
+    assert not (disk / ".JunkZero-holding").exists()
+    outcome = recycle.restore_cleanup({"timestamp": time.time(), "mode": "recycle_bin", "paths": [str(target)],
+                                       "held": result.held, "trash_ids": {}, "restored": []})
+    assert outcome["errors"] == [] and (target / "classes" / "Main.class").read_text() == "x"
+
+
+@posix_only
+def test_holding_root_is_the_disk_top_when_the_user_can_change_it(tmp_path, monkeypatch):
+    disk, target = _root_owned_usb(tmp_path, monkeypatch)
+    monkeypatch.setattr(recycle, "_writable_dir", lambda f: True)
+    assert recycle.holding_root(str(target)) == str(disk)
+
+
+@posix_only
+def test_removal_blocker_names_items_of_another_account(tmp_path, monkeypatch):
+    from app.engine import permissions
+    folder = tmp_path / "theirs"
+    folder.mkdir()
+    item = folder / "old.tmp"
+    item.write_text("x")
+    owner = folder.stat().st_uid
+    real_access = os.access
+    monkeypatch.setattr(permissions.os, "getuid", lambda: owner + 1)
+    monkeypatch.setattr(permissions.os, "access", lambda p, mode: False if str(p) == str(folder) else real_access(p, mode))
+    assert "the folder it is in belongs to" in permissions.removal_blocker(str(item))
+    # The user's own read-only folder is no blocker: JunkZero makes it writable before deleting
+    monkeypatch.setattr(permissions.os, "getuid", lambda: owner)
+    assert permissions.removal_blocker(str(item)) == ""
+
+
+@posix_only
+def test_scan_leaves_out_junk_the_user_cannot_remove(linux_home, tmp_path, monkeypatch):
+    from app.engine import permissions
+    project = linux_home / "Projects" / "app"
+    (project / "old.tmp").write_text("x" * 10)
+    blocked = linux_home / "Projects" / "app" / "__pycache__"
+    blocked.mkdir()
+    (blocked / "m.pyc").write_text("x")
+    monkeypatch.setattr(permissions, "removal_blocker",
+                        lambda p: "it belongs to the system" if os.path.basename(p) == "__pycache__" else "")
+    scanner = FastScanner(ScanOptions(target_path=str(linux_home / "Projects")))
+    items = scanner.run_scan()
+    assert not any(i.name == "__pycache__" for i in items)
+    assert scanner.stats.not_allowed_items == 1
+    assert scanner.stats.not_allowed_examples[0].endswith("(it belongs to the system)")

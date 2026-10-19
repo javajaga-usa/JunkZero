@@ -46,7 +46,7 @@ from app.engine.classifier import (
     is_skipped_store,
     is_system_protected_path,
 )
-from app.engine import dupfolders, projects, spacelog
+from app.engine import dupfolders, permissions, projects, spacelog
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_reason, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
 from app.engine.filetypes import FileTypeMatcher
@@ -101,6 +101,10 @@ class ScanStats:
     unreadable_dirs: int = 0
     privacy_blocked_dirs: int = 0
     unreadable_examples: List[str] = field(default_factory=list)
+    # Junk the user isn't allowed to remove (another account's or the system's), left out of the list
+    not_allowed_items: int = 0
+    not_allowed_bytes: int = 0
+    not_allowed_examples: List[str] = field(default_factory=list)
 
 
 class FastScanner:
@@ -515,6 +519,14 @@ class FastScanner:
 
     def _record_item(self, item: GarbageItem) -> None:
         """Add a found item to results and stats, and notify the callback. Caller holds the lock."""
+        blocker = permissions.removal_blocker(item.path)
+        if blocker:
+            # Listing what can't be deleted only ends in a failed delete: counted, not listed
+            self.stats.not_allowed_items += 1
+            self.stats.not_allowed_bytes += item.size_bytes
+            if len(self.stats.not_allowed_examples) < 5:
+                self.stats.not_allowed_examples.append(f"{item.path} ({blocker})")
+            return
         self._scorer.apply(item)
         self._safeguards.apply(item)
         self.garbage_items.append(item)

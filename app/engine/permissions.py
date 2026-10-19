@@ -139,6 +139,38 @@ def _not_mine(path: str) -> Optional[str]:
     return None if uid == os.getuid() else _owner_name(uid)
 
 
+def _whose(uid: int) -> str:
+    name = _owner_name(uid)
+    return "the system" if name == "root" else f"the account {name!r}"
+
+
+def removal_blocker(path: str) -> str:
+    """Why the user can't remove path, in plain words, or "" if they can (or it can't be told).
+    Only what JunkZero can't fix counts: a folder or item belonging to another account or the
+    system. The user's own read-only folder doesn't, because make_writable() fixes it, and a
+    read-only disk is explained per disk instead."""
+    if osinfo.is_windows() or not hasattr(os, "getuid") or os.getuid() == 0:
+        return ""
+    uid = os.getuid()
+    parent = os.path.dirname(os.path.abspath(path))
+    try:
+        st, parent_st = os.lstat(path), os.stat(parent)
+        if os.statvfs(parent).f_flag & os.ST_RDONLY:
+            return ""
+    except (OSError, AttributeError):
+        return ""
+    rights = "and JunkZero doesn't use administrator rights"
+    if parent_st.st_uid != uid and not os.access(parent, os.W_OK | os.X_OK):
+        return f"the folder it is in belongs to {_whose(parent_st.st_uid)}, {rights}"
+    # In a shared folder (sticky bit, like /tmp) only the owner may remove an item
+    if parent_st.st_mode & stat.S_ISVTX and st.st_uid != uid and parent_st.st_uid != uid:
+        return f"it belongs to {_whose(st.st_uid)}, {rights}"
+    # Moving a folder into the Trash changes it too
+    if stat.S_ISDIR(st.st_mode) and st.st_uid != uid and not os.access(path, os.W_OK | os.X_OK):
+        return f"it belongs to {_whose(st.st_uid)}, {rights}"
+    return ""
+
+
 def explain(err: BaseException, path: str) -> Optional[Tuple[str, str]]:
     """(kind, what to tell the user) for a permission problem with path, or None if err is not one."""
     if not is_permission_error(err):

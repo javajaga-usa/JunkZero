@@ -685,6 +685,9 @@ async def api_start_scan(req: ScanRequest):
                     "privacy_blocked_dirs": stats.privacy_blocked_dirs,
                     "unreadable_examples": list(stats.unreadable_examples),
                     "privacy_fix": permissions.mac_privacy_fix() if stats.privacy_blocked_dirs else "",
+                    "not_allowed_items": stats.not_allowed_items,
+                    "not_allowed_bytes": stats.not_allowed_bytes,
+                    "not_allowed_examples": list(stats.not_allowed_examples),
                 },
                 "error": error,
             }
