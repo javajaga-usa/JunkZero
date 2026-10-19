@@ -38,7 +38,32 @@ def systemd_user_available() -> bool:
 
 
 def cron_available() -> bool:
-    return bool(shutil.which("crontab"))
+    """crontab is installed and this account may use it (/etc/cron.allow, /etc/cron.deny)."""
+    if not shutil.which("crontab"):
+        return False
+    try:
+        res = _run(["crontab", "-l"])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not _cron_denied(res.stderr)
+
+
+def _cron_denied(stderr: Optional[str]) -> bool:
+    return "not allowed" in (stderr or "").lower()
+
+
+def cron_denied() -> bool:
+    """crontab is installed but this account may not use it."""
+    if not shutil.which("crontab"):
+        return False
+    try:
+        return _cron_denied(_run(["crontab", "-l"]).stderr)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+CRON_DENIED = ("Your account isn't allowed to use cron (set in /etc/cron.allow or /etc/cron.deny), "
+               "so JunkZero can't schedule scans. An administrator can allow it.")
 
 
 def scheduler_kind() -> Optional[str]:
@@ -61,6 +86,9 @@ def unit_dir() -> Path:
     return Path(base) / "systemd" / "user"
 
 
+_ENV = "/usr/bin/env"
+
+
 def _systemd_quote(arg: str) -> str:
     """One ExecStart argument: systemd expands % specifiers and $VARIABLES, so they are doubled."""
     arg = arg.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
@@ -68,12 +96,14 @@ def _systemd_quote(arg: str) -> str:
 
 
 def systemd_service(program_args: List[str]) -> str:
+    """systemd refuses a program path holding ' " or \\ and doesn't undo $$ in it, so the
+    program is started through /usr/bin/env, where the path is an ordinary argument."""
     return (
         "[Unit]\n"
         "Description=JunkZero report-only scan (never deletes anything)\n\n"
         "[Service]\n"
         "Type=oneshot\n"
-        f"ExecStart={' '.join(_systemd_quote(a) for a in program_args)}\n"
+        f"ExecStart={' '.join(_systemd_quote(a) for a in [_ENV, *program_args])}\n"
         "Nice=10\n"
         "IOSchedulingClass=idle\n"
     )
@@ -101,7 +131,8 @@ def parse_exec_start(service_text: str) -> Optional[List[str]]:
         args = shlex.split(m.group(1))
     except ValueError:
         return None
-    return [a.replace("%%", "%").replace("$$", "$") for a in args]
+    args = [a.replace("%%", "%").replace("$$", "$") for a in args]
+    return args[1:] if args[:1] == [_ENV] else args
 
 
 def _systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -172,6 +203,8 @@ def read_crontab() -> str:
     if res.returncode != 0:
         if "no crontab" in (res.stderr or "").lower():
             return ""
+        if _cron_denied(res.stderr):
+            raise LinuxScheduleError(CRON_DENIED)
         raise LinuxScheduleError((res.stderr or "crontab -l failed").strip())
     return res.stdout or ""
 
@@ -197,7 +230,7 @@ def install_cron(frequency: str, time_str: str, day: str, program_args: List[str
 
 def remove_cron() -> None:
     if not cron_available():
-        return
+        return  # Not installed or not allowed: there is no JunkZero line to remove
     current = read_crontab()
     lines = without_junkzero(current)
     if lines != current.splitlines():
@@ -228,6 +261,8 @@ def cron_command() -> Optional[List[str]]:
 def install(frequency: str, time_str: str, day: str, program_args: List[str]) -> str:
     """Set up the schedule with systemd or cron (and remove it from the other). Returns which."""
     kind = scheduler_kind()
+    if kind is None and cron_denied():
+        raise LinuxScheduleError(CRON_DENIED)
     if kind is None:
         raise LinuxScheduleError("Scheduled scans need systemd or cron, and neither was found. "
                                  "Install cron in a terminal: sudo apt install cron")
@@ -246,5 +281,14 @@ def remove() -> None:
 
 
 def current_command() -> Optional[List[str]]:
-    """The program the saved schedule runs, from the systemd timer or the crontab, or None."""
-    return systemd_command() or cron_command()
+    """The program the saved schedule runs with the scheduler in use now, or None.
+
+    Only the active kind counts: MX Linux can boot with systemd or SysVinit, and a timer left
+    from a systemd boot never runs under SysVinit, so the schedule must be made again in cron.
+    """
+    kind = scheduler_kind()
+    if kind == SYSTEMD:
+        return systemd_command()
+    if kind == CRON:
+        return cron_command()
+    return None

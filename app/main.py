@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
+from app.config import HOLDING_DAYS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import (
     changes, cleaner, deletecheck, filetypes, linux, linux_scheduler, locations, notify, osinfo, permissions,
     reclaim, recycle, safeguards, scheduler, shortcuts, smart, spacelog, storage,
@@ -38,7 +38,7 @@ from app.engine import (
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
-from app.engine.exclusions import rule_too_broad
+from app.engine.exclusions import expand_rule, is_relative_path_rule, rule_too_broad
 from app.engine.inspector import inspect_path_hierarchy, FolderHierarchyView
 from app.engine.locations import downloads_folder, junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
@@ -478,8 +478,9 @@ def reveal_command(path: str, is_file: bool) -> List[str]:
     """Command that shows path in Finder (macOS) or Windows Explorer, selecting it if it's a file.
     (Linux tries more than one command: see linux.reveal.)"""
     if osinfo.is_macos():
-        # "open" on a folder that is an app or package (Foo.app, a Photos library) would launch it
-        return ["open", "-R", path] if is_file or path.lower().rstrip("/").endswith(MAC_PACKAGE_EXTENSIONS) else ["open", path]
+        # "open" on a folder macOS treats as a package (an app, a Photos library, .pkg, .xcodeproj,
+        # .rtfd, ...) would launch or install it, and the list of such extensions is open-ended
+        return ["open", "-R", path]
     return ["explorer.exe", "/select,", path] if is_file else ["explorer.exe", path]
 
 
@@ -1033,13 +1034,22 @@ def api_get_exclusions():
     return {"rules": storage.get_exclusions()}
 
 
+def _check_exclusions(rules: List[str]) -> None:
+    relative = [r for r in rules if is_relative_path_rule(expand_rule(r))]
+    if relative:
+        raise HTTPException(status_code=400, detail=f"'{relative[0].strip()}' isn't a full path, so it would "
+                            "never match. Use the whole path (Browse picks it) or a pattern such as *.psd")
+
+
 @app.put("/api/exclusions")
 def api_set_exclusions(req: ExclusionsRequest):
+    _check_exclusions(req.rules)
     return {"rules": storage.set_exclusions(req.rules)}
 
 
 @app.post("/api/exclusions/add")
 def api_add_exclusion(req: AddExclusionRequest):
+    _check_exclusions([req.rule])
     return {"rules": storage.set_exclusions(storage.get_exclusions() + [req.rule])}
 
 
@@ -1098,9 +1108,11 @@ def api_clear_history():
 
 @app.get("/api/schedule")
 def api_get_schedule():
+    supported = scheduler.scheduling_supported()
     return {
         "schedule": scheduler.get_schedule(),
-        "supported": scheduler.scheduling_supported(),
+        "supported": supported,
+        "unsupported_reason": "" if supported else scheduler.unsupported_reason(),
         "last_report": scheduler.report_summary(storage.load_report()),
     }
 
@@ -1221,6 +1233,21 @@ def api_latest_report():
     report = storage.load_report()
     if not report:
         raise HTTPException(status_code=404, detail="No scan report yet")
+    return report
+
+
+@app.post("/api/reports/use")
+def api_use_report():
+    """Show the latest scheduled report in the table: it replaces this window's scan, so its
+    items are the ones that can be deleted (a running scan is stopped)."""
+    global current_scanner
+    report = storage.load_report()
+    if not report:
+        raise HTTPException(status_code=404, detail="No scan report yet")
+    with scanner_lock:
+        if current_scanner and current_scanner.stats.is_running:
+            current_scanner.cancel()
+        current_scanner = None
     return report
 
 
@@ -1424,7 +1451,11 @@ def main():
                         help="In report mode, skip the junk locations (temp, caches, logs)")
     parser.add_argument("--show-report", action="store_true",
                         help="Open with the latest scheduled report in the table (used by notifications)")
+    parser.add_argument("--data-dir", default=None,
+                        help="Folder for settings, history and reports (same as JUNKZERO_DATA_DIR)")
     args = parser.parse_args()
+    if args.data_dir:
+        os.environ["JUNKZERO_DATA_DIR"] = args.data_dir
     setup_logging()
     if osinfo.is_linux() and getattr(sys, "frozen", False):
         # Programs JunkZero starts (the browser, the file manager) must use the system's libraries

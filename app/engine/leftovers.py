@@ -104,7 +104,10 @@ def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
     except OSError:
         return 0.0
     seen = 0
-    for root, dirs, files in os.walk(path):
+    unreadable = []
+    for root, dirs, files in os.walk(path, onerror=unreadable.append):
+        if unreadable:
+            return 0.0  # A folder inside couldn't be read: its age is unknown
         for name in dirs + files:
             seen += 1
             try:
@@ -114,7 +117,7 @@ def newest_change(path: str, limit: int = _WALK_LIMIT) -> float:
             if seen >= limit:
                 # Not fully checked, so it can't be called old
                 return 0.0
-    return newest
+    return 0.0 if unreadable else newest
 
 
 # Crypto wallets and keys: losing one loses the money or the account
@@ -160,7 +163,10 @@ def holds_personal_files(path: str, limit: int = _PERSONAL_WALK_LIMIT) -> bool:
     if any(w in os.path.basename(path).lower() for w in _WALLET_FOLDER_WORDS):
         return True
     seen = 0
-    for _, dirs, files in os.walk(path):
+    unreadable = []
+    for _, dirs, files in os.walk(path, onerror=unreadable.append):
+        if unreadable:
+            return True  # A folder inside couldn't be read: it may hold anything
         for name in files:
             if is_personal_file(name):
                 return True
@@ -172,7 +178,7 @@ def holds_personal_files(path: str, limit: int = _PERSONAL_WALK_LIMIT) -> bool:
         seen += len(dirs) + len(files)
         if seen > limit:
             return True
-    return False
+    return bool(unreadable)
 
 
 def find_leftovers(

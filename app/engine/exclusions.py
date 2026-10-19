@@ -1,6 +1,7 @@
 """Path and pattern rules: exclusions (never flagged) and user junk rules (always flagged for review)."""
 from __future__ import annotations
 import fnmatch
+import os
 import re
 from typing import Iterable, List, Optional, Tuple
 
@@ -83,3 +84,19 @@ def rule_too_broad(rule: str) -> bool:
         return not re.sub(r"[*?.\\/\[\]!]", "", rule)
     norm = _norm(rule)
     return norm in ("", "/") or bool(re.fullmatch(r"[a-z]:", norm))
+
+
+def expand_rule(rule: str) -> str:
+    """~, $HOME and %USERPROFILE% in a rule become the real folder, so the rule can match."""
+    rule = (rule or "").strip()
+    if rule.startswith("~") or "$" in rule or "%" in rule:
+        rule = os.path.expandvars(os.path.expanduser(rule))
+    return rule
+
+
+def is_relative_path_rule(rule: str) -> bool:
+    """True for a path rule that isn't a full path ("Documents/Taxes"): it would never match."""
+    rule = (rule or "").strip()
+    if not rule or _GLOB_CHARS & set(rule):
+        return False
+    return not (rule.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:[\\/]", rule))

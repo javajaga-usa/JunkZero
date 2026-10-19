@@ -692,10 +692,10 @@
         </div>
         <div class="modal-body">
           <div class="input-with-button">
-            <input type="text" id="exclusionInput" placeholder="C:\Projects\keep-this  or  *.iso" />
+            <input type="text" id="exclusionInput" placeholder="C:\Projects\keep-this  or  ~/Documents/Taxes  or  *.iso" />
             <button id="btnAddExclusion" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add</button>
           </div>
-          <p class="confirm-note">A path excludes that file or folder and everything inside it. Use * or ? for patterns matched against names and paths. Excluded items are never listed by a scan and can't be deleted from any screen (nor can a folder holding one) until you remove them here. Ticking Exclude in a result row adds that item here.</p>
+          <p class="confirm-note">A full path (~ for your home folder works) excludes that file or folder and everything inside it. Use * or ? for patterns matched against names and paths. Excluded items are never listed by a scan and can't be deleted from any screen (nor can a folder holding one) until you remove them here. Ticking Exclude in a result row adds that item here.</p>
           <ul id="exclusionsList" class="simple-list"></ul>
         </div>
         <div class="modal-footer">

@@ -238,7 +238,20 @@ def _remove_permanently(path: str, unlock: bool = False) -> None:
             except PermissionError as again:
                 raise OSError("a file inside it is open in another program, or Windows denied access "
                               "(close programs using it and try again)") from again
-        path = aside
+        try:
+            _rmtree(aside, unlock)
+        except OSError as ex:
+            # Whatever is left goes back under its own name, so it isn't stranded under another
+            try:
+                os.rename(aside, path)
+            except OSError:
+                raise OSError(f"{ex}; what is left of it is in {aside}") from ex
+            raise
+        return
+    _rmtree(path, unlock)
+
+
+def _rmtree(path: str, unlock: bool) -> None:
     # Read-only files and folders of the user's own inside are made writable as they are reached
     if sys.version_info >= (3, 12):
         shutil.rmtree(path, onexc=lambda func, p, exc: permissions.retry_writable(func, p, exc, unlock))
@@ -252,6 +265,12 @@ class TrashSetupError(OSError):
 
 def _send_to_trash(path) -> None:
     """Send one path, or a list of paths in one call, to the Recycle Bin / Trash."""
+    if osinfo.is_linux() and isinstance(path, str):
+        # The freedesktop Trash writes its note before moving the item, so a move refused by the
+        # user's own read-only folder (or file) would leave a stray note: make them writable first
+        parent = os.path.dirname(os.path.abspath(path))
+        if not os.access(parent, os.W_OK) or not os.access(path, os.W_OK, follow_symlinks=False):
+            permissions.make_writable(path)
     try:
         send2trash.send2trash(path)
     except OSError as ex:
@@ -510,11 +529,12 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
                                f"({excluded_inside}); remove it from Exclusions or delete the rest separately"})
                 failed_count += 1
                 continue
-            if size == 0:
-                size = inside_size
-        elif size == 0:
+            # The size now, not the scan's: a stopped scan or an old scheduled report can be far
+            # under it, and Windows erases what is over the Recycle Bin's limit
+            size = max(size, inside_size)
+        else:
             try:
-                size = os.path.getsize(norm_path)
+                size = max(size, os.path.getsize(norm_path))
             except OSError:
                 pass
 

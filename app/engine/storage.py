@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.config import HOLDING_DIR_NAME
+from app.engine.exclusions import expand_rule
 
 HISTORY_LIMIT = 200          # Cleanup records kept
 HISTORY_PATHS_LIMIT = 500    # Paths shown per cleanup record (every path is kept in its own file)
@@ -173,7 +174,7 @@ def get_exclusions() -> List[str]:
 def _clean_rules(rules: List[str]) -> List[str]:
     cleaned: List[str] = []
     for rule in rules:
-        rule = rule.strip()
+        rule = expand_rule(rule)
         if rule and rule not in cleaned:
             cleaned.append(rule)
     return cleaned

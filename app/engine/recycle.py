@@ -14,6 +14,7 @@ import errno
 import os
 import re
 import shutil
+import sys
 import struct
 import subprocess
 import time
@@ -24,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from app.config import HOLDING_DAYS, HOLDING_DIR_NAME
-from app.engine import linux, osinfo, storage
+from app.engine import linux, osinfo, permissions, storage
 
 # ---------------------------------------------------------------- Drives without a Recycle Bin
 
@@ -323,7 +324,21 @@ def _hide_on_windows(path: str) -> None:
 
 
 def _writable_dir(folder: str) -> bool:
-    return os.path.isdir(folder) and os.access(folder, os.W_OK | os.X_OK)
+    if not os.path.isdir(folder):
+        return False
+    if not osinfo.is_windows():
+        return os.access(folder, os.W_OK | os.X_OK)
+    # Windows' access check only sees the read-only attribute, not the folder's permissions
+    # (a network share whose top folder is read-only): try making a folder there
+    if os.path.isdir(os.path.join(folder, HOLDING_DIR_NAME)):
+        return True
+    probe = os.path.join(folder, f".junkzero-check-{uuid.uuid4().hex[:8]}")
+    try:
+        os.mkdir(probe)
+        os.rmdir(probe)
+        return True
+    except OSError:
+        return False
 
 
 def holding_root(path: str) -> str:
@@ -332,7 +347,7 @@ def holding_root(path: str) -> str:
     highest folder above path on the same disk that they can, so the move stays on one disk."""
     path = os.path.abspath(path)
     root = mount_point(path)
-    if osinfo.is_windows() or _writable_dir(root):
+    if _writable_dir(root):
         return root
     try:
         device = os.lstat(path).st_dev
@@ -418,22 +433,23 @@ def _sweep_batch(batch: str, root: str, restored: List[str], errors: List[Dict[s
                 keep.append(name)  # the folder is back already: put back what's inside it
                 continue
             try:
-                _move_back(stored, original)
+                permissions.with_retry(lambda: _move_back(stored, original), original)
                 restored.append(original)
             except _Occupied:
                 errors.append({"path": original, "error": "Something is already at this location; left as it is"})
             except OSError as e:
-                errors.append({"path": original, "error": str(e)})
+                errors.append({"path": original, "error": _restore_error(e, original)})
         dirnames[:] = keep
         for name in filenames:
             original = os.path.normpath(os.path.join(root, rel_dir, name))
             try:
-                _move_back(os.path.join(dirpath, name), original)
+                stored = os.path.join(dirpath, name)
+                permissions.with_retry(lambda: _move_back(stored, original), original)
                 restored.append(original)
             except _Occupied:
                 errors.append({"path": original, "error": "Something is already at this location; left as it is"})
             except OSError as e:
-                errors.append({"path": original, "error": str(e)})
+                errors.append({"path": original, "error": _restore_error(e, original)})
     # What's left is empty folders that are back in place already
     for dirpath, _dirs, _files in sorted(os.walk(batch), key=lambda w: -len(w[0])):
         try:
@@ -443,9 +459,24 @@ def _sweep_batch(batch: str, root: str, restored: List[str], errors: List[Dict[s
 
 
 def _remember_holding_root(root: str) -> None:
-    roots = storage.load_settings().get("holding_roots") or []
-    if root not in roots:
-        storage.update_settings(holding_roots=[*roots, root])
+    with storage.lock():
+        roots = storage.load_settings().get("holding_roots") or []
+        if root not in roots:
+            storage.update_settings(holding_roots=[*roots, root])
+
+
+def _erase_batch(path: str) -> None:
+    """Erase a holding batch; the user's own read-only files and folders in it (copied off a
+    disc, Go's module cache) are made writable as they are reached. What can't go stays."""
+    def retry(func, p, exc):
+        try:
+            permissions.retry_writable(func, p, exc)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=lambda func, p, exc_info: retry(func, p, exc_info[1]))
 
 
 def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
@@ -455,15 +486,15 @@ def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
     aren't plugged in are kept in the list for next time."""
     now = time.time() if now is None else now
     removed = 0
-    keep_roots = []
+    emptied_roots = []
     recorded = storage.recorded_holding_batches()
     purged: List[str] = []
     for root in storage.load_settings().get("holding_roots") or []:
         holding = os.path.join(root, HOLDING_DIR_NAME)
         if not os.path.isdir(root):
-            keep_roots.append(root)
             continue
         if not os.path.isdir(holding):
+            emptied_roots.append(root)
             continue
         for entry in list(os.scandir(holding)):
             m = _BATCH_RE.match(entry.name)
@@ -474,15 +505,20 @@ def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
             if recorded_at is None:
                 continue
             if now - made >= days * 86400 and now - recorded_at >= days * 86400:
-                shutil.rmtree(entry.path, ignore_errors=True)
+                _erase_batch(entry.path)
                 if not os.path.exists(entry.path):
                     purged.append(entry.name)
-                removed += 1
+                    removed += 1
         try:
             os.rmdir(holding)  # only succeeds once nothing is left in it
+            emptied_roots.append(root)
         except OSError:
-            keep_roots.append(root)
-    storage.update_settings(holding_roots=keep_roots)
+            pass
+    # Read again: a delete may have started a holding folder on another drive meanwhile
+    with storage.lock():
+        roots = storage.load_settings().get("holding_roots") or []
+        storage.update_settings(holding_roots=[r for r in roots if r not in emptied_roots
+                                                   or os.path.isdir(os.path.join(r, HOLDING_DIR_NAME))])
     storage.forget_purged_cleanups(purged)
     return removed
 
@@ -548,13 +584,15 @@ def _norm(path: str) -> str:
 
 
 def find_in_windows_recycle_bin(original: str, since: float, bin_root: Optional[str] = None,
-                                index: Optional[RecycleIndex] = None) -> Optional[Tuple[str, List[str]]]:
-    """(stored item, files to remove after restoring) for the newest matching item deleted after since."""
+                                index: Optional[RecycleIndex] = None,
+                                until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
+    """(stored item, files to remove after restoring) for the newest matching item deleted
+    between since and until: one deleted later from the same place is a different item."""
     if index is None:
         index = windows_recycle_index(bin_root or os.path.join(mount_point(original), "$Recycle.Bin"))
     best: Optional[Tuple[float, str, str]] = None
     for deleted, stored, info_file in index.get(_norm(original), []):
-        if deleted < since:
+        if deleted < since or (until is not None and deleted > until):
             continue
         if os.path.lexists(stored) and (best is None or deleted > best[0]):
             best = (deleted, stored, info_file)
@@ -571,7 +609,8 @@ def _xdg_trash_dirs(original: str) -> List[Tuple[str, str]]:
     return dirs
 
 
-def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tuple[str, str]]] = None) -> Optional[Tuple[str, List[str]]]:
+def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tuple[str, str]]] = None,
+                      until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
     best: Optional[Tuple[float, str, str]] = None
     for trash, top in (trash_dirs if trash_dirs is not None else _xdg_trash_dirs(original)):
         info_dir = os.path.join(trash, "info")
@@ -598,7 +637,7 @@ def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tup
                 deleted = time.mktime(datetime.strptime(date_m.group(1), "%Y-%m-%dT%H:%M:%S").timetuple()) if date_m else 0
             except ValueError:
                 deleted = 0
-            if not _same(path, original) or deleted < since - 1:
+            if not _same(path, original) or deleted < since - 1 or (until is not None and deleted > until + 1):
                 continue
             stored = os.path.join(trash, "files", entry.name[:-len(".trashinfo")])
             if os.path.lexists(stored) and (best is None or deleted > best[0]):
@@ -652,19 +691,25 @@ def find_in_trash(original: str, since: float, file_id: Optional[List[int]] = No
     if osinfo.is_windows():
         bin_root = os.path.join(mount_point(original), "$Recycle.Bin")
         if bins is None:
-            return find_in_windows_recycle_bin(original, since, bin_root)
+            return find_in_windows_recycle_bin(original, since, bin_root, until=until)
         if bin_root not in bins:
             bins[bin_root] = windows_recycle_index(bin_root)
-        return find_in_windows_recycle_bin(original, since, index=bins[bin_root])
+        return find_in_windows_recycle_bin(original, since, index=bins[bin_root], until=until)
     if osinfo.is_macos():
         return find_in_mac_trash(original, since, file_id=file_id, until=until)
-    return find_in_xdg_trash(original, since)
+    return find_in_xdg_trash(original, since, until=until)
 
 
 # ---------------------------------------------------------------- Restoring a cleanup
 
 class _Occupied(OSError):
     pass
+
+
+def _restore_error(err: OSError, original: str) -> str:
+    """What to tell the user when an item can't be put back, in plain words."""
+    why = permissions.explain(err, original)
+    return f"Can't put it back: {why[1] if why else err.strerror or err}"
 
 
 def _move_back(stored: str, original: str) -> None:
@@ -710,14 +755,14 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
                 if not os.path.lexists(stored):
                     errors.append({"path": original, "error": "No longer in JunkZero's holding folder"})
                     continue
-                _move_back(stored, original)
+                permissions.with_retry(lambda: _move_back(stored, original), original)
             else:
                 found = find_in_trash(original, since, trash_ids.get(original), until, bins)
                 if not found:
                     errors.append({"path": original, "error": "Not found in the Recycle Bin (it may have been emptied)"})
                     continue
                 stored, leftovers = found
-                _move_back(stored, original)
+                permissions.with_retry(lambda: _move_back(stored, original), original)
                 for extra in leftovers:
                     try:
                         os.remove(extra)
@@ -727,7 +772,7 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
         except _Occupied:
             errors.append({"path": original, "error": "Something is already at this location; left as it is"})
         except OSError as e:
-            errors.append({"path": original, "error": str(e)})
+            errors.append({"path": original, "error": _restore_error(e, original)})
 
     # Anything still in this cleanup's holding batches goes back too. Older history kept only
     # the first 500 items of a cleanup, but the batch folder holds all of them.

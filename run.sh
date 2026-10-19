@@ -21,6 +21,16 @@ if ! command -v python3 >/dev/null 2>&1; then
     fail "JunkZero needs Python 3. Install it in a terminal: sudo apt install python3 python3-venv"
 fi
 
+# Its own folder must be writable for the Python environment (not when it was copied or cloned
+# with sudo, or sits on a disk whose top folder belongs to root)
+not_writable="JunkZero can't write in its folder ($PWD). Copy the JunkZero folder into your home folder and start it from there, or make it yours in a terminal: sudo chown -R $(id -un) \"$PWD\""
+if [ ! -x ".venv/bin/python" ] && [ ! -w . ]; then
+    fail "$not_writable"
+fi
+if [ -d ".venv" ] && [ ! -w ".venv" ]; then
+    fail "$not_writable"
+fi
+
 if [ ! -x ".venv/bin/python" ]; then
     echo "First run: setting up JunkZero's Python environment..."
     if ! python3 -m venv --system-site-packages .venv; then
@@ -29,6 +39,9 @@ if [ ! -x ".venv/bin/python" ]; then
         rm -rf .venv
         if ! python3 -m venv --without-pip --system-site-packages .venv || ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
             rm -rf .venv
+            if python3 -c "import ensurepip" >/dev/null 2>&1; then
+                fail "Python couldn't make JunkZero's environment in $PWD (see the message above)."
+            fi
             fail "Python's venv and pip are needed. Install them in a terminal: sudo apt install python3-venv python3-pip"
         fi
     fi

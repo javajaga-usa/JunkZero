@@ -195,6 +195,7 @@ def test_schtasks_arguments():
 
 def test_task_command_for_packaged_exe(monkeypatch):
     assert scheduler.task_command(r"C:\d\s.pyw").endswith('"C:\\d\\s.pyw"')
+    monkeypatch.delenv("JUNKZERO_DATA_DIR", raising=False)
     monkeypatch.setattr(scheduler.sys, "frozen", True, raising=False)
     monkeypatch.setattr(scheduler.sys, "executable", r"C:\Apps\JunkZero.exe")
     assert scheduler.task_command(r"C:\d\s.pyw") == '"C:\\Apps\\JunkZero.exe" --mode report'

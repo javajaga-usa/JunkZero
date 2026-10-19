@@ -3,11 +3,13 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import time
 from pathlib import Path
 from typing import Dict, Optional
 from pydantic import BaseModel
 
 from app.config import ARCHIVE_EXTENSIONS
+from app.engine import safeguards
 from app.engine.archives import inspect_archive
 from app.engine.classifier import _in_build_output_folder, _in_disposable_folder
 from app.engine.installers import inspect_exe, is_uninstaller_name
@@ -73,7 +75,7 @@ OFFLINE_KNOWLEDGE_BASE: Dict[str, Dict[str, str]] = {
     ".apk": {
         "type": "Android Application Package",
         "origin": "Android OS / Mobile App Installers",
-        "verdict": "Safe to Delete",
+        "verdict": "Review Carefully",
         "explanation": "This is an installation package for an Android mobile device. On a Windows PC, APK files are usually downloaded backups or emulator installers.",
         "recommendation": "Unless you plan to sideload this APK onto an Android device or emulator, you can safely delete it."
     },
@@ -94,7 +96,7 @@ OFFLINE_KNOWLEDGE_BASE: Dict[str, Dict[str, str]] = {
     ".msi": {
         "type": "Windows Installer Package",
         "origin": "Windows Installer Service",
-        "verdict": "Safe to Delete",
+        "verdict": "Review Carefully",
         "explanation": "This is a setup installer package. Once the software has been installed on your PC, the installer file in your Downloads folder is no longer required.",
         "recommendation": "Safe to delete from Downloads/Desktop. Does not uninstall the application."
     },
@@ -237,13 +239,37 @@ def analyze_item(path_str: str) -> AIAnalysisResult:
 
 
 def _offline_analysis(path_str: str) -> AIAnalysisResult:
-    """JunkZero's own verdict, from what it knows about the file type and where it is."""
+    """JunkZero's own verdict, never surer than the scanner's safeguards: nothing changed in
+    the last 24 hours, in a cloud folder or personal is called safe."""
+    result = _offline_by_type(path_str)
+    if result.safety_verdict != "Safe to Delete":
+        return result
+    why = ""
+    try:
+        st = os.stat(path_str)
+        if os.path.isfile(path_str) and time.time() - safeguards.last_changed(st) < safeguards.RECENT_SECONDS:
+            why = "it changed in the last 24 hours (a download or program may still be using it)"
+    except OSError:
+        pass
+    provider = safeguards.cloud_provider(path_str, safeguards.cloud_folders())
+    if provider:
+        why = f"it is in {provider}, so deleting it also removes it from your other devices"
+    if os.path.isfile(path_str) and safeguards.is_personal_file(os.path.basename(path_str)):
+        why = "it looks like a personal file"
+    if why:
+        result.safety_verdict = "Review Carefully"
+        result.recommendation = f"Check it before deleting: {why}."
+    return result
+
+
+def _offline_by_type(path_str: str) -> AIAnalysisResult:
+    """What JunkZero knows about the file type and where it is."""
     path = Path(path_str)
     file_name = path.name
     suffix = path.suffix.lower()
 
-    # Offline Heuristic Analysis
-    info = OFFLINE_KNOWLEDGE_BASE.get(suffix)
+    # Offline Heuristic Analysis (by extension, so only for files: a folder named Photos.zip isn't one)
+    info = None if path.is_dir() else OFFLINE_KNOWLEDGE_BASE.get(suffix)
 
     # Check directory names. Only __pycache__ is safe by name; a folder called target or build
     # can hold anything (the scanner rates them Review too)
@@ -268,7 +294,7 @@ def _offline_analysis(path_str: str) -> AIAnalysisResult:
             explanation = "This program removes an installed app. Windows needs it to uninstall that app cleanly."
             recommendation = "Keep it. Uninstall the app from Settings instead if you no longer want it."
         elif exe.is_installer:
-            verdict, kind = "Safe to Delete", "Setup Program"
+            verdict, kind = "Review Carefully", "Setup Program"  # The scanner rates installers Review too
             explanation = f"JunkZero checked inside: {exe.evidence}. It installs software and is not needed to run it."
             recommendation = "If the program is already installed, this setup file can go. Keep it only if you may reinstall offline."
         else:
@@ -294,7 +320,7 @@ def _offline_analysis(path_str: str) -> AIAnalysisResult:
                 file_path=path_str,
                 detected_type="Setup / Software Archive",
                 origin_application="Downloaded software package",
-                safety_verdict="Safe to Delete" if verdict.clean else "Review Carefully",
+                safety_verdict="Review Carefully",  # Like the scanner: setup archives are Review
                 explanation=f"JunkZero looked inside without unpacking it: {verdict.summary}.",
                 recommendation="If the program is already installed or extracted, this download can go.",
                 ai_powered=False

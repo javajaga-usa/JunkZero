@@ -238,7 +238,7 @@ def test_finder_reveal_and_trash_on_mac(mac, monkeypatch, tmp_path):
     assert client.post("/api/system/open-explorer", json={"path": str(f)}).status_code == 200
     assert client.post("/api/system/open-explorer", json={"path": str(tmp_path)}).status_code == 200
     assert client.post("/api/system/open-recycle-bin").status_code == 200
-    assert launched == [["open", "-R", str(f)], ["open", str(tmp_path)],
+    assert launched == [["open", "-R", str(f)], ["open", "-R", str(tmp_path)],
                         ["open", os.path.expanduser("~/.Trash")]]
     info = client.get("/api/system/info").json()
     assert info["platform"] == "macos" and info["trash"] == "Trash" and info["file_manager"] == "Finder"

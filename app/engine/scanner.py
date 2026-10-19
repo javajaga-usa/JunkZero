@@ -6,7 +6,6 @@ import os
 import shutil
 import time
 import threading
-from datetime import datetime
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -15,6 +14,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from app.config import (
     BACKUP_DIR_NAMES,
+    BACKUP_IMAGE_EXTENSIONS,
+    VM_DISK_EXTENSIONS,
     BACKUP_DIR_SUFFIXES,
     BUILD_DIR_NAMES,
     HOLDING_DIR_NAME,
@@ -36,6 +37,7 @@ from app.config import (
     VCS_DIR_NAMES,
 )
 from app.engine.classifier import (
+    format_date,
     GarbageItem,
     _in_app_folder,
     build_item,
@@ -55,6 +57,9 @@ from app.engine.leftovers import find_program_leftovers
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 from app.engine.safeguards import Safeguards, last_changed
 from app.engine.smart import SmartScorer
+
+
+_NEVER_LISTED_EXTENSIONS = BACKUP_IMAGE_EXTENSIONS | VM_DISK_EXTENSIONS
 
 
 def _norm_path(path: str) -> str:
@@ -144,6 +149,9 @@ class FastScanner:
         # completely (something skipped, excluded or unreadable), which are never compared
         self._folder_files: Dict[str, List[Tuple[str, int]]] = {}
         self._incomplete: Set[str] = set()
+        # Folders of another account's inside what is scanned (see permissions.foreign_folder)
+        self._foreign_dirs: Set[str] = set()
+        self._check_owners = hasattr(os, "getuid") and os.getuid() != 0 and not osinfo.is_windows()
         # Old projects: project folder -> its newest change (0: unknown), worked out once
         self._project_activity: Dict[str, float] = {}
 
@@ -157,6 +165,11 @@ class FastScanner:
     def set_callback(self, callback: Callable[[GarbageItem, ScanStats], None]) -> None:
         """Set a real-time event callback triggered when a garbage item is found."""
         self._callback = callback
+
+    def _note_foreign(self, path: str, st: os.stat_result) -> None:
+        """Remember a folder inside the scan that belongs to another account and can't be changed."""
+        if self._check_owners and permissions.foreign_folder(path, st):
+            self._foreign_dirs.add(os.path.normcase(os.path.abspath(path)))
 
     def _calc_dir_size(self, dir_path: str) -> int:
         """Quickly compute total size of a directory entry."""
@@ -173,6 +186,7 @@ class FastScanner:
                         if entry.is_file(follow_symlinks=False):
                             total += entry.stat(follow_symlinks=False).st_size
                         elif entry.is_dir(follow_symlinks=False):
+                            self._note_foreign(entry.path, entry.stat(follow_symlinks=False))
                             total += self._calc_dir_size(entry.path)
                     except (PermissionError, FileNotFoundError, OSError):
                         continue
@@ -332,6 +346,7 @@ class FastScanner:
                     if is_dir:
                         with self._lock:
                             self.stats.total_dirs_scanned += 1
+                        self._note_foreign(path, stat)
 
                         # A hidden subfolder (even an empty one) means this folder is not
                         # empty, and is never reported as empty itself: apps create them on purpose
@@ -406,6 +421,13 @@ class FastScanner:
                         # Cloud files kept only online free no space here, and opening them
                         # (to look inside or compare) would download them: never listed
                         if osinfo.is_online_only(stat):
+                            complete = False
+                            continue
+
+                        # Backup images and VM disks are never listed, as anything: not as old
+                        # downloads, not as duplicates (a second copy is a backup), and the folder
+                        # holding one isn't compared as a duplicate folder
+                        if os.path.splitext(name)[1].lower() in _NEVER_LISTED_EXTENSIONS:
                             complete = False
                             continue
 
@@ -520,6 +542,8 @@ class FastScanner:
     def _record_item(self, item: GarbageItem) -> None:
         """Add a found item to results and stats, and notify the callback. Caller holds the lock."""
         blocker = permissions.removal_blocker(item.path)
+        if not blocker and item.is_directory:
+            blocker = permissions.inner_blocker(item.path, self._foreign_dirs)
         if blocker:
             # Listing what can't be deleted only ends in a failed delete: counted, not listed
             self.stats.not_allowed_items += 1
@@ -593,7 +617,7 @@ class FastScanner:
                 size_bytes=0,
                 size_formatted=format_size(0),
                 modified_timestamp=mtime,
-                modified_date=datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown",
+                modified_date=format_date(mtime),
                 risk_level=RISK_SAFE,
                 reason=reason,
                 is_directory=True,
@@ -647,7 +671,14 @@ class FastScanner:
     def _find_duplicate_folders(self, roots: List[str]) -> Tuple[List[GarbageItem], List[str]]:
         """(items, every folder in a duplicate group) for folders holding exactly the same files."""
         children = {path: kids for path, (_content, kids) in self._dir_tree.items()}
-        infos = dupfolders.signatures(children, self._folder_files, self._incomplete)
+        # A folder holding something already listed isn't offered whole as well: the same bytes
+        # would be counted twice and the inner item reported deleted when the folder went
+        with self._lock:
+            unsure = set(self._incomplete)
+            for listed in self.garbage_items:
+                unsure.add(os.path.dirname(listed.path))
+                unsure.add(listed.path)
+        infos = dupfolders.signatures(children, self._folder_files, unsure)
         root_keys = {_norm_path(r) for r in roots}
         user_folders = protected_user_folders()
 
@@ -714,6 +745,7 @@ class FastScanner:
         self._dup_candidates.clear()
         self._folder_files.clear()
         self._incomplete.clear()
+        self._foreign_dirs.clear()
         self._project_activity.clear()
         try:
             self._run_scan_steps()

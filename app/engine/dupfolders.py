@@ -57,10 +57,20 @@ def _within(path: str, folder: str) -> bool:
     return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
 
 
-def content_digest(folder: str, stop: Optional[threading.Event] = None) -> Optional[str]:
-    """Hash of every file's place and contents in the folder (None if any can't be read)."""
+def content_digest(folder: str, stop: Optional[threading.Event] = None,
+                   inodes: Optional[Set[Tuple[int, int]]] = None) -> Optional[str]:
+    """Hash of every file's place and contents in the folder (None if any can't be read).
+    inodes, when given, collects each file's (device, inode)."""
+    try:
+        return _content_digest(folder, stop, inodes)
+    except OSError:
+        return None  # A subfolder that can't be listed: not fully seen, so not compared
+
+
+def _content_digest(folder: str, stop: Optional[threading.Event],
+                    inodes: Optional[Set[Tuple[int, int]]]) -> Optional[str]:
     h = hashlib.blake2b(digest_size=20)
-    for root, dirs, names in os.walk(folder):
+    for root, dirs, names in os.walk(folder, onerror=_raise):
         dirs.sort()
         if any(os.path.islink(os.path.join(root, d)) for d in dirs):
             return None
@@ -73,6 +83,9 @@ def content_digest(folder: str, stop: Optional[threading.Event] = None) -> Optio
             digest = _hash(path, None, stop)
             if digest is None:
                 return None
+            if inodes is not None:
+                st = os.stat(path, follow_symlinks=False)
+                inodes.add((st.st_dev, st.st_ino))
             h.update(os.path.relpath(path, folder).replace("\\", "/").encode("utf-8", "surrogatepass") + b"\0")
             h.update(digest.encode() + b"\0")
     return h.hexdigest()
@@ -101,11 +114,16 @@ def find_groups(infos: Dict[str, FolderInfo], allowed: Callable[[str], bool],
         if len(group) < 2:
             continue
         by_content: Dict[str, List[FolderInfo]] = defaultdict(list)
+        file_ids: Dict[str, Set[Tuple[int, int]]] = {}
         for info in group:
-            digest = content_digest(info.path, stop)
+            ids: Set[Tuple[int, int]] = set()
+            digest = content_digest(info.path, stop, ids)
             if digest is not None:
                 by_content[digest].append(info)
+                file_ids[info.path] = ids
         for same in by_content.values():
+            # Hard-linked copies (rsnapshot, cp -al) share their files: deleting one frees nothing
+            same = [i for i in same if not any(o is not i and file_ids[i.path] & file_ids[o.path] for o in same)]
             if len(same) >= 2:
                 found.append(same)
                 taken.extend(i.path for i in same)

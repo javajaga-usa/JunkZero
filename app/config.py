@@ -131,8 +131,10 @@ BROKEN_DOWNLOAD_EXTENSIONS: Set[str] = {
 VCS_DIR_NAMES: Set[str] = {".git", ".svn", ".hg", ".bzr"}
 
 # Backup folders (lowercase names): never scanned or deleted from. Windows File History and system
-# images, Time Machine, and Carbon Copy Cloner's SafetyNet (what CCC kept aside on a backup disk)
-BACKUP_DIR_NAMES: Set[str] = {"filehistory", "windowsimagebackup", "backups.backupdb", "_ccc safetynet"}
+# images, Time Machine, Carbon Copy Cloner's SafetyNet (what CCC kept aside on a backup disk), and
+# Timeshift and Back In Time snapshots (Linux) on any disk
+BACKUP_DIR_NAMES: Set[str] = {"filehistory", "windowsimagebackup", "backups.backupdb", "_ccc safetynet",
+                              "timeshift", "timeshift-btrfs", "backintime"}
 BACKUP_DIR_SUFFIXES = (".backupbundle", ".sparsebundle")
 
 # Where JunkZero sets deleted items aside on drives that have no Recycle Bin (USB sticks, network shares)

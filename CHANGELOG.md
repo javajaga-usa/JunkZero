@@ -1,6 +1,50 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.1] - 2026-10-19
+
+Fixes from a full audit, and the Linux fixes made after 1.3.0. Downloads: Windows `JunkZero-Setup.exe` (or the portable zip), Mac `JunkZero-macOS.dmg`, Linux `junkzero_1.3.1_amd64.deb` (or the tar.gz). The apps are not code-signed, so Windows SmartScreen and macOS Gatekeeper warn on first start.
+
+### Safer detection
+- **A stray project file no longer makes personal files junk**: a `package.json` left in your home folder made `Release`, `Debug`, `bin` and `out` folders below it count as build output, so a 3D model in `Documents/Models/Release` was ticked. Project files in the home folder, a drive's top folder or Documents/Desktop/Downloads don't count any more, and `Debug`, `Release`, `x64`, `x86` count only next to a C, C++ or .NET project.
+- **Backup images and VM disks are never listed, as anything**: they were still offered as Old Downloads or as Duplicates of another copy.
+- **Timeshift and Back In Time snapshots** on any disk are never scanned.
+- **Hard-linked folder copies** (rsnapshot, `cp -al`) are not Duplicate Folders: deleting one frees nothing.
+- **A Mac's `~/Library/Application Support`** is program data, like AppData on Windows: its sample libraries and models aren't Stale Large Files or Duplicates.
+- **Zipped disk images** (a zipped SD-card backup) are no longer called setup archives.
+- **A folder that can't be read fully** makes a Program Leftover or Old Project "unknown", so it isn't listed.
+- **A duplicate folder holding junk that is listed on its own** isn't offered whole as well, so nothing is counted twice.
+- **AI Inspect is never surer than the scanner**: installers, setup archives, `.msi`, `.apk`, files changed in the last 24 hours and cloud files say Review Carefully.
+- A file dated far in the future no longer stops the scan of its folder.
+
+### Deleting and Restore
+- **Restore brings back only what that cleanup deleted**: on Windows and Linux it could bring back a later item from the same place.
+- **Files open in another program are found under linked folders too**, including a Mac's temp folder, so they aren't deleted.
+- **The Recycle Bin size check uses the size at delete time**, so a folder that grew since the scan isn't quietly erased by Windows.
+- **A scheduled report opened after a scan can be deleted from** (every item used to fail with "Not in the latest scan results").
+- A Windows permanent delete that fails partway leaves the folder under its own name.
+- The holding-folder clean-up no longer forgets a USB drive added while it runs.
+
+### Permission problems
+- **Junk you can't remove isn't listed**: a file of another account's (left by `sudo`) in your own folder, and a folder holding another account's folder (npm's cache after `sudo npm`), are left out and counted in the note after the scan. Errors from inside a folder name the item that couldn't be removed.
+- **Empty and the 7-day clean-up erase your own read-only folders** (files copied off a disc, Go's module cache) instead of stopping with "Directory not empty".
+- **Restore explains what's wrong in plain words** when the folder it goes back into can't be changed, and makes your own read-only folder writable as deleting does.
+- **On Linux, the Trash no longer keeps stray notes** for items in your own read-only folders.
+- **The APT cache hint shows only when there are packages to clear** (it used to show on every Debian and MX Linux).
+- **`run.sh` in a folder you can't write** (copied with `sudo`, or on a disk whose top folder belongs to root) says so and how to fix it, instead of asking you to install Python packages you have.
+- **Accounts not allowed to use cron** (`/etc/cron.allow`) get a plain sentence saying so; a systemd timer still works, and the Schedule screen no longer says scheduled scans are Windows-only.
+- On Windows, a network share whose top folder can't be changed gets its holding folder in the highest folder you can change.
+
+### Scheduled scans
+- **MX Linux**: a schedule saved while booted with systemd is made again in cron when the computer starts with SysVinit (MX's default); before, it silently stopped running.
+- **Notifications after scheduled scans now appear under cron** (MX Linux).
+- The systemd timer works when JunkZero's folder has `'` or `$` in its name, and scheduled scans keep a custom `JUNKZERO_DATA_DIR`.
+
+### Smaller fixes
+- Exclusions written as `~/Documents/Taxes` or `%USERPROFILE%\...` now work; a path that isn't a full path is refused with a reason.
+- "Delete File Only" appears only for a file (it deleted the whole folder when the view was opened on a folder).
+- "Show in Finder" always shows the item, never opens it (a `.pkg` launched Installer).
+- AI Inspect and the open-folder button say what went wrong instead of showing nothing; the scan error message no longer repeats itself.
+- README: when missed scheduled scans are made up, and the Mac `.dmg` in the release list.
 
 ### Fixed on Linux
 - **Deleting from a Linux-formatted USB disk** (ext4 under `/media`) no longer fails for every item with "you don't have permission to change it". The top folder of such a disk belongs to root, so JunkZero couldn't make its holding folder there; it now uses the highest folder on that disk you can change, and Restore puts items back as before. Internal Linux disks whose top folder belongs to root use the holding folder too, since the Trash can't be made there.
