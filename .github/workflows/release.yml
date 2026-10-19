@@ -120,6 +120,8 @@ jobs:
           $task = "JunkZero Scheduled Scan"
           schtasks /Create /F /SC DAILY /ST 09:00 /TN $task /TR "cmd /c exit 0" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Could not create the test task" }
+          # The junkzero: link JunkZero registers for notification clicks (app/engine/notify.py)
+          New-Item -Path "HKCU:\Software\Classes\junkzero\shell\open\command" -Force | Out-Null
           Start-Process (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
           # The uninstaller hands over to a copy of itself, so wait for it to finish
           for ($i = 0; $i -lt 60 -and (Test-Path (Join-Path $dir "JunkZero.exe")); $i++) { Start-Sleep -Seconds 1 }
@@ -132,7 +134,8 @@ jobs:
             Start-Sleep -Seconds 1
           }
           if ($still) { throw "Uninstall left the scheduled scan behind" }
-          Write-Host "Installer and uninstaller work; the scheduled scan was removed"
+          if (Test-Path "HKCU:\Software\Classes\junkzero") { throw "Uninstall left the junkzero: link behind" }
+          Write-Host "Installer and uninstaller work; the scheduled scan and the junkzero: link were removed"
           # schtasks /Query exits 1 once the task is gone, which would otherwise fail the step
           exit 0
       # Per-run download for testers: the folder build (unzip, run JunkZero.exe)

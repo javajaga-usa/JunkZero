@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### New
+- **Space still held**: Cleanup History shows how much of what you deleted with JunkZero still sits in the Recycle Bin / Trash and the holding folders, and an **Empty** button erases only JunkZero's own items from cleanups at least N days old (7 by default). Nothing else in the Recycle Bin or Trash is touched, and only items JunkZero can point to exactly are counted (on a Mac, by file id).
+- **Notifications after scheduled scans**: a scheduled scan that finds at least 500 MB (adjustable, or off, in Schedule) or fails shows a notification. On Windows clicking it opens the report in JunkZero; everywhere, the next launch offers a report it hasn't shown yet.
+- **Chat and app caches**: Teams, Slack, Discord, Zoom logs, VS Code and Steam caches are offered from an exact folder list, only while that app is closed.
+- **Duplicate folders** (with Duplicates): whole folders with exactly the same files, compared byte for byte; the copy in Documents, Pictures or a cloud folder is kept, and both are compared again before deleting.
+- **Old coding projects** (opt-in): `node_modules`, `.venv`, `target`, `build`, `bin`/`obj` of projects untouched for 90 days, only next to the project file that rebuilds them. Review Recommended.
+- **Installers for installed programs**: on Windows, a setup program for something already installed at the same or a newer version scores higher and says so.
+- **Free space over time**: a per-disk chart in Cleanup History, with a line for each cleanup.
+- **Map in Largest Files**: folders as boxes sized by their space; click to look inside.
+
 ### Linux (MX Linux, Debian, Ubuntu)
 - JunkZero runs on Linux. Quick Clean lists only known caches apps rebuild themselves (thumbnails, browser caches, pip, Yarn, Go, npm, Mesa and NVIDIA shader caches); system folders and the hidden settings folders in your home folder are never scanned or deleted.
 - Deleted items go to the freedesktop.org Trash, so Restore in Cleanup History works; USB drives, Windows partitions and network shares use the 7-day holding folder.

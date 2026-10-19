@@ -302,3 +302,63 @@ test('delete dialog warns about selected items further down the list', () => {
   assert.equal(context.unseenLine(6502, 7002),
     "6,502 of these 7,002 items are further down the list and haven't been shown. Cancel and use Show all to look through them first, or type DELETE to go ahead.");
 });
+
+test('treemap boxes fill the map exactly, biggest first, with the rest grouped', () => {
+  const folders = [
+    { name: 'Videos', path: '/h/Videos', size_bytes: 600 },
+    { name: 'Music', path: '/h/Music', size_bytes: 200 },
+    { name: 'Empty', path: '/h/Empty', size_bytes: 0 },
+  ];
+  // 100 bytes in folders the server didn't list, 100 bytes of loose files
+  const tiles = context.treemapTiles(folders, 100, 1000);
+  assert.equal(JSON.stringify(tiles.map((t) => [t.name, t.kind, Math.round(t.percent)])),
+    JSON.stringify([['Videos', 'folder', 60], ['Music', 'folder', 20], ['Smaller folders', 'other', 10],
+      ['Files directly here', 'files', 10]]));
+  const area = tiles.reduce((acc, t) => acc + t.w * t.h, 0);
+  assert.ok(Math.abs(area - 10000) < 1e-6);
+  tiles.forEach((t) => {
+    assert.ok(t.x >= -1e-9 && t.y >= -1e-9 && t.x + t.w <= 100 + 1e-9 && t.y + t.h <= 100 + 1e-9);
+    assert.ok(Math.abs((t.w * t.h) / 100 - t.percent) < 1e-6);
+  });
+  assert.equal(context.treemapTiles([], 0, 0).length, 0);
+  // Past the tile limit, the smaller folders are grouped too
+  const many = Array.from({ length: 5 }, (_, i) => ({ name: `f${i}`, path: `/f${i}`, size_bytes: 10 }));
+  assert.equal(context.treemapTiles(many, 0, 50, 3).map((t) => t.name).sort().join(','), 'Smaller folders,f0,f1,f2');
+});
+
+test('free-space chart: line, area and cleanup markers inside the box', () => {
+  const points = [{ at: 1000, free: 50 }, { at: 3000, free: 80 }, { at: 2000, free: 40 }];
+  const model = context.storageChartModel(points, [{ at: 2500, freed_bytes: 30 }, { at: 9999, freed_bytes: 1 }], 200, 100);
+  assert.equal(model.count, 3);
+  assert.equal(model.first.free, 50);
+  assert.equal(model.last.free, 80);
+  assert.equal(model.change, 30);
+  assert.ok(model.line.startsWith('M6.0,'));
+  assert.ok(model.area.endsWith('Z'));
+  assert.equal(model.markers.length, 1);
+  assert.equal(model.markers[0].x, 6 + (1500 / 2000) * 188);
+  assert.ok(model.lo <= 40 && model.hi >= 80);
+  const one = context.storageChartModel([{ at: 5, free: 10 }], [], 200, 100);
+  assert.equal(one.count, 1);
+  assert.ok(one.line.startsWith('M6.0,') && one.line.includes('L194.0,'));
+  assert.equal(context.storageChartModel([], [], 200, 100), null);
+});
+
+test('space-still-held text says only JunkZero items are emptied', () => {
+  const none = context.reclaimText({ junkzero_count: 0, recycle_bin_bytes: 2048, older_than_days: 7 }, 'Trash');
+  assert.equal(none.title, 'Nothing JunkZero deleted is still taking space');
+  assert.match(none.text, /^The Trash holds 2\.00 KB in all\. /);
+  const some = context.reclaimText({ junkzero_count: 3, junkzero_bytes: 3 * 1048576, holding_bytes: 1048576,
+    recycle_bin_bytes: null, old_count: 2, old_bytes: 2 * 1048576, older_than_days: 7 });
+  assert.equal(some.title, '3.00 MB you deleted with JunkZero still takes space');
+  assert.equal(some.text, "3 items from your cleanups are still in the Recycle Bin (1.00 MB of it in JunkZero's holding folders), "
+    + "so that space isn't free yet. 2.00 MB of it is from cleanups at least 7 days old. Everything else in the Recycle Bin is left alone.");
+  assert.match(context.reclaimText({ junkzero_count: 1, junkzero_bytes: 5, old_count: 0, older_than_days: 1 }).text,
+    /None of it is from cleanups at least 1 day old/);
+});
+
+test('new categories get their own color slots', () => {
+  const parts = context.spaceBreakdown({ 'Duplicate Folders': 10, 'Old Project Builds': 30 });
+  assert.equal(JSON.stringify(parts.map((p) => [p.label, p.slot])),
+    JSON.stringify([['Duplicate folders', 11], ['Old projects', 12]]));
+});

@@ -435,3 +435,9 @@ def test_validation_wording_has_no_windows_on_linux(linux_os):
 
 def test_junk_locations_dispatch(linux_home):
     assert locations.junk_locations() == locations.linux_junk_locations()
+
+
+def test_no_windows_app_caches_on_linux(linux_os, tmp_path):
+    from app.engine import appcaches
+    (tmp_path / "Slack" / "Cache").mkdir(parents=True)
+    assert appcaches.app_cache_entries({"APPDATA": str(tmp_path)}, running=set()) == []

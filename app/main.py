@@ -32,8 +32,8 @@ from pydantic import BaseModel, Field
 from app import __version__
 from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import (
-    changes, cleaner, deletecheck, filetypes, linux, linux_scheduler, locations, osinfo, permissions, recycle,
-    safeguards, scheduler, smart, storage,
+    changes, cleaner, deletecheck, filetypes, linux, linux_scheduler, locations, notify, osinfo, permissions,
+    reclaim, recycle, safeguards, scheduler, smart, spacelog, storage,
 )
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
@@ -176,6 +176,7 @@ class ScanRequest(BaseModel):
     include_old_downloads: bool = False
     include_custom_rules: bool = True
     include_leftovers: bool = False
+    include_old_projects: bool = False
     # File type search: list files with these extensions ("mp4", ".mp4" or "*.mp4")
     include_file_types: bool = False
     file_types: List[str] = Field(default_factory=list, max_length=filetypes.MAX_FILE_TYPES)
@@ -264,7 +265,7 @@ class LargestItemsRequest(BaseModel):
 SCAN_OPTION_KEYS = (
     "include_installers", "include_java_builds", "include_temp_junk", "include_broken_downloads",
     "include_stale_large", "include_empty_folders", "include_duplicates", "include_old_downloads",
-    "include_leftovers", "include_file_types",
+    "include_leftovers", "include_file_types", "include_old_projects",
 )
 
 
@@ -274,6 +275,19 @@ class PreferencesRequest(BaseModel):
     scan_options: Dict[str, bool] = Field(default_factory=dict)
     file_types: List[str] = Field(default_factory=list, max_length=filetypes.MAX_FILE_TYPES)
     file_type_min_days: int = Field(default=0, ge=0, le=36500)
+
+
+class EmptyRequest(BaseModel):
+    older_than_days: int = Field(default=reclaim.EMPTY_AFTER_DAYS, ge=0, le=3650)
+
+
+class NotifyRequest(BaseModel):
+    enabled: bool = True
+    min_mb: int = Field(default=notify.DEFAULT_MIN_MB, ge=0, le=notify.MAX_MIN_MB)
+
+
+class SeenRequest(BaseModel):
+    generated_at: float
 
 
 class ReportRequest(BaseModel):
@@ -589,6 +603,7 @@ async def api_start_scan(req: ScanRequest):
         include_custom_rules=req.include_custom_rules,
         custom_rules=storage.get_custom_rules(),
         include_leftovers=req.include_leftovers,
+        include_old_projects=req.include_old_projects,
         include_file_types=req.include_file_types,
         file_types=file_types,
         file_type_min_days=req.file_type_min_days,
@@ -900,6 +915,33 @@ def _record_history(result: CleanResult, paths: List[str], source: str) -> None:
         storage.record_cleanup(result.model_dump(), paths, source)
     except OSError as e:
         logger.warning(f"Could not save cleanup history: {e}")
+    # Free space after the cleanup, for the chart in Cleanup History
+    spacelog.record_paths(paths[:50])
+
+
+@app.get("/api/reclaim")
+def api_reclaim(days: int = reclaim.EMPTY_AFTER_DAYS):
+    """What JunkZero's cleanups still hold in the Recycle Bin / Trash and holding folders, and
+    how much of it is from cleanups at least `days` old."""
+    return reclaim.summary(max(0, min(3650, days)))
+
+
+@app.post("/api/reclaim/empty")
+def api_reclaim_empty(req: EmptyRequest):
+    """Erase for good JunkZero's own items from cleanups at least older_than_days old. Nothing
+    else in the Recycle Bin or Trash is touched; these items can't be restored afterwards."""
+    if cleaner.delete_running():
+        raise HTTPException(status_code=409, detail="Wait until the delete that is running finishes")
+    result = reclaim.empty_old(req.older_than_days)
+    if result["emptied"]:
+        spacelog.record_paths([h for r in storage.load_history()[:20] for h in (r.get("paths") or [])[:5]])
+    return {**result, "summary": reclaim.summary(req.older_than_days), "history": storage.load_history()}
+
+
+@app.get("/api/space/history")
+def api_space_history():
+    """Free space at each scan and cleanup, per disk, and the cleanups (for the chart)."""
+    return spacelog.history()
 
 
 @app.post("/api/ai/analyze")
@@ -1122,6 +1164,32 @@ def api_set_preferences(req: PreferencesRequest):
     return {"preferences": storage.set_preferences(prefs)}
 
 
+@app.get("/api/notify")
+def api_get_notify():
+    return {"notify": notify.get_settings()}
+
+
+@app.put("/api/notify")
+def api_set_notify(req: NotifyRequest):
+    return {"notify": notify.save_settings(req.enabled, req.min_mb)}
+
+
+@app.get("/api/reports/unseen")
+def api_unseen_report():
+    """The latest scheduled report, when it found enough to tell about and hasn't been shown."""
+    report = storage.load_report()
+    unseen = notify.unseen_report(report)
+    if unseen is not None:
+        unseen["delete_bytes"] = notify.delete_bytes(report)
+    return {"report": unseen}
+
+
+@app.post("/api/reports/seen")
+def api_report_seen(req: SeenRequest):
+    notify.mark_seen(req.generated_at)
+    return {"status": "ok"}
+
+
 @app.get("/api/reports/latest")
 def api_latest_report():
     report = storage.load_report()
@@ -1209,13 +1277,15 @@ def remember_instance(port: int) -> None:
         logger.warning(f"Could not note this JunkZero's port: {e}")
 
 
-def focus_running_instance() -> bool:
-    """Ask the JunkZero that is already open to bring its window to the front."""
+def focus_running_instance(show_report: bool = False) -> bool:
+    """Ask the JunkZero that is already open to bring its window to the front (and, after a
+    notification was clicked, to show the latest scheduled report)."""
     info = storage.read_json(INSTANCE_FILE, {})
     port = info.get("port") if isinstance(info, dict) else None
     if not isinstance(port, int):
         return False
-    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/instance/focus", data=b"", method="POST")
+    query = "?report=1" if show_report else ""
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/instance/focus{query}", data=b"", method="POST")
     try:
         with urllib.request.urlopen(request, timeout=3) as res:
             return json.loads(res.read().decode("utf-8")).get("focused") is True
@@ -1227,8 +1297,9 @@ _OPEN_API_PATHS.add("/api/instance/focus")
 
 
 @app.post("/api/instance/focus")
-def api_focus_window():
-    """Another launch of JunkZero asks this one to show its window (it says nothing else)."""
+def api_focus_window(report: int = 0):
+    """Another launch of JunkZero asks this one to show its window, and with report=1 (a clicked
+    notification) to put the latest scheduled report in the table. It says nothing else."""
     window = gui_window
     if window is None:
         if browser_url:
@@ -1236,6 +1307,11 @@ def api_focus_window():
             webbrowser.open(browser_url)
             return {"focused": True}
         return {"focused": False}
+    if report:
+        try:
+            window.evaluate_js("typeof loadLatestReport === 'function' && loadLatestReport()")
+        except Exception:
+            pass
     for step in ("restore", "show"):
         try:
             getattr(window, step)()
@@ -1312,6 +1388,8 @@ def main():
                         help="Folder to scan in report mode (repeatable; defaults to the saved schedule)")
     parser.add_argument("--no-junk-locations", action="store_true",
                         help="In report mode, skip the junk locations (temp, caches, logs)")
+    parser.add_argument("--show-report", action="store_true",
+                        help="Open with the latest scheduled report in the table (used by notifications)")
     args = parser.parse_args()
     setup_logging()
     if osinfo.is_linux() and getattr(sys, "frozen", False):
@@ -1329,7 +1407,7 @@ def main():
         return
 
     if args.mode in ("gui", "browser") and not acquire_single_instance():
-        if not focus_running_instance():
+        if not focus_running_instance(args.show_report):
             _tell_already_running()
         sys.exit(0)
 
@@ -1341,7 +1419,7 @@ def main():
     port = args.port if args.port is not None else pick_port(8000)
     remember_instance(port)
     server_url = f"http://127.0.0.1:{port}"
-    window_url = app_url(server_url)
+    window_url = app_url(server_url) + ("&report=latest" if args.show_report else "")
 
     if args.mode == "server":
         print(f"Open JunkZero at {window_url}", flush=True)
