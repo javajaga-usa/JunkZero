@@ -57,3 +57,44 @@ jobs:
       - run: python -m pytest -q tests/test_browser.py -p no:cacheprovider
         env:
           JUNKZERO_REQUIRE_BROWSER: '1'
+
+  launchers:
+    # The launchers (run.bat, run.command, run.sh) set up .venv on a fresh checkout, start
+    # JunkZero, and skip the install the next time
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call run.bat --version < NUL > first.txt 2>&1
+          if errorlevel 1 (type first.txt & exit /b 1)
+          type first.txt
+          findstr /c:"JunkZero " first.txt >NUL || exit /b 1
+          if not exist .venv\.junkzero-requirements.txt exit /b 1
+          call run.bat --version < NUL > second.txt 2>&1
+          type second.txt
+          findstr /c:"Installing" second.txt >NUL && exit /b 1
+          findstr /c:"JunkZero " second.txt >NUL || exit /b 1
+          exit /b 0
+      - if: runner.os == 'macOS'
+        run: |
+          ./run.command --version | tee first.txt
+          grep -q "^JunkZero " first.txt
+          test -f .venv/.junkzero-requirements
+          ./run.command --version | tee second.txt
+          ! grep -q "Installing" second.txt
+      - if: runner.os == 'Linux'
+        run: |
+          ./run.sh --version | tee first.txt
+          grep -q "^JunkZero " first.txt
+          test -f .venv/.junkzero-requirements
+          ./run.sh --version | tee second.txt
+          ! grep -q "Installing" second.txt

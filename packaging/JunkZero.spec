@@ -16,7 +16,9 @@ with open(os.path.join(root, "app", "__init__.py"), encoding="utf-8") as f:
 a = Analysis(
     [os.path.join(SPECPATH, "junkzero.py")],
     pathex=[root],
-    datas=[(os.path.join(root, "app", "ui"), os.path.join("app", "ui"))],
+    datas=[(os.path.join(root, "app", "ui"), os.path.join("app", "ui"))]
+    # Linux: the icon of the applications-menu entry the portable copy offers to add
+    + ([(os.path.join(SPECPATH, "JunkZero.png"), "packaging")] if sys.platform.startswith("linux") else []),
     # uvicorn picks its loop, protocol and lifespan modules at run time
     hiddenimports=collect_submodules("uvicorn"),
     # Linux: pywebview's window needs the system's GTK and WebKit Python bindings, which a

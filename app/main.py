@@ -33,7 +33,7 @@ from app import __version__
 from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import (
     changes, cleaner, deletecheck, filetypes, linux, linux_scheduler, locations, notify, osinfo, permissions,
-    reclaim, recycle, safeguards, scheduler, smart, spacelog, storage,
+    reclaim, recycle, safeguards, scheduler, shortcuts, smart, spacelog, storage,
 )
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
@@ -284,6 +284,10 @@ class EmptyRequest(BaseModel):
 class NotifyRequest(BaseModel):
     enabled: bool = True
     min_mb: int = Field(default=notify.DEFAULT_MIN_MB, ge=0, le=notify.MAX_MIN_MB)
+
+
+class ShortcutsRequest(BaseModel):
+    places: List[str] = Field(default_factory=list)
 
 
 class SeenRequest(BaseModel):
@@ -1190,6 +1194,25 @@ def api_report_seen(req: SeenRequest):
     return {"status": "ok"}
 
 
+@app.get("/api/shortcuts")
+def api_get_shortcuts():
+    """Whether this copy has Start menu and desktop shortcuts, and whether to offer them."""
+    return shortcuts.status()
+
+
+@app.post("/api/shortcuts")
+def api_add_shortcuts(req: ShortcutsRequest):
+    try:
+        return shortcuts.add(req.places)
+    except shortcuts.ShortcutError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/shortcuts/dismiss")
+def api_dismiss_shortcuts():
+    return shortcuts.dismiss_offer()
+
+
 @app.get("/api/reports/latest")
 def api_latest_report():
     report = storage.load_report()
@@ -1362,6 +1385,14 @@ def _check_scheduled_task() -> None:
         logger.warning(f"Could not check the scheduled scan: {e}")
 
 
+def _check_shortcuts() -> None:
+    try:
+        if shortcuts.repair():
+            logger.info("Pointed JunkZero's shortcuts at this copy of JunkZero")
+    except Exception as e:
+        logger.warning(f"Could not check the shortcuts: {e}")
+
+
 def _open_in_browser(url: str) -> None:
     global browser_url
     browser_url = url
@@ -1415,6 +1446,8 @@ def main():
     threading.Thread(target=_purge_holding, daemon=True).start()
     # A schedule saved by a copy of JunkZero that was moved or downloaded again
     threading.Thread(target=_check_scheduled_task, daemon=True).start()
+    # Start menu and desktop shortcuts JunkZero made for a copy that was moved since
+    threading.Thread(target=_check_shortcuts, daemon=True).start()
 
     port = args.port if args.port is not None else pick_port(8000)
     remember_instance(port)

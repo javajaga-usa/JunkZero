@@ -25,6 +25,9 @@ for i in $(seq 1 30); do
 done
 info=$(curl -fsS "http://127.0.0.1:$port/api/system/info"); echo "$info"
 echo "$info" | grep -q '"platform":"linux"'
+# The .deb has its own menu entry, so the installed copy offers none
+shortcuts=$(curl -fsS "http://127.0.0.1:$port/api/shortcuts" -H "X-JunkZero-Token: $token"); echo "$shortcuts"
+echo "$shortcuts" | grep -q '"supported":false'
 curl -fsS -X PUT "http://127.0.0.1:$port/api/schedule" -H "X-JunkZero-Token: $token" -H "Content-Type: application/json" \
   -d '{"frequency": "daily", "time": "09:00", "day": "MON", "paths": [], "include_junk_locations": true}'; echo
 kill $server

@@ -42,3 +42,15 @@ def test_linux_build_opens_in_the_browser_and_ships_a_deb():
     assert '["webview"] if sys.platform.startswith("linux")' in spec
     build = (PACKAGING / "linux" / "build-linux.sh").read_text(encoding="utf-8")
     assert "JunkZero-Linux-x86_64.tar.gz" in build and "_amd64.deb" in build
+
+
+def test_linux_build_bundles_the_menu_entry_icon():
+    spec = (PACKAGING / "JunkZero.spec").read_text(encoding="utf-8")
+    assert '(os.path.join(SPECPATH, "JunkZero.png"), "packaging")' in spec
+
+
+def test_launchers_pass_their_arguments_on():
+    root = PACKAGING.parent
+    assert (root / "run.bat").read_text(encoding="utf-8").rstrip().splitlines()[-3].endswith("--mode gui %*")
+    assert (root / "run.command").read_text(encoding="utf-8").rstrip().endswith('--mode gui "$@"')
+    assert (root / "run.sh").read_text(encoding="utf-8").rstrip().endswith('--mode gui "$@"')
