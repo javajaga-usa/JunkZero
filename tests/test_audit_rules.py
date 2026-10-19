@@ -170,9 +170,15 @@ def test_inspector_is_no_surer_than_the_scanner(tmp_path):
 
 
 @pytest.mark.parametrize("name", ["app.war", "app.ear"])
-def test_war_and_ear_have_a_reason(name):
-    item = classify_item(f"C:/Users/a/{name}", name, 10, OLD, False, ScanOptions(target_path="."))
+def test_war_and_ear_only_in_build_folders(name, tmp_path):
+    (tmp_path / "pom.xml").write_text("<project/>")
+    built = str(tmp_path / "target" / name)
+    item = classify_item(built, name, 10, OLD, False, ScanOptions(target_path="."))
     assert item.reason and item.risk_level == RISK_REVIEW
+    # A deployed app or a copy kept in an old backup may be the only one: not listed
+    for path in (f"C:/Users/a/{name}", f"/media/u/disk/old backup/Desktop/pd/{name}",
+                 f"/media/u/disk/old backup/apache-tomcat-7.0.16/webapps/{name}"):
+        assert classify_item(path, name, 10, OLD, False, ScanOptions(target_path=".")) is None, path
 
 
 def test_library_on_another_disk_is_protected():

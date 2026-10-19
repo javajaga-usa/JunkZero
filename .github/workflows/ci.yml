@@ -98,3 +98,16 @@ jobs:
           test -f .venv/.junkzero-requirements
           ./run.sh --version | tee second.txt
           ! grep -q "Installing" second.txt
+      - if: runner.os == 'Linux'
+        name: run.sh on a Python without ensurepip (stock Debian / MX Linux)
+        run: |
+          rm -rf .venv
+          real="$(command -v python3)"
+          mkdir -p "$RUNNER_TEMP/nopip"
+          printf '%s\n' '#!/bin/bash' \
+            'if [ "$1" = "-m" ] && [ "$2" = "venv" ] && [[ " $* " != *" --without-pip "* ]]; then echo "ensurepip is not available" >&2; exit 1; fi' \
+            "exec \"$real\" \"\$@\"" > "$RUNNER_TEMP/nopip/python3"
+          chmod +x "$RUNNER_TEMP/nopip/python3"
+          PATH="$RUNNER_TEMP/nopip:$PATH" bash run.sh --version < /dev/null | tee third.txt
+          grep -q "^JunkZero " third.txt
+          test -f .venv/.junkzero-requirements

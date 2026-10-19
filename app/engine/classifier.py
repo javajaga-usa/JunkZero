@@ -473,8 +473,12 @@ def classify_item(
             risk_level = RISK_SAFE
             reason = "Compiled Java class bytecode (.class)"
         elif suffix in {".war", ".ear"}:
+            # Only build output (a project's target or build folder) can be rebuilt; elsewhere a
+            # .war is a deployed app or its only copy, often in an old backup: not listed
+            if not _in_build_output_folder(path):
+                return None
             risk_level = RISK_REVIEW
-            reason = f"Packaged Java web application ({suffix}); may be a deployed or only copy"
+            reason = f"Packaged Java web application ({suffix}) in a build folder; the project can rebuild it"
         elif suffix in BUILD_EXTENSIONS:
             risk_level = RISK_SAFE
             reason = f"Compiler/build intermediate artifact ({suffix})"

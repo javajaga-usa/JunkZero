@@ -298,6 +298,14 @@ test('after a scan, unreadable folders are reported, with the privacy fix on a M
   assert.match(mac, /^macOS kept JunkZero out of 1 folder, such as \/Volumes\/J Red, so it wasn't scanned\. Give Terminal Full Disk Access/);
 });
 
+test('after a scan, junk the user may not remove is reported instead of listed', () => {
+  assert.equal(context.notAllowedText({ not_allowed_items: 0 }), '');
+  assert.equal(context.notAllowedText({ not_allowed_items: 2, not_allowed_bytes: 2048,
+    not_allowed_examples: ["/media/u/disk/target (it belongs to the system, and JunkZero doesn't use administrator rights)"] }),
+    "2 items (2.00 KB) looked like junk but aren't listed, because you don't have permission to remove them. "
+    + "One of them: /media/u/disk/target (it belongs to the system, and JunkZero doesn't use administrator rights).");
+});
+
 test('delete dialog warns about selected items further down the list', () => {
   assert.equal(context.unseenLine(6502, 7002),
     "6,502 of these 7,002 items are further down the list and haven't been shown. Cancel and use Show all to look through them first, or type DELETE to go ahead.");

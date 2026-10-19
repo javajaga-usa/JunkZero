@@ -549,7 +549,7 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
                 # USB sticks and network shares have no Recycle Bin, and Windows erases items too big
                 # for the Recycle Bin (or all items, when it is set to). Set it aside on the same
                 # drive instead, where it can be restored for a week.
-                root = recycle.mount_point(norm_path)
+                root = recycle.holding_root(norm_path)
                 try:
                     if root not in batches:
                         batches[root] = recycle.new_holding_batch(root)
