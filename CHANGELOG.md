@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-19
+
+This release also includes everything listed under 1.2.0 below, which was never published on its own. Downloads: Windows `JunkZero-Setup.exe` (or the portable zip), Mac `JunkZero-macOS.dmg`, Linux `junkzero_1.3.0_amd64.deb` (or the tar.gz). The apps are not code-signed, so Windows SmartScreen and macOS Gatekeeper warn on first start.
+
 ### Easy start
 - **Shortcuts for the portable downloads**: the Windows portable zip offers to add JunkZero to the Start menu and the desktop on first start, and the Linux tar.gz to the applications menu. **About** has the same buttons. When the portable folder is moved, the shortcuts follow it the next time JunkZero starts from the new place; shortcuts JunkZero didn't make are never changed.
 - **Mac disk image**: releases add `JunkZero-macOS.dmg`, which shows JunkZero next to a shortcut to Applications to drag it onto. The zip stays.
