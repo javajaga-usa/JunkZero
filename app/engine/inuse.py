@@ -78,7 +78,13 @@ def _proc_open_files() -> Set[str]:
 
 
 def _norm(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    """lsof and /proc give resolved paths (/private/var/... for a Mac's $TMPDIR under /var), so
+    the item's folder is resolved too. The item itself isn't: a link is deleted, not its target."""
+    path = os.path.abspath(path)
+    parent, name = os.path.split(path)
+    if name:
+        path = os.path.join(os.path.realpath(parent), name)
+    return os.path.normcase(path)
 
 
 class OpenFileCheck:

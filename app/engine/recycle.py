@@ -443,9 +443,10 @@ def _sweep_batch(batch: str, root: str, restored: List[str], errors: List[Dict[s
 
 
 def _remember_holding_root(root: str) -> None:
-    roots = storage.load_settings().get("holding_roots") or []
-    if root not in roots:
-        storage.update_settings(holding_roots=[*roots, root])
+    with storage.lock():
+        roots = storage.load_settings().get("holding_roots") or []
+        if root not in roots:
+            storage.update_settings(holding_roots=[*roots, root])
 
 
 def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
@@ -455,15 +456,15 @@ def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
     aren't plugged in are kept in the list for next time."""
     now = time.time() if now is None else now
     removed = 0
-    keep_roots = []
+    emptied_roots = []
     recorded = storage.recorded_holding_batches()
     purged: List[str] = []
     for root in storage.load_settings().get("holding_roots") or []:
         holding = os.path.join(root, HOLDING_DIR_NAME)
         if not os.path.isdir(root):
-            keep_roots.append(root)
             continue
         if not os.path.isdir(holding):
+            emptied_roots.append(root)
             continue
         for entry in list(os.scandir(holding)):
             m = _BATCH_RE.match(entry.name)
@@ -480,9 +481,14 @@ def purge_holding(now: Optional[float] = None, days: int = HOLDING_DAYS) -> int:
                 removed += 1
         try:
             os.rmdir(holding)  # only succeeds once nothing is left in it
+            emptied_roots.append(root)
         except OSError:
-            keep_roots.append(root)
-    storage.update_settings(holding_roots=keep_roots)
+            pass
+    # Read again: a delete may have started a holding folder on another drive meanwhile
+    with storage.lock():
+        roots = storage.load_settings().get("holding_roots") or []
+        storage.update_settings(holding_roots=[r for r in roots if r not in emptied_roots
+                                                   or os.path.isdir(os.path.join(r, HOLDING_DIR_NAME))])
     storage.forget_purged_cleanups(purged)
     return removed
 
@@ -548,13 +554,15 @@ def _norm(path: str) -> str:
 
 
 def find_in_windows_recycle_bin(original: str, since: float, bin_root: Optional[str] = None,
-                                index: Optional[RecycleIndex] = None) -> Optional[Tuple[str, List[str]]]:
-    """(stored item, files to remove after restoring) for the newest matching item deleted after since."""
+                                index: Optional[RecycleIndex] = None,
+                                until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
+    """(stored item, files to remove after restoring) for the newest matching item deleted
+    between since and until: one deleted later from the same place is a different item."""
     if index is None:
         index = windows_recycle_index(bin_root or os.path.join(mount_point(original), "$Recycle.Bin"))
     best: Optional[Tuple[float, str, str]] = None
     for deleted, stored, info_file in index.get(_norm(original), []):
-        if deleted < since:
+        if deleted < since or (until is not None and deleted > until):
             continue
         if os.path.lexists(stored) and (best is None or deleted > best[0]):
             best = (deleted, stored, info_file)
@@ -571,7 +579,8 @@ def _xdg_trash_dirs(original: str) -> List[Tuple[str, str]]:
     return dirs
 
 
-def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tuple[str, str]]] = None) -> Optional[Tuple[str, List[str]]]:
+def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tuple[str, str]]] = None,
+                      until: Optional[float] = None) -> Optional[Tuple[str, List[str]]]:
     best: Optional[Tuple[float, str, str]] = None
     for trash, top in (trash_dirs if trash_dirs is not None else _xdg_trash_dirs(original)):
         info_dir = os.path.join(trash, "info")
@@ -598,7 +607,7 @@ def find_in_xdg_trash(original: str, since: float, trash_dirs: Optional[List[Tup
                 deleted = time.mktime(datetime.strptime(date_m.group(1), "%Y-%m-%dT%H:%M:%S").timetuple()) if date_m else 0
             except ValueError:
                 deleted = 0
-            if not _same(path, original) or deleted < since - 1:
+            if not _same(path, original) or deleted < since - 1 or (until is not None and deleted > until + 1):
                 continue
             stored = os.path.join(trash, "files", entry.name[:-len(".trashinfo")])
             if os.path.lexists(stored) and (best is None or deleted > best[0]):
@@ -652,13 +661,13 @@ def find_in_trash(original: str, since: float, file_id: Optional[List[int]] = No
     if osinfo.is_windows():
         bin_root = os.path.join(mount_point(original), "$Recycle.Bin")
         if bins is None:
-            return find_in_windows_recycle_bin(original, since, bin_root)
+            return find_in_windows_recycle_bin(original, since, bin_root, until=until)
         if bin_root not in bins:
             bins[bin_root] = windows_recycle_index(bin_root)
-        return find_in_windows_recycle_bin(original, since, index=bins[bin_root])
+        return find_in_windows_recycle_bin(original, since, index=bins[bin_root], until=until)
     if osinfo.is_macos():
         return find_in_mac_trash(original, since, file_id=file_id, until=until)
-    return find_in_xdg_trash(original, since)
+    return find_in_xdg_trash(original, since, until=until)
 
 
 # ---------------------------------------------------------------- Restoring a cleanup

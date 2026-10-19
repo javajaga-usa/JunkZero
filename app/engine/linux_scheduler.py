@@ -61,6 +61,9 @@ def unit_dir() -> Path:
     return Path(base) / "systemd" / "user"
 
 
+_ENV = "/usr/bin/env"
+
+
 def _systemd_quote(arg: str) -> str:
     """One ExecStart argument: systemd expands % specifiers and $VARIABLES, so they are doubled."""
     arg = arg.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
@@ -68,12 +71,14 @@ def _systemd_quote(arg: str) -> str:
 
 
 def systemd_service(program_args: List[str]) -> str:
+    """systemd refuses a program path holding ' " or \\ and doesn't undo $$ in it, so the
+    program is started through /usr/bin/env, where the path is an ordinary argument."""
     return (
         "[Unit]\n"
         "Description=JunkZero report-only scan (never deletes anything)\n\n"
         "[Service]\n"
         "Type=oneshot\n"
-        f"ExecStart={' '.join(_systemd_quote(a) for a in program_args)}\n"
+        f"ExecStart={' '.join(_systemd_quote(a) for a in [_ENV, *program_args])}\n"
         "Nice=10\n"
         "IOSchedulingClass=idle\n"
     )
@@ -101,7 +106,8 @@ def parse_exec_start(service_text: str) -> Optional[List[str]]:
         args = shlex.split(m.group(1))
     except ValueError:
         return None
-    return [a.replace("%%", "%").replace("$$", "$") for a in args]
+    args = [a.replace("%%", "%").replace("$$", "$") for a in args]
+    return args[1:] if args[:1] == [_ENV] else args
 
 
 def _systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -246,5 +252,14 @@ def remove() -> None:
 
 
 def current_command() -> Optional[List[str]]:
-    """The program the saved schedule runs, from the systemd timer or the crontab, or None."""
-    return systemd_command() or cron_command()
+    """The program the saved schedule runs with the scheduler in use now, or None.
+
+    Only the active kind counts: MX Linux can boot with systemd or SysVinit, and a timer left
+    from a systemd boot never runs under SysVinit, so the schedule must be made again in cron.
+    """
+    kind = scheduler_kind()
+    if kind == SYSTEMD:
+        return systemd_command()
+    if kind == CRON:
+        return cron_command()
+    return None

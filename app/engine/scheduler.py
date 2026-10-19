@@ -59,11 +59,18 @@ def validate_schedule(frequency: str, time_str: str, day: str, paths: List[str],
             raise ScheduleError(f"Folder not found: {p}")
 
 
+def _data_dir_override() -> Optional[str]:
+    """The JUNKZERO_DATA_DIR in use. Schedulers start scans without it, so it is passed on."""
+    return str(storage.data_dir()) if os.environ.get("JUNKZERO_DATA_DIR") else None
+
+
 def launcher_script() -> str:
     """Python source run by Task Scheduler; reads the saved schedule at run time."""
+    override = _data_dir_override()
     return (
         "import sys\n"
-        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        + (f"import os\nos.environ['JUNKZERO_DATA_DIR'] = {override!r}\n" if override else "")
+        + f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
         "from app.engine.scheduler import run_scheduled_report\n"
         "sys.exit(run_scheduled_report())\n"
     )
@@ -79,7 +86,8 @@ def task_action(script_path: str) -> Tuple[str, str]:
     """(program, arguments) Task Scheduler runs. The packaged JunkZero.exe has no Python next
     to it, so it runs itself in report mode instead of the launcher script."""
     if getattr(sys, "frozen", False):
-        return sys.executable, "--mode report"
+        override = _data_dir_override()
+        return sys.executable, "--mode report" + (f' --data-dir "{override}"' if override else "")
     return _pythonw(), f'"{script_path}"'
 
 
@@ -184,7 +192,8 @@ def scheduling_supported() -> bool:
 def launchd_program_args(script_path: str) -> List[str]:
     """What launchd runs: the packaged app in report mode, or Python with the launcher script."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--mode", "report"]
+        override = _data_dir_override()
+        return [sys.executable, "--mode", "report"] + (["--data-dir", override] if override else [])
     return [sys.executable, script_path]
 
 

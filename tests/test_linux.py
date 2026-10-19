@@ -329,7 +329,7 @@ def test_second_launch_opens_the_browser_again(monkeypatch):
 
 def test_systemd_units_run_the_report_and_catch_up():
     service = linux_scheduler.systemd_service(["/opt/junk zero/JunkZero", "--mode", "report", "100%"])
-    assert 'ExecStart="/opt/junk zero/JunkZero" "--mode" "report" "100%%"' in service
+    assert 'ExecStart="/usr/bin/env" "/opt/junk zero/JunkZero" "--mode" "report" "100%%"' in service
     assert linux_scheduler.parse_exec_start(service) == ["/opt/junk zero/JunkZero", "--mode", "report", "100%"]
     weekly = linux_scheduler.systemd_timer("weekly", "07:15", "SUN")
     assert "OnCalendar=Sun *-*-* 07:15:00" in weekly and "Persistent=true" in weekly
@@ -400,7 +400,7 @@ def test_startup_points_the_schedule_at_this_copy(cron_only, tmp_path, monkeypat
     monkeypatch.setattr(scheduler.sys, "frozen", True, raising=False)
     monkeypatch.setattr(scheduler.sys, "executable", "/opt/junkzero/JunkZero")
     assert scheduler.ensure_task_current() is True
-    assert linux_scheduler.current_command() == ["/opt/junkzero/JunkZero", "--mode", "report"]
+    assert linux_scheduler.current_command()[:3] == ["/opt/junkzero/JunkZero", "--mode", "report"]
     assert scheduler.ensure_task_current() is False
 
 

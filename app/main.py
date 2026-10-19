@@ -1424,7 +1424,11 @@ def main():
                         help="In report mode, skip the junk locations (temp, caches, logs)")
     parser.add_argument("--show-report", action="store_true",
                         help="Open with the latest scheduled report in the table (used by notifications)")
+    parser.add_argument("--data-dir", default=None,
+                        help="Folder for settings, history and reports (same as JUNKZERO_DATA_DIR)")
     args = parser.parse_args()
+    if args.data_dir:
+        os.environ["JUNKZERO_DATA_DIR"] = args.data_dir
     setup_logging()
     if osinfo.is_linux() and getattr(sys, "frozen", False):
         # Programs JunkZero starts (the browser, the file manager) must use the system's libraries

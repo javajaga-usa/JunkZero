@@ -137,6 +137,24 @@ def toast_xml(title: str, text: str, clickable: bool = True) -> str:
             "</binding></visual></toast>")
 
 
+def _desktop_env() -> dict:
+    """cron starts jobs without the desktop's session bus. Under SysVinit (MX Linux's default)
+    that bus isn't at /run/user/<uid>/bus either, so point D-Bus at the display, from which it
+    finds the running session bus."""
+    env = dict(os.environ)
+    if env.get("DBUS_SESSION_BUS_ADDRESS"):
+        return env
+    bus = f"/run/user/{os.getuid()}/bus" if hasattr(os, "getuid") else ""
+    if bus and os.path.exists(bus):
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+        return env
+    env.setdefault("DISPLAY", ":0")
+    xauth = os.path.join(os.path.expanduser("~"), ".Xauthority")
+    if "XAUTHORITY" not in env and os.path.exists(xauth):
+        env["XAUTHORITY"] = xauth
+    return env
+
+
 def send(title: str, text: str, clickable: bool = True) -> bool:
     """Show a system notification. False if this system has no way to."""
     if osinfo.is_windows():
@@ -158,7 +176,8 @@ def send(title: str, text: str, clickable: bool = True) -> bool:
         res = subprocess.run(command + [title, text], capture_output=True, text=True, timeout=30)
         return res.returncode == 0
     if shutil.which("notify-send"):
-        res = subprocess.run(["notify-send", "--app-name=JunkZero", title, text], capture_output=True, timeout=30)
+        res = subprocess.run(["notify-send", "--app-name=JunkZero", title, text], capture_output=True, timeout=30,
+                             env=_desktop_env())
         return res.returncode == 0
     return False
 
