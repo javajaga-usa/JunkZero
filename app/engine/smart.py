@@ -13,9 +13,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app.config import (
     CAT_BROKEN_DOWNLOADS,
+    CAT_DUPLICATE_FOLDERS,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
     CAT_LEFTOVERS,
+    CAT_OLD_PROJECTS,
     CAT_TEMP_JUNK,
     RISK_CAUTION,
     RISK_SAFE,
@@ -184,6 +186,10 @@ class SmartScorer:
             adjust(-10, "some apps expect their empty folders to exist")
         elif item.category == CAT_LEFTOVERS:
             adjust(5, "the program that made it is no longer installed")
+        elif item.category == CAT_DUPLICATE_FOLDERS:
+            adjust(10, "a folder with the same files is kept")
+        elif item.category == CAT_OLD_PROJECTS:
+            adjust(5, "the project's own files can build it again")
 
         summary = getattr(item, "archive_summary", "")
         if summary:
@@ -196,6 +202,9 @@ class SmartScorer:
             adjust(15, f"setup program: {evidence}")
         elif getattr(item, "installer_weak", False):
             adjust(-10, "only its name says setup; no installer fingerprint inside")
+        installed = getattr(item, "installed_note", "")
+        if installed:
+            adjust(10, installed)
 
         # Created (unpacked, copied) counts as changed too
         changed = max(item.modified_timestamp, getattr(item, "changed_timestamp", 0) or 0)

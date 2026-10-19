@@ -19,11 +19,13 @@ from app.config import (
     BUILD_DIR_NAMES,
     HOLDING_DIR_NAME,
     CAT_CUSTOM_RULES,
+    CAT_DUPLICATE_FOLDERS,
     CAT_DUPLICATES,
     CAT_EMPTY_FOLDERS,
     CAT_FILE_TYPES,
     CAT_LEFTOVERS,
     CAT_OLD_DOWNLOADS,
+    CAT_OLD_PROJECTS,
     CAT_TEMP_JUNK,
     DUPLICATE_MIN_BYTES,
     RISK_CAUTION,
@@ -44,6 +46,7 @@ from app.engine.classifier import (
     is_skipped_store,
     is_system_protected_path,
 )
+from app.engine import dupfolders, projects, spacelog
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_reason, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
 from app.engine.filetypes import FileTypeMatcher
@@ -133,6 +136,12 @@ class FastScanner:
         self._leftovers: Dict[str, object] = {}
         self._scorer = SmartScorer(options.learning)
         self._safeguards = Safeguards(options.cloud_folders)
+        # Duplicate folders: each folder's files (name, size), and folders the scan didn't see
+        # completely (something skipped, excluded or unreadable), which are never compared
+        self._folder_files: Dict[str, List[Tuple[str, int]]] = {}
+        self._incomplete: Set[str] = set()
+        # Old projects: project folder -> its newest change (0: unknown), worked out once
+        self._project_activity: Dict[str, float] = {}
 
     def cancel(self) -> None:
         """Cancel ongoing scan gracefully."""
@@ -254,6 +263,10 @@ class FastScanner:
         # Anything other than a plain, traversable subfolder (files, links, build dirs,
         # protected or unreadable entries) means this folder is not empty.
         has_content = False
+        # Whether every entry was seen as a plain file or a subfolder scanned on its own: only
+        # then can this folder be compared with others as a duplicate folder
+        complete = True
+        files_here: List[Tuple[str, int]] = []
 
         if self._stop_event.is_set():
             return found_items, subdirs
@@ -262,6 +275,7 @@ class FastScanner:
         if is_skipped_store(dir_path):
             with self._lock:
                 self._dir_tree[dir_path] = (True, [])
+                self._incomplete.add(dir_path)
             return found_items, subdirs
         # Big files in installed programs, games, Python environments and model stores are
         # program data: not compared as duplicates (worked out once per folder, when needed)
@@ -274,6 +288,7 @@ class FastScanner:
             if is_leveldb_listing(e.name for e in entries):
                 entries = []
                 has_content = True
+                complete = False
             for entry in entries:
                 if self._stop_event.is_set():
                     break
@@ -287,6 +302,7 @@ class FastScanner:
                     # Check system blacklist
                     if self.options.skip_system_dirs and is_system_protected_path(path):
                         has_content = True
+                        complete = False
                         continue
 
                     # Version-control folders hold state the tool needs, even empty folders.
@@ -296,11 +312,13 @@ class FastScanner:
                     if lower in VCS_DIR_NAMES or lower in BACKUP_DIR_NAMES or \
                             lower.endswith(BACKUP_DIR_SUFFIXES) or name == HOLDING_DIR_NAME:
                         has_content = True
+                        complete = False
                         continue
 
                     # User exclusions: never flagged, never descended into
                     if self._excluder.matches(path, name):
                         has_content = True
+                        complete = False
                         continue
 
                     # Read metadata
@@ -321,11 +339,13 @@ class FastScanner:
                         # Windows junctions point elsewhere (even back up the tree): never followed
                         if _is_junction(entry):
                             has_content = True
+                            complete = False
                             continue
 
                         leftover = self._leftovers.get(_norm_path(path)) if self._leftovers else None
                         if leftover:
                             has_content = True
+                            complete = False
                             found_items.append(self._leftover_item(leftover))
                             continue
 
@@ -334,6 +354,7 @@ class FastScanner:
                         location = self._dir_locations.get(_norm_path(path)) if self.options.include_temp_junk else None
                         if location:
                             has_content = True
+                            complete = False
                             found_items.append(build_item(
                                 path, name, CAT_TEMP_JUNK, self._calc_dir_size(path), mtime, RISK_SAFE,
                                 f"{location.label} (rebuilt automatically; close the app first)", is_dir=True,
@@ -342,8 +363,19 @@ class FastScanner:
 
                         if name.lower() in BUILD_DIR_NAMES:
                             has_content = True
+
+                        # Dependency and build folders of a project nobody touched for months
+                        if self.options.include_old_projects:
+                            item = self._old_project_item(path, name)
+                            if item is not None:
+                                has_content = True
+                                complete = False
+                                found_items.append(item)
+                                continue
+
                         # bin, out, build, target count only next to a project file
                         if self.options.include_java_builds and is_build_dir(path, name):
+                            complete = False
                             dir_size = self._calc_dir_size(path)
                             item = classify_item(path, name, dir_size, mtime, is_dir=True, options=self.options)
                             if item:
@@ -354,6 +386,7 @@ class FastScanner:
                         # A folder matching a user junk rule is listed as one item
                         if self._junk_rules and self._junk_rules.matches(path, name):
                             has_content = True
+                            complete = False
                             item = self._custom_rule_item(path, name, self._calc_dir_size(path), mtime, is_dir=True)
                             if item:
                                 found_items.append(item)
@@ -369,9 +402,11 @@ class FastScanner:
                         # Cloud files kept only online free no space here, and opening them
                         # (to look inside or compare) would download them: never listed
                         if osinfo.is_online_only(stat):
+                            complete = False
                             continue
 
                         size = stat.st_size
+                        files_here.append((name, size))
                         changed = last_changed(stat)
                         item = self._location_item(path, name, size, mtime, file_locations, changed) \
                             if file_locations else None
@@ -397,24 +432,33 @@ class FastScanner:
                     else:
                         # Symlinks and other special entries
                         has_content = True
+                        complete = False
 
                 except (PermissionError, FileNotFoundError, OSError):
                     has_content = True
+                    complete = False
                     continue
 
         except PermissionError as err:
             has_content = True
+            complete = False
             self._note_unreadable(dir_path, err)
         except (FileNotFoundError, OSError):
             has_content = True
+            complete = False
 
         if self._stop_event.is_set():
             # Partial listing: never treat this folder as empty
             has_content = True
+            complete = False
 
         with self._lock:
             self._dir_tree[dir_path] = (has_content, list(subdirs))
             self._dup_candidates.extend(dup_candidates)
+            if self.options.include_duplicates:
+                self._folder_files[dir_path] = files_here
+                if not complete:
+                    self._incomplete.add(dir_path)
 
         return found_items, subdirs
 
@@ -429,6 +473,25 @@ class FastScanner:
                 self.stats.privacy_blocked_dirs += 1
             if len(self.stats.unreadable_examples) < 5:
                 self.stats.unreadable_examples.append(dir_path)
+
+    def _old_project_item(self, path: str, name: str) -> Optional[GarbageItem]:
+        """A dependency or build folder of a project untouched for months, or None."""
+        def activity(folder: str) -> float:
+            key = _norm_path(folder)
+            with self._lock:
+                known = self._project_activity.get(key)
+            if known is None:
+                known = projects.last_activity(folder)
+                with self._lock:
+                    self._project_activity[key] = known
+            return known
+
+        found = projects.old_project_folder(path, name, activity=activity)
+        if found is None:
+            return None
+        reason, _days, changed = found
+        return build_item(path, name, CAT_OLD_PROJECTS, self._calc_dir_size(path), changed, RISK_REVIEW,
+                          reason, is_dir=True, selected=False)
 
     def _leftover_item(self, leftover) -> GarbageItem:
         return build_item(
@@ -569,6 +632,44 @@ class FastScanner:
             roots.append(path)
         return roots
 
+    def _find_duplicate_folders(self, roots: List[str]) -> Tuple[List[GarbageItem], List[str]]:
+        """(items, every folder in a duplicate group) for folders holding exactly the same files."""
+        children = {path: kids for path, (_content, kids) in self._dir_tree.items()}
+        infos = dupfolders.signatures(children, self._folder_files, self._incomplete)
+        root_keys = {_norm_path(r) for r in roots}
+        user_folders = protected_user_folders()
+
+        def allowed(folder: str) -> bool:
+            # Never a scan root, a personal folder (Documents...), a hidden folder, or the
+            # folder of an installed program, game or Python environment
+            return (_norm_path(folder) not in root_keys and folder not in self._hidden_dirs
+                    and not is_protected_user_folder(folder, folders=user_folders)
+                    and not _in_app_folder(os.path.join(folder, "x")))
+
+        items: List[GarbageItem] = []
+        members: List[str] = []
+        for group in dupfolders.find_groups(infos, allowed, self._stop_event):
+            candidates = []
+            for info in group:
+                try:
+                    mtime = os.stat(info.path, follow_symlinks=False).st_mtime
+                except OSError:
+                    mtime = 0.0
+                candidates.append(FileCandidate(info.path, os.path.basename(info.path), info.size, mtime))
+            keep = pick_keeper(candidates, self._safeguards.cloud)
+            members.extend(info.path for info in group)
+            for c, info in zip(candidates, group):
+                if c is keep:
+                    continue
+                item = build_item(
+                    c.path, c.name, CAT_DUPLICATE_FOLDERS, c.size, c.mtime, RISK_REVIEW,
+                    f"Same {info.files} files as {keep.path} ({keeper_reason(keep, candidates, self._safeguards.cloud)})",
+                    is_dir=True, selected=False,
+                )
+                item.duplicate_paths = [o.path for o in candidates if o is not c]
+                items.append(item)
+        return items, members
+
     def _find_duplicates(self) -> List[GarbageItem]:
         """Flag every copy but the newest in each group of identical files."""
         items: List[GarbageItem] = []
@@ -599,6 +700,9 @@ class FastScanner:
         self.garbage_items.clear()
         self._dir_tree.clear()
         self._dup_candidates.clear()
+        self._folder_files.clear()
+        self._incomplete.clear()
+        self._project_activity.clear()
         try:
             self._run_scan_steps()
         except Exception as e:  # Any failure ends the scan with a message instead of a stuck spinner
@@ -649,6 +753,8 @@ class FastScanner:
             self.stats.drive_total_bytes = drive_stat.total
             self.stats.drive_used_bytes = drive_stat.used
             self.stats.drive_free_bytes = drive_stat.free
+            # Free space over time (Cleanup History's chart): one point per disk per hour at most
+            spacelog.record(self.options.target_path, drive_stat.total, drive_stat.free)
         except Exception:
             pass
 
@@ -687,7 +793,10 @@ class FastScanner:
         # Duplicates need every candidate file, so they are also found after traversal
         if self.options.include_duplicates and not self._stop_event.is_set():
             self._set_phase("duplicates")
-            for item in self._find_duplicates():
+            folder_items, members = self._find_duplicate_folders(roots)
+            # Files inside a duplicate folder are left out: the folder is listed instead
+            file_items = [i for i in self._find_duplicates() if not dupfolders.inside_any(i.path, members)]
+            for item in folder_items + file_items:
                 with self._lock:
                     self._record_item(item)
 

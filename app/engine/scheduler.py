@@ -343,13 +343,18 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
 
 def run_scheduled_report() -> int:
     """Entry point for Task Scheduler and launchd."""
+    from app.engine import notify
     schedule = get_schedule()
     try:
-        run_report(schedule["paths"], schedule["include_junk_locations"], source="scheduled")
+        report = run_report(schedule["paths"], schedule["include_junk_locations"], source="scheduled")
     except Exception as e:
         # Kept for the Schedule screen, so a run that keeps failing doesn't go unnoticed
-        _record_error(f"The scheduled scan failed: {e}" if str(e) else f"The scheduled scan failed ({type(e).__name__})")
+        message = f"The scheduled scan failed: {e}" if str(e) else f"The scheduled scan failed ({type(e).__name__})"
+        _record_error(message)
+        notify.after_report(error=message)
         return 1
+    # A system notification when it found enough to be worth a look (never fails the run)
+    notify.after_report(report)
     # The scan can take minutes: only stamp the run, so changes made in the app meanwhile stay
     with storage.lock():
         current = storage.load_settings().get("schedule")

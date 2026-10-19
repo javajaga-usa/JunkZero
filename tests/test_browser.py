@@ -284,3 +284,92 @@ def test_admin_cleanup_hints_are_listed_read_only(server, page):
     text = page.text_content("#cleanupHints")
     assert "Windows Update downloads" in text and "3.00 GB" in text and "Disk Cleanup" in text
     assert page.locator("#cleanupHints button, #cleanupHints input").count() == 0
+
+
+def test_space_still_held_and_free_space_chart(server, page):
+    emptied = []
+    summary = {"recycle_bin_bytes": 5 * 1024 ** 3, "junkzero_count": 4, "junkzero_bytes": 3 * 1024 ** 3,
+               "trash_bytes": 3 * 1024 ** 3, "holding_bytes": 0, "older_than_days": 7, "old_count": 3,
+               "old_bytes": 2 * 1024 ** 3}
+    page.route("**/api/reclaim?*", lambda route: route.fulfill(json=summary))
+
+    def empty(route):
+        emptied.append(route.request.post_data_json)
+        route.fulfill(json={"emptied": 3, "freed_bytes": 2 * 1024 ** 3, "freed_formatted": "2.00 GB", "errors": [],
+                            "summary": {**summary, "junkzero_count": 1, "junkzero_bytes": 1024 ** 3,
+                                        "old_count": 0, "old_bytes": 0},
+                            "history": []})
+    page.route("**/api/reclaim/empty", empty)
+    now = time.time()
+    page.route("**/api/space/history", lambda route: route.fulfill(json={
+        "disks": [{"root": "/", "points": [{"at": now - 86400 * 3, "total": 100 * 1024 ** 3, "free": 20 * 1024 ** 3},
+                                           {"at": now, "total": 100 * 1024 ** 3, "free": 25 * 1024 ** 3}]}],
+        "cleanups": [{"at": now - 86400, "freed_bytes": 5 * 1024 ** 3, "mode": "recycle_bin", "roots": ["/"]}],
+    }))
+    _open(page, server)
+    page.click("#btnOpenHistory")
+    page.wait_for_function("document.getElementById('reclaimTitle').textContent.includes('still takes space')")
+    assert page.text_content("#reclaimTitle") == "3.00 GB you deleted with JunkZero still takes space"
+    page.wait_for_selector("#spaceChartPanel:not(.hidden) .chart-line")
+    assert page.locator("#spaceChart .chart-marker").count() == 1
+    assert "Up 5.00 GB since" in page.text_content("#spaceChartNote")
+    page.click("#btnEmptyOld")
+    page.wait_for_selector("#reclaimConfirm:not(.hidden)")
+    assert "Erase 3 items (2.00 GB)" in page.text_content("#reclaimConfirmText")
+    page.click("#btnEmptyConfirm")
+    page.wait_for_function("document.getElementById('reclaimConfirm').classList.contains('hidden')")
+    assert emptied == [{"older_than_days": 7}]
+    assert page.is_disabled("#btnEmptyOld")
+
+
+def test_notification_setting_and_unseen_report_offer(server, page):
+    saved = []
+    seen = []
+    page.route("**/api/reports/unseen", lambda route: route.fulfill(json={"report": {
+        "generated_at": 1700000000, "total_bytes": 2 * 1024 ** 3, "item_count": 9, "delete_bytes": 1024 ** 3}}))
+    page.route("**/api/reports/seen", lambda route: seen.append(route.request.post_data_json) or route.fulfill(json={"ok": True}))
+
+    def notify(route):
+        if route.request.method == "PUT":
+            saved.append(route.request.post_data_json)
+            route.fulfill(json={"notify": {**saved[-1], "seen_at": 0, "clickable": False}})
+        else:
+            route.fulfill(json={"notify": {"enabled": True, "min_mb": 500, "seen_at": 0, "clickable": True}})
+    page.route("**/api/notify", notify)
+    _open(page, server)
+    page.wait_for_selector(".toast-sticky:has-text(\"Your scheduled scan on\")")
+    assert "found 2.00 GB to review (1.00 GB of it marked Delete)" in page.text_content(".toast-sticky")
+    assert seen == [{"generated_at": 1700000000}]
+    page.click("#btnOpenSchedule")
+    page.wait_for_function("document.getElementById('notifyNote').textContent.includes('Click the notification')")
+    page.fill("#notifyMinMb", "2000")
+    page.dispatch_event("#notifyMinMb", "change")
+    page.wait_for_function("document.getElementById('notifyNote').textContent.includes('next time you open it')")
+    assert saved[-1] == {"enabled": True, "min_mb": 2000}
+    page.uncheck("#notifyEnabled")
+    page.wait_for_function("document.getElementById('notifyMinMb').disabled")
+    assert saved[-1]["enabled"] is False
+
+
+def test_largest_files_map_drills_into_folders(server, page, tmp_path):
+    root = tmp_path / "space"
+    for name, size in (("Videos", 300_000), ("Music", 100_000)):
+        (root / name / "inner").mkdir(parents=True)
+        (root / name / "inner" / "a.bin").write_bytes(b"x" * size)
+    (root / "loose.bin").write_bytes(b"y" * 50_000)
+    _open(page, server)
+    page.fill("#targetPathInput", str(root))
+    page.click("#btnLargest")
+    page.wait_for_function("document.getElementById('largestSubtitle').textContent.includes('files under')")
+    page.click("#largestTabMap")
+    page.wait_for_selector("#largestMap .map-tile")
+    assert page.is_hidden("#largestList")
+    names = page.locator("#largestMap .map-name").all_text_contents()
+    assert names[:2] == ["Videos", "Music"] and "Files directly here" in names
+    page.click("#largestMap .map-folder >> nth=0")
+    page.wait_for_selector("#largestMapCrumbs .crumb-btn")
+    page.wait_for_function("document.querySelector('#largestMap .map-name')?.textContent === 'inner'")
+    assert page.text_content("#largestMapCrumbs .crumb-current") == "Videos"
+    page.click("#largestMapCrumbs .crumb-btn")
+    page.wait_for_function("document.querySelectorAll('#largestMap .map-folder').length === 2")
+    assert page.locator("#largestMapCrumbs .crumb-btn").count() == 0

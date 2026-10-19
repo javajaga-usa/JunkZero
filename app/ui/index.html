@@ -135,6 +135,10 @@
             <input type="checkbox" id="optLeftovers" />
             <i data-lucide="package-x"></i> Program leftovers
           </label>
+          <label class="checkbox-tag" title="node_modules, .venv, target and build folders of coding projects nobody has changed for 90 days or more (they can be built again)">
+            <input type="checkbox" id="optOldProjects" />
+            <i data-lucide="folder-code"></i> Old coding projects <span class="tag-hint">90+ days</span>
+          </label>
           <span class="file-types-option">
             <label class="checkbox-tag" title="Also list files of the types you picked in File Types">
               <input type="checkbox" id="optFileTypes" />
@@ -321,10 +325,12 @@
               <option value="Stale Large Files">Stale large files (&gt;100 MB)</option>
               <option value="Empty Folders">Empty folders</option>
               <option value="Duplicate Files">Duplicate files (extra copies)</option>
+              <option value="Duplicate Folders">Duplicate folders (same files twice)</option>
               <option value="Old Downloads">Old downloads (untouched 90+ days)</option>
               <option value="My Junk Rules">My junk rules (your patterns)</option>
               <option value="Program Leftovers">Program leftovers (uninstalled apps)</option>
               <option value="Chosen File Types">Chosen file types (your search)</option>
+              <option value="Old Project Builds">Old coding projects (rebuildable folders)</option>
             </select>
 
             <select id="riskFilter" class="select-filter" aria-label="Risk level">
@@ -457,8 +463,16 @@
             <button type="button" id="largestTabFiles" class="mode-option" role="tab" aria-selected="false">
               <i data-lucide="file"></i> Files
             </button>
+            <button type="button" id="largestTabMap" class="mode-option" role="tab" aria-selected="false">
+              <i data-lucide="layout-grid"></i> Map
+            </button>
           </div>
           <ul id="largestList" class="simple-list largest-list"></ul>
+          <div id="largestMapWrap" class="largest-map-wrap hidden">
+            <nav id="largestMapCrumbs" class="largest-map-crumbs" aria-label="Folders opened in the map"></nav>
+            <div id="largestMap" class="largest-map" role="group" aria-label="Folders by size"></div>
+            <p class="largest-map-hint">Each box is a folder, sized by the space it takes. Click a box to look inside it.</p>
+          </div>
           <p class="confirm-note">Nothing here is deleted from this list. Use the folder button to review and delete in the folder explorer. Protected system folders and your exclusions are not counted.</p>
         </div>
         <div class="modal-footer">
@@ -775,6 +789,37 @@
           <button id="closeHistoryModal" class="close-modal-btn" aria-label="Close" title="Close">&times;</button>
         </div>
         <div class="modal-body">
+          <!-- Space JunkZero's cleanups still hold in the Recycle Bin and holding folders -->
+          <section id="reclaimPanel" class="reclaim-panel" aria-live="polite">
+            <div class="reclaim-head">
+              <div>
+                <strong id="reclaimTitle">Checking the Recycle Bin...</strong>
+                <p id="reclaimText" class="reclaim-text"></p>
+              </div>
+              <div class="reclaim-actions">
+                <label class="reclaim-days" title="Only cleanups at least this many days old">Older than
+                  <input type="number" id="reclaimDays" min="0" max="3650" value="7" /> days</label>
+                <button id="btnEmptyOld" class="btn btn-secondary btn-sm" disabled>
+                  <i data-lucide="trash"></i> Empty these</button>
+              </div>
+            </div>
+            <div id="reclaimConfirm" class="reclaim-confirm hidden" role="alertdialog" aria-labelledby="reclaimConfirmText">
+              <span id="reclaimConfirmText"></span>
+              <div class="reclaim-confirm-actions">
+                <button id="btnEmptyCancel" class="btn btn-ghost btn-sm">Keep them</button>
+                <button id="btnEmptyConfirm" class="btn btn-danger btn-sm">Erase for good</button>
+              </div>
+            </div>
+          </section>
+          <!-- Free space over time, per disk -->
+          <section id="spaceChartPanel" class="space-chart-panel hidden" aria-label="Free space over time">
+            <div class="space-chart-head">
+              <span class="section-label"><i data-lucide="chart-line"></i> Free space over time</span>
+              <select id="spaceChartDisk" class="select-filter" aria-label="Disk"></select>
+            </div>
+            <div id="spaceChart" class="space-chart"></div>
+            <p id="spaceChartNote" class="space-chart-note"></p>
+          </section>
           <p id="learningNote" class="learning-note"></p>
           <ul id="historyList" class="simple-list history-list"></ul>
         </div>
@@ -829,6 +874,13 @@
           <label class="checkbox-tag">
             <input type="checkbox" id="scheduleJunk" checked /> Include Windows junk locations (temp, crash dumps, browser caches)
           </label>
+          <div class="notify-row">
+            <label class="checkbox-tag">
+              <input type="checkbox" id="notifyEnabled" checked /> Notify me when a scheduled scan finds at least
+            </label>
+            <label class="notify-min"><input type="number" id="notifyMinMb" min="0" max="10000000" step="100" value="500" aria-label="Megabytes" /> MB</label>
+          </div>
+          <p id="notifyNote" class="notify-note"></p>
           <div id="lastReportBox" class="last-report hidden">
             <span id="lastReportText"></span>
             <button id="btnLoadReport" class="btn btn-secondary btn-sm"><i data-lucide="table"></i> Review in table</button>

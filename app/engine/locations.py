@@ -126,6 +126,7 @@ def windows_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[Junk
                     whole_dir=True,
                 ))
 
+    _add_app_caches(add, env)
     return found
 
 
@@ -273,7 +274,17 @@ def mac_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLoca
     for loc_id, label, rel in _MAC_DEV_CACHES:
         add(JunkLocation(loc_id, label, os.path.normpath(os.path.join(home, rel)), whole_dir=True))
 
+    _add_app_caches(add, env)
     return found
+
+
+def _add_app_caches(add, env: Mapping[str, str]) -> None:
+    """Caches of chat, editor and game apps (Teams, Slack, Discord...) that are closed now."""
+    from app.engine import appcaches
+    if not appcaches.app_cache_entries(env, running=()):
+        return  # None of these apps' caches are here: no need to list the running programs
+    for loc_id, label, path in appcaches.app_cache_entries(env, appcaches.running_programs()):
+        add(JunkLocation(loc_id, label, os.path.normpath(path), whole_dir=True))
 
 
 # Known Folder ID of the user's Downloads folder (it can be moved to another drive)

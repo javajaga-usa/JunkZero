@@ -656,7 +656,8 @@ def restore_cleanup(record: Dict[str, Any]) -> Dict[str, Any]:
     until = float(record.get("timestamp") or since) + 120
     held = record.get("held") or {}
     trash_ids = record.get("trash_ids") or {}
-    already = set(record.get("restored") or [])
+    # Put back already, or erased from the Recycle Bin by "Empty JunkZero's items"
+    already = set(record.get("restored") or []) | set(record.get("emptied") or [])
     bins: Dict[str, RecycleIndex] = {}  # Each Recycle Bin is read once for the whole restore
     for original in record.get("paths") or []:
         if original in already:
