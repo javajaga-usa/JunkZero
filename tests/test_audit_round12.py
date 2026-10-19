@@ -433,6 +433,7 @@ def test_crontab_not_allowed_is_explained(monkeypatch, tmp_path, linux_os):
 
 
 @needs_user
+@pytest.mark.skipif(not __import__("sys").platform.startswith("linux"), reason="the freedesktop Trash")
 def test_trash_from_a_read_only_folder_leaves_no_stray_note(tmp_path, monkeypatch, linux_os):
     from app.engine import cleaner
     import send2trash.plat_other as xdg

@@ -52,6 +52,16 @@ def _cron_denied(stderr: Optional[str]) -> bool:
     return "not allowed" in (stderr or "").lower()
 
 
+def cron_denied() -> bool:
+    """crontab is installed but this account may not use it."""
+    if not shutil.which("crontab"):
+        return False
+    try:
+        return _cron_denied(_run(["crontab", "-l"]).stderr)
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 CRON_DENIED = ("Your account isn't allowed to use cron (set in /etc/cron.allow or /etc/cron.deny), "
                "so JunkZero can't schedule scans. An administrator can allow it.")
 
@@ -251,7 +261,7 @@ def cron_command() -> Optional[List[str]]:
 def install(frequency: str, time_str: str, day: str, program_args: List[str]) -> str:
     """Set up the schedule with systemd or cron (and remove it from the other). Returns which."""
     kind = scheduler_kind()
-    if kind is None and shutil.which("crontab"):
+    if kind is None and cron_denied():
         raise LinuxScheduleError(CRON_DENIED)
     if kind is None:
         raise LinuxScheduleError("Scheduled scans need systemd or cron, and neither was found. "

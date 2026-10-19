@@ -192,7 +192,7 @@ def scheduling_supported() -> bool:
 def unsupported_reason() -> str:
     """Why scheduled scans can't be set up here, in plain words."""
     if osinfo.is_linux():
-        if linux_scheduler.shutil.which("crontab"):
+        if linux_scheduler.cron_denied():
             return linux_scheduler.CRON_DENIED
         return "Scheduled scans need systemd or cron. Install cron in a terminal: sudo apt install cron"
     return "Scheduled scans aren't available on this system."
