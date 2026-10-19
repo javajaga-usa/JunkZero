@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from app.config import HOLDING_DIR_NAME
-from app.engine import osinfo, recycle, storage
+from app.engine import osinfo, permissions, recycle, storage
 from app.engine.classifier import format_size
 
 # Cleanups at least this old can be emptied (the user can pick another number of days)
@@ -235,21 +235,16 @@ def summary(older_than_days: int = EMPTY_AFTER_DAYS, now: Optional[float] = None
 
 
 def _erase(path: str) -> None:
+    """Remove path for good. The user's own read-only files and folders inside (the Windows
+    read-only attribute, files copied off a disc, Go's module cache) are made writable as they
+    are reached, together with the folder holding them."""
     if os.path.isdir(path) and not os.path.islink(path):
-        def make_writable(func, p, _exc):
-            # Read-only files (the Windows read-only attribute) can't be removed until cleared
-            os.chmod(p, 0o700 if os.path.isdir(p) else 0o600)
-            func(p)
         if sys.version_info >= (3, 12):
-            shutil.rmtree(path, onexc=make_writable)
+            shutil.rmtree(path, onexc=lambda func, p, exc: permissions.retry_writable(func, p, exc))
         else:
-            shutil.rmtree(path, onerror=make_writable)
+            shutil.rmtree(path, onerror=lambda func, p, exc_info: permissions.retry_writable(func, p, exc_info[1]))
     else:
-        try:
-            os.remove(path)
-        except PermissionError:
-            os.chmod(path, 0o600)
-            os.remove(path)
+        permissions.with_retry(lambda: os.remove(path), path)
 
 
 def empty_old(older_than_days: int = EMPTY_AFTER_DAYS, now: Optional[float] = None) -> Dict[str, Any]:
@@ -270,7 +265,8 @@ def empty_old(older_than_days: int = EMPTY_AFTER_DAYS, now: Optional[float] = No
         try:
             _erase(item.stored)
         except OSError as e:
-            errors.append({"path": item.original, "error": f"Could not empty it: {e.strerror or e}"})
+            why = permissions.explain(e, item.stored)
+            errors.append({"path": item.original, "error": f"Could not empty it: {why[1] if why else e.strerror or e}"})
             continue
         for extra in item.extra:
             if _in_trash(extra):

@@ -38,7 +38,22 @@ def systemd_user_available() -> bool:
 
 
 def cron_available() -> bool:
-    return bool(shutil.which("crontab"))
+    """crontab is installed and this account may use it (/etc/cron.allow, /etc/cron.deny)."""
+    if not shutil.which("crontab"):
+        return False
+    try:
+        res = _run(["crontab", "-l"])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not _cron_denied(res.stderr)
+
+
+def _cron_denied(stderr: Optional[str]) -> bool:
+    return "not allowed" in (stderr or "").lower()
+
+
+CRON_DENIED = ("Your account isn't allowed to use cron (set in /etc/cron.allow or /etc/cron.deny), "
+               "so JunkZero can't schedule scans. An administrator can allow it.")
 
 
 def scheduler_kind() -> Optional[str]:
@@ -178,6 +193,8 @@ def read_crontab() -> str:
     if res.returncode != 0:
         if "no crontab" in (res.stderr or "").lower():
             return ""
+        if _cron_denied(res.stderr):
+            raise LinuxScheduleError(CRON_DENIED)
         raise LinuxScheduleError((res.stderr or "crontab -l failed").strip())
     return res.stdout or ""
 
@@ -203,7 +220,7 @@ def install_cron(frequency: str, time_str: str, day: str, program_args: List[str
 
 def remove_cron() -> None:
     if not cron_available():
-        return
+        return  # Not installed or not allowed: there is no JunkZero line to remove
     current = read_crontab()
     lines = without_junkzero(current)
     if lines != current.splitlines():
@@ -234,6 +251,8 @@ def cron_command() -> Optional[List[str]]:
 def install(frequency: str, time_str: str, day: str, program_args: List[str]) -> str:
     """Set up the schedule with systemd or cron (and remove it from the other). Returns which."""
     kind = scheduler_kind()
+    if kind is None and shutil.which("crontab"):
+        raise LinuxScheduleError(CRON_DENIED)
     if kind is None:
         raise LinuxScheduleError("Scheduled scans need systemd or cron, and neither was found. "
                                  "Install cron in a terminal: sudo apt install cron")

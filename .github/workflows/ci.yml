@@ -111,3 +111,12 @@ jobs:
           PATH="$RUNNER_TEMP/nopip:$PATH" bash run.sh --version < /dev/null | tee third.txt
           grep -q "^JunkZero " third.txt
           test -f .venv/.junkzero-requirements
+      - if: runner.os == 'Linux'
+        name: run.sh in a folder the user can't write says how to fix it
+        run: |
+          mkdir "$RUNNER_TEMP/ro"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/ro"
+          chmod a-w "$RUNNER_TEMP/ro"
+          bash "$RUNNER_TEMP/ro/run.sh" --version < /dev/null > ro.txt 2>&1 && exit 1
+          cat ro.txt
+          grep -q "can't write in its folder" ro.txt

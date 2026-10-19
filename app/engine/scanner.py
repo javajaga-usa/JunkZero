@@ -149,6 +149,9 @@ class FastScanner:
         # completely (something skipped, excluded or unreadable), which are never compared
         self._folder_files: Dict[str, List[Tuple[str, int]]] = {}
         self._incomplete: Set[str] = set()
+        # Folders of another account's inside what is scanned (see permissions.foreign_folder)
+        self._foreign_dirs: Set[str] = set()
+        self._check_owners = hasattr(os, "getuid") and os.getuid() != 0 and not osinfo.is_windows()
         # Old projects: project folder -> its newest change (0: unknown), worked out once
         self._project_activity: Dict[str, float] = {}
 
@@ -162,6 +165,11 @@ class FastScanner:
     def set_callback(self, callback: Callable[[GarbageItem, ScanStats], None]) -> None:
         """Set a real-time event callback triggered when a garbage item is found."""
         self._callback = callback
+
+    def _note_foreign(self, path: str, st: os.stat_result) -> None:
+        """Remember a folder inside the scan that belongs to another account and can't be changed."""
+        if self._check_owners and permissions.foreign_folder(path, st):
+            self._foreign_dirs.add(os.path.normcase(os.path.abspath(path)))
 
     def _calc_dir_size(self, dir_path: str) -> int:
         """Quickly compute total size of a directory entry."""
@@ -178,6 +186,7 @@ class FastScanner:
                         if entry.is_file(follow_symlinks=False):
                             total += entry.stat(follow_symlinks=False).st_size
                         elif entry.is_dir(follow_symlinks=False):
+                            self._note_foreign(entry.path, entry.stat(follow_symlinks=False))
                             total += self._calc_dir_size(entry.path)
                     except (PermissionError, FileNotFoundError, OSError):
                         continue
@@ -337,6 +346,7 @@ class FastScanner:
                     if is_dir:
                         with self._lock:
                             self.stats.total_dirs_scanned += 1
+                        self._note_foreign(path, stat)
 
                         # A hidden subfolder (even an empty one) means this folder is not
                         # empty, and is never reported as empty itself: apps create them on purpose
@@ -532,6 +542,8 @@ class FastScanner:
     def _record_item(self, item: GarbageItem) -> None:
         """Add a found item to results and stats, and notify the callback. Caller holds the lock."""
         blocker = permissions.removal_blocker(item.path)
+        if not blocker and item.is_directory:
+            blocker = permissions.inner_blocker(item.path, self._foreign_dirs)
         if blocker:
             # Listing what can't be deleted only ends in a failed delete: counted, not listed
             self.stats.not_allowed_items += 1
@@ -733,6 +745,7 @@ class FastScanner:
         self._dup_candidates.clear()
         self._folder_files.clear()
         self._incomplete.clear()
+        self._foreign_dirs.clear()
         self._project_activity.clear()
         try:
             self._run_scan_steps()

@@ -1108,9 +1108,11 @@ def api_clear_history():
 
 @app.get("/api/schedule")
 def api_get_schedule():
+    supported = scheduler.scheduling_supported()
     return {
         "schedule": scheduler.get_schedule(),
-        "supported": scheduler.scheduling_supported(),
+        "supported": supported,
+        "unsupported_reason": "" if supported else scheduler.unsupported_reason(),
         "last_report": scheduler.report_summary(storage.load_report()),
     }
 

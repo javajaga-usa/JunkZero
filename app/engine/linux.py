@@ -195,7 +195,21 @@ _HINT_SIZE_LIMIT = 200000
 
 
 def _files_size(folder: str, pattern, limit: int) -> Optional[int]:
+    """Size of the files in folder (all of them, or only the top-level ones matching pattern:
+    APT keeps its packages at the top, next to a partial/ folder only root may read)."""
     total, seen = 0, 0
+    if pattern is not None:
+        try:
+            with os.scandir(folder) as it:
+                for entry in it:
+                    if entry.is_file(follow_symlinks=False) and pattern.match(entry.name):
+                        seen += 1
+                        if seen > limit:
+                            return None
+                        total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            return None
+        return total
     try:
         for root, dirs, files in os.walk(folder, onerror=_raise):
             for name in files:

@@ -165,9 +165,43 @@ def removal_blocker(path: str) -> str:
     # In a shared folder (sticky bit, like /tmp) only the owner may remove an item
     if parent_st.st_mode & stat.S_ISVTX and st.st_uid != uid and parent_st.st_uid != uid:
         return f"it belongs to {_whose(st.st_uid)}, {rights}"
-    # Moving a folder into the Trash changes it too
-    if stat.S_ISDIR(st.st_mode) and st.st_uid != uid and not os.access(path, os.W_OK | os.X_OK):
+    # Moving a folder into the Trash changes it too, and the Trash refuses a file of another
+    # account's that the user can't write (root's files left by sudo in the user's own folder)
+    if st.st_uid != uid and not stat.S_ISLNK(st.st_mode) and \
+            not os.access(path, (os.W_OK | os.X_OK) if stat.S_ISDIR(st.st_mode) else os.W_OK):
         return f"it belongs to {_whose(st.st_uid)}, {rights}"
+    return ""
+
+
+def foreign_folder(path: str, st: os.stat_result) -> bool:
+    """True for a folder (inside something being listed) that belongs to another account, can't be
+    changed by the user and isn't empty: what is in it can't be removed, so neither can the item
+    holding it (deleting would stop halfway, and its space could never be freed from the Trash)."""
+    if not hasattr(os, "getuid") or osinfo.is_windows():
+        return False
+    uid = os.getuid()
+    if uid == 0 or st.st_uid == uid or not stat.S_ISDIR(st.st_mode) or os.access(path, os.W_OK | os.X_OK):
+        return False
+    try:
+        with os.scandir(path) as it:
+            return next(it, None) is not None
+    except OSError:
+        return True  # Can't even look inside
+
+
+def inner_blocker(path: str, foreign: Any) -> str:
+    """Why a folder can't be removed whole because of something inside it, or "". foreign holds
+    the folders foreign_folder() found while the scan went through it."""
+    if not foreign:
+        return ""
+    prefix = os.path.normcase(os.path.abspath(path)).rstrip(os.sep) + os.sep
+    for inner in list(foreign):
+        if os.path.normcase(inner).startswith(prefix):
+            try:
+                owner = _whose(os.lstat(inner).st_uid)
+            except OSError:
+                owner = "another account"
+            return f"{inner} inside it belongs to {owner}, and JunkZero doesn't use administrator rights"
     return ""
 
 
@@ -177,6 +211,13 @@ def explain(err: BaseException, path: str) -> Optional[Tuple[str, str]]:
         return None
     os_err = _os_error(err)
     code = os_err.errno if os_err is not None else None
+    # The error came from something inside the folder being removed: name it
+    inner = getattr(os_err, "filename", None) if os_err is not None else None
+    if isinstance(inner, str) and code != errno.EROFS and os.path.isdir(path) and \
+            os.path.normcase(os.path.abspath(inner)).startswith(os.path.normcase(os.path.abspath(path)) + os.sep):
+        found = explain(OSError(code, os_err.strerror or "") if code else err, inner)
+        if found:
+            return found[0], f"something inside it can't be removed ({inner}): {found[1]}"
     parent = os.path.dirname(os.path.abspath(path))
 
     if code == errno.EROFS:
@@ -223,8 +264,9 @@ def make_writable(path: str, unlock_locked: bool = False) -> bool:
                 if not mode & stat.S_IWRITE:
                     os.chmod(target, stat.S_IWRITE | stat.S_IREAD)  # clears the read-only attribute
                     changed = True
-            elif not mode & stat.S_IWUSR or (stat.S_ISDIR(mode) and not mode & stat.S_IXUSR):
-                os.chmod(target, mode | stat.S_IWUSR | (stat.S_IXUSR if stat.S_ISDIR(mode) else 0))
+            elif not mode & stat.S_IWUSR or (stat.S_ISDIR(mode) and (mode & stat.S_IRWXU) != stat.S_IRWXU):
+                # A folder also needs reading and entering to empty it
+                os.chmod(target, mode | stat.S_IWUSR | (stat.S_IRUSR | stat.S_IXUSR if stat.S_ISDIR(mode) else 0))
                 changed = True
         except OSError:
             continue

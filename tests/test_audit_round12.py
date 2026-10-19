@@ -160,8 +160,8 @@ def test_purge_keeps_a_drive_added_while_it_ran(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "recorded_holding_batches", lambda: {batch.name: 0})
     monkeypatch.setattr(recycle, "_BATCH_RE", __import__("re").compile(r"(\d{8}-\d{6})"))
 
-    def rmtree_and_new_drive(path, ignore_errors=False):
-        old_rmtree(path, ignore_errors=ignore_errors)
+    def rmtree_and_new_drive(path, **kw):
+        old_rmtree(path, **kw)
         (tmp_path / "usb2" / recycle.HOLDING_DIR_NAME).mkdir(parents=True)
         recycle._remember_holding_root(str(tmp_path / "usb2"))
 
@@ -331,3 +331,123 @@ def test_far_future_date_doesnt_stop_the_scan():
     from app.engine.classifier import format_date
     assert format_date(1e15) == "Unknown"
     assert format_date(0) == "Unknown"
+
+
+# ---------------------------------------------------------------- Permission problems
+
+needs_user = pytest.mark.skipif(os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+                                reason="needs a normal (not root) POSIX account")
+
+
+@pytest.fixture
+def someone_else(monkeypatch):
+    """Files this test makes look like another account's: JunkZero runs as a different uid."""
+    real = os.getuid()
+    monkeypatch.setattr(os, "getuid", lambda: real + 1)
+
+
+@needs_user
+def test_another_accounts_read_only_file_is_not_listed(tmp_path, someone_else):
+    from app.engine import permissions
+    f = tmp_path / "a.tmp"
+    f.write_text("x")
+    f.chmod(0o444)
+    assert "belongs to" in permissions.removal_blocker(str(f))
+
+
+@needs_user
+def test_folder_holding_another_accounts_folder_is_not_listed(tmp_path, someone_else):
+    from app.engine import permissions
+    cache = tmp_path / "_cacache"
+    (cache / "content-v2").mkdir(parents=True)
+    (cache / "content-v2" / "blob").write_text("x")
+    (cache / "content-v2").chmod(0o555)
+    try:
+        st = os.lstat(cache / "content-v2")
+        assert permissions.foreign_folder(str(cache / "content-v2"), st)
+        assert "inside it belongs to" in permissions.inner_blocker(str(cache), {os.path.normcase(str(cache / "content-v2"))})
+        assert permissions.inner_blocker(str(tmp_path / "other"), {str(cache / "content-v2")}) == ""
+    finally:
+        (cache / "content-v2").chmod(0o755)
+
+
+@needs_user
+def test_empty_erases_the_users_own_read_only_folders(tmp_path):
+    from app.engine import reclaim
+    item = tmp_path / "disc copy"
+    (item / "sub").mkdir(parents=True)
+    (item / "sub" / "track.wav").write_text("x")
+    (item / "sub").chmod(0o555)
+    reclaim._erase(str(item))
+    assert not item.exists()
+
+
+@needs_user
+def test_restore_into_a_folder_you_cant_change_says_so(tmp_path, someone_else):
+    from app.engine import recycle
+    stored = tmp_path / "held.tmp"
+    stored.write_text("x")
+    target = tmp_path / "proj"
+    target.mkdir()
+    target.chmod(0o555)
+    try:
+        record = {"timestamp": 1, "paths": [str(target / "a.tmp")], "held": {str(target / "a.tmp"): str(stored)}}
+        errors = recycle.restore_cleanup(record)["errors"]
+        assert errors and errors[0]["error"].startswith("Can't put it back: ")
+        assert "Errno" not in errors[0]["error"]
+    finally:
+        target.chmod(0o755)
+
+
+def test_apt_hint_only_when_packages_are_there(tmp_path):
+    from app.engine import linux
+    archives = tmp_path / "var" / "cache" / "apt" / "archives"
+    (archives / "partial").mkdir(parents=True)
+    (archives / "lock").write_text("")
+    (archives / "partial").chmod(0)
+    try:
+        assert not [h for h in linux.system_cleanup_hints(str(tmp_path)) if "APT" in h["name"]]
+        (archives / "big.deb").write_bytes(b"d" * 2_000_000)
+        assert [h for h in linux.system_cleanup_hints(str(tmp_path)) if "APT" in h["name"]][0]["size_bytes"] == 2_000_000
+    finally:
+        (archives / "partial").chmod(0o755)
+
+
+def test_crontab_not_allowed_is_explained(monkeypatch, tmp_path, linux_os):
+    denied = SimpleNamespace(returncode=1, stdout="",
+                             stderr="You (bob) are not allowed to use this program (crontab)\n")
+    monkeypatch.setattr(linux_scheduler, "_run", lambda args, **kw: denied if args[0] == "crontab"
+                        else SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(linux_scheduler.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(linux_scheduler, "systemd_user_available", lambda: False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    assert not linux_scheduler.cron_available()
+    assert not scheduler.scheduling_supported()
+    assert "cron.allow" in scheduler.unsupported_reason()
+    with pytest.raises(linux_scheduler.LinuxScheduleError, match="isn't allowed to use cron"):
+        linux_scheduler.install("daily", "09:00", "MON", ["x"])
+    linux_scheduler.remove()  # Nothing to remove, and no error
+    # With a systemd timer the schedule still works, and the denied crontab isn't a problem
+    monkeypatch.setattr(linux_scheduler, "systemd_user_available", lambda: True)
+    assert linux_scheduler.install("daily", "09:00", "MON", ["x"]) == linux_scheduler.SYSTEMD
+
+
+@needs_user
+def test_trash_from_a_read_only_folder_leaves_no_stray_note(tmp_path, monkeypatch, linux_os):
+    from app.engine import cleaner
+    import send2trash.plat_other as xdg
+    trash = tmp_path / "share" / "Trash"
+    trash.mkdir(parents=True)
+    monkeypatch.setattr(xdg, "HOMETRASH", str(trash))  # send2trash reads XDG_DATA_HOME once, at import
+    monkeypatch.setattr(xdg, "HOMETRASH_B", os.fsencode(str(trash)))
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    (folder / "a.tmp").write_text("x")
+    folder.chmod(0o555)
+    try:
+        cleaner._send_to_trash(str(folder / "a.tmp"))
+    finally:
+        folder.chmod(0o755)
+    info = sorted(p.name for p in (tmp_path / "share" / "Trash" / "info").iterdir())
+    files = sorted(p.name for p in (tmp_path / "share" / "Trash" / "files").iterdir())
+    assert info == [f + ".trashinfo" for f in files] == ["a.tmp.trashinfo"]

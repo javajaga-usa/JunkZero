@@ -189,6 +189,15 @@ def scheduling_supported() -> bool:
     return os.name == "nt" or osinfo.is_macos()
 
 
+def unsupported_reason() -> str:
+    """Why scheduled scans can't be set up here, in plain words."""
+    if osinfo.is_linux():
+        if linux_scheduler.shutil.which("crontab"):
+            return linux_scheduler.CRON_DENIED
+        return "Scheduled scans need systemd or cron. Install cron in a terminal: sudo apt install cron"
+    return "Scheduled scans aren't available on this system."
+
+
 def launchd_program_args(script_path: str) -> List[str]:
     """What launchd runs: the packaged app in report mode, or Python with the launcher script."""
     if getattr(sys, "frozen", False):

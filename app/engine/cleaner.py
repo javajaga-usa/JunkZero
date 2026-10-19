@@ -265,6 +265,12 @@ class TrashSetupError(OSError):
 
 def _send_to_trash(path) -> None:
     """Send one path, or a list of paths in one call, to the Recycle Bin / Trash."""
+    if osinfo.is_linux() and isinstance(path, str):
+        # The freedesktop Trash writes its note before moving the item, so a move refused by the
+        # user's own read-only folder (or file) would leave a stray note: make them writable first
+        parent = os.path.dirname(os.path.abspath(path))
+        if not os.access(parent, os.W_OK) or not os.access(path, os.W_OK, follow_symlinks=False):
+            permissions.make_writable(path)
     try:
         send2trash.send2trash(path)
     except OSError as ex:

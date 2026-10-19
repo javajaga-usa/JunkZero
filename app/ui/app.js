@@ -3539,9 +3539,9 @@ function updateScheduleDayVisibility() {
   el.scheduleDayLabel.classList.toggle('hidden', el.scheduleFrequency.value !== 'weekly');
 }
 
-function renderScheduleState(schedule, supported, lastReport) {
+function renderScheduleState(schedule, supported, lastReport, unsupportedReason = '') {
   if (!supported) {
-    el.scheduleStatus.textContent = 'Scheduled scans need Windows Task Scheduler, so they are only available on Windows.';
+    el.scheduleStatus.textContent = unsupportedReason || 'Scheduled scans aren\'t available on this system.';
   } else if (schedule.enabled) {
     const when = schedule.frequency === 'daily' ? 'every day' : `every ${el.scheduleDay.querySelector(`option[value="${schedule.day}"]`)?.textContent || schedule.day}`;
     el.scheduleStatus.textContent = `On: scans ${when} at ${schedule.time}.`;
@@ -3576,7 +3576,7 @@ async function openScheduleModal() {
     el.scheduleJunk.checked = s.include_junk_locations;
     el.schedulePaths.value = (s.paths.length ? s.paths : [el.targetPathInput.value.trim()].filter(Boolean)).join('\n');
     updateScheduleDayVisibility();
-    renderScheduleState(s, data.supported, data.last_report);
+    renderScheduleState(s, data.supported, data.last_report, data.unsupported_reason);
   } catch (err) {
     showToast(`Could not load schedule: ${err.message}`, 'error');
   }
