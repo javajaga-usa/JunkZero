@@ -15,6 +15,8 @@ CAT_OLD_DOWNLOADS = "Old Downloads"
 CAT_CUSTOM_RULES = "My Junk Rules"
 CAT_LEFTOVERS = "Program Leftovers"
 CAT_FILE_TYPES = "Chosen File Types"
+CAT_DUPLICATE_FOLDERS = "Duplicate Folders"
+CAT_OLD_PROJECTS = "Old Project Builds"
 
 # Risk Levels
 RISK_SAFE = "Safe"
@@ -204,6 +206,10 @@ DUPLICATE_MIN_BYTES = 1024 * 1024  # 1 MB
 # Files in the Downloads folder untouched for this many days are listed for review
 OLD_DOWNLOAD_DAYS = 90
 
+# A coding project with nothing changed for this many days counts as old: its dependency and
+# build folders (node_modules, .venv, target...) are listed for review under "Old Project Builds"
+OLD_PROJECT_DAYS = 90
+
 # The scan toggle that turns each category on (used to compare a scan with the previous one)
 CATEGORY_OPTIONS: Dict[str, str] = {
     CAT_INSTALLERS: "include_installers",
@@ -217,6 +223,8 @@ CATEGORY_OPTIONS: Dict[str, str] = {
     CAT_CUSTOM_RULES: "include_custom_rules",
     CAT_LEFTOVERS: "include_leftovers",
     CAT_FILE_TYPES: "include_file_types",
+    CAT_DUPLICATE_FOLDERS: "include_duplicates",
+    CAT_OLD_PROJECTS: "include_old_projects",
 }
 
 
@@ -238,6 +246,8 @@ class ScanOptions:
     # File type search: files whose extension is in file_types (e.g. ["mp4", "tar.gz"]),
     # optionally only those unchanged for file_type_min_days or more
     include_file_types: bool = False
+    # Dependency and build folders of coding projects untouched for OLD_PROJECT_DAYS
+    include_old_projects: bool = False
     file_types: List[str] = field(default_factory=list)
     file_type_min_days: int = 0
     old_download_days: int = OLD_DOWNLOAD_DAYS

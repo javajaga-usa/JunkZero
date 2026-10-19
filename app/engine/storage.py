@@ -312,7 +312,8 @@ def find_cleanup(timestamp: float) -> Optional[Dict[str, Any]]:
         if record.get("timestamp") == timestamp:
             full = _read_cleanup_file(record)
             if full is not None:
-                record = {**record, **{k: full[k] for k in ("paths", "held", "trash_ids", "restored") if k in full}}
+                record = {**record, **{k: full[k] for k in ("paths", "held", "trash_ids", "restored", "emptied")
+                                        if k in full}}
             return record
     return None
 
@@ -332,6 +333,28 @@ def mark_restored(timestamp: float, paths: List[str]) -> Optional[Dict[str, Any]
                     restored = sorted(set(record.get("restored") or []) | set(paths))
                 record["restored"] = restored[:HISTORY_PATHS_LIMIT]
                 record["restored_count"] = len(restored)
+                _write_json("history.json", history)
+                return record
+    return None
+
+
+def mark_emptied(timestamp: float, paths: List[str]) -> Optional[Dict[str, Any]]:
+    """Remember which items of a cleanup JunkZero erased from the Recycle Bin / Trash or holding
+    folder (Restore then skips them), and return the updated record."""
+    with _lock:
+        history = load_history()
+        for record in history:
+            if record.get("timestamp") == timestamp:
+                full = _read_cleanup_file(record)
+                if full is not None:
+                    full["emptied"] = sorted(set(full.get("emptied") or []) | set(paths))
+                    _write_cleanup_file(timestamp, full)
+                    emptied = full["emptied"]
+                else:
+                    emptied = sorted(set(record.get("emptied") or []) | set(paths))
+                    record["emptied"] = emptied[:HISTORY_PATHS_LIMIT]
+                record["emptied_count"] = len(emptied)
+                record["emptied_at"] = time.time()
                 _write_json("history.json", history)
                 return record
     return None

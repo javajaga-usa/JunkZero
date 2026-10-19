@@ -43,10 +43,13 @@ NAME_WORDS = ("setup", "install")
 
 @dataclass
 class ExeVerdict:
-    """is_installer: a builder fingerprint or installer version info was found."""
+    """is_installer: a builder fingerprint or installer version info was found. product and
+    version: what its version info says it installs ("" when it doesn't say)."""
     is_installer: bool = False
     is_uninstaller: bool = False
     evidence: str = ""
+    product: str = ""
+    version: str = ""
 
 
 def _read(f, offset: int, size: int) -> bytes:
@@ -77,24 +80,30 @@ def _sections(head: bytes) -> Optional[List[Tuple[str, int, int]]]:
     return sections
 
 
+def _version_value(data: bytes, key: str) -> str:
+    """One version-info field's value (UTF-16 in the resources), or ""."""
+    tag = key.encode("utf-16-le") + b"\0\0"
+    at = data.find(tag)
+    if at < 0:
+        return ""
+    pos = at + len(tag)
+    while data[pos:pos + 2] == b"\0\0" and pos < at + len(tag) + 8:
+        pos += 2
+    end = pos
+    while end < len(data) and end < pos + 400 and data[end:end + 2] != b"\0\0":
+        end += 2
+    return data[pos:end].decode("utf-16-le", "ignore").strip()
+
+
 def _version_strings(data: bytes) -> List[str]:
     """Values of the version-info fields that describe the program (UTF-16 in the resources)."""
-    values = []
-    for key in VERSION_KEYS:
-        tag = key.encode("utf-16-le") + b"\0\0"
-        at = data.find(tag)
-        if at < 0:
-            continue
-        pos = at + len(tag)
-        while data[pos:pos + 2] == b"\0\0" and pos < at + len(tag) + 8:
-            pos += 2
-        end = pos
-        while end < len(data) and end < pos + 400 and data[end:end + 2] != b"\0\0":
-            end += 2
-        value = data[pos:end].decode("utf-16-le", "ignore").strip()
-        if value:
-            values.append(value)
-    return values
+    return [v for v in (_version_value(data, key) for key in VERSION_KEYS) if v]
+
+
+def _product(data: bytes) -> Tuple[str, str]:
+    """(product name, version) from the version info: what the installer installs."""
+    return _version_value(data, "ProductName"), \
+        _version_value(data, "ProductVersion") or _version_value(data, "FileVersion")
 
 
 def _has(data: bytes, marker: bytes) -> bool:
@@ -125,15 +134,16 @@ def inspect_exe(path: str) -> ExeVerdict:
     if any(w in lowered for w in UNINSTALLER_WORDS):
         return ExeVerdict(is_uninstaller=True, evidence="it is an uninstaller")
 
+    product, version = _product(data)
     if ".wixburn" in names:
-        return ExeVerdict(True, evidence="WiX installer bundle")
+        return ExeVerdict(True, evidence="WiX installer bundle", product=product, version=version)
     for marker, builder in BUILDER_MARKERS:
         if _has(data, marker):
-            return ExeVerdict(True, evidence=f"built with {builder}")
+            return ExeVerdict(True, evidence=f"built with {builder}", product=product, version=version)
     for value in described:
         if any(w in value.lower() for w in INSTALLER_WORDS):
-            return ExeVerdict(True, evidence=f'describes itself as "{value[:80]}"')
-    return ExeVerdict()
+            return ExeVerdict(True, evidence=f'describes itself as "{value[:80]}"', product=product, version=version)
+    return ExeVerdict(product=product, version=version)
 
 
 def named_like_installer(name: str) -> bool:

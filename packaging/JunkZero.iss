@@ -50,6 +50,11 @@ Name: "{autodesktop}\JunkZero"; Filename: "{app}\JunkZero.exe"; Tasks: desktopic
 [Run]
 Filename: "{app}\JunkZero.exe"; Description: "{cm:LaunchProgram,JunkZero}"; Flags: nowait postinstall skipifsilent
 
+[Registry]
+; JunkZero registers the junkzero: link itself (so a scheduled scan's notification can open its
+; report). The installer does not create it, but removes it on uninstall.
+Root: HKCU; Subkey: "Software\Classes\junkzero"; Flags: uninsdeletekey dontcreatekey
+
 [UninstallRun]
 ; Scheduled scans would otherwise keep trying to start the removed JunkZero.exe.
 ; schtasks reports an error when no scan was scheduled; that is fine.

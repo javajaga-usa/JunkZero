@@ -16,14 +16,14 @@ from pydantic import BaseModel, Field
 import send2trash
 
 from app.config import (
-    BACKUP_DIR_NAMES, BACKUP_DIR_SUFFIXES, CAT_DUPLICATES, CAT_EMPTY_FOLDERS, HOLDING_DIR_NAME, VCS_DIR_NAMES,
+    BACKUP_DIR_NAMES, BACKUP_DIR_SUFFIXES, CAT_DUPLICATE_FOLDERS, CAT_DUPLICATES, CAT_EMPTY_FOLDERS, HOLDING_DIR_NAME, VCS_DIR_NAMES,
 )
 from app.engine.classifier import is_system_protected_path, format_size
 from app.engine.exclusions import ExclusionMatcher
 from app.engine.inuse import OpenFileCheck
 from app.engine import osinfo
 from app.engine.osinfo import is_hidden
-from app.engine import permissions, recycle, storage
+from app.engine import dupfolders, permissions, recycle, storage
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 
 # Kept with the rest of JunkZero's data (%APPDATA%\JunkZero), not in whatever folder the app started from
@@ -71,6 +71,18 @@ def in_backup_folder(path: str) -> bool:
 
 def _key(path: str) -> str:
     return os.path.normcase(os.path.abspath(path))
+
+
+def _gone(path: str, deleted_keys: set) -> bool:
+    """True if path, or a folder holding it, was deleted earlier in this delete."""
+    key = _key(path)
+    while True:
+        if key in deleted_keys:
+            return True
+        parent = os.path.dirname(key)
+        if parent == key:
+            return False
+        key = parent
 
 
 # One delete at a time: two at once could each see the other's copy of a duplicate as still
@@ -465,10 +477,21 @@ def _delete_items(items: List[Dict[str, Any]], permanent: bool, open_check: Opti
         # A duplicate goes only while another identical copy is still there (and not deleted in this batch)
         if item.get("category") == CAT_DUPLICATES:
             others = [o for o in item.get("duplicate_paths") or [] if isinstance(o, str)]
-            if not any(_key(o) not in deleted_keys and same_content(o, norm_path) for o in others):
+            if not any(not _gone(o, deleted_keys) and same_content(o, norm_path) for o in others):
                 msg = "Skipped: no other copy of this file is left, so this one is kept"
                 errors.append({"path": path_str, "error": msg})
                 logger.warning(f"Kept last copy: {norm_path}")
+                failed_count += 1
+                continue
+
+        # A duplicate folder goes only while another folder with exactly the same files is still there
+        if item.get("category") == CAT_DUPLICATE_FOLDERS:
+            others = [o for o in item.get("duplicate_paths") or [] if isinstance(o, str)]
+            if not any(not _gone(o, deleted_keys) and dupfolders.same_folder(o, norm_path, same_content)
+                       for o in others):
+                errors.append({"path": path_str, "error": "Skipped: no other folder with exactly the same files "
+                               "is left, so this one is kept"})
+                logger.warning(f"Kept last copy of folder: {norm_path}")
                 failed_count += 1
                 continue
 

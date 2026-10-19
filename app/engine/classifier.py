@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.engine import osinfo
 from app.engine.archives import inspect_archive
+from app.engine.installed import already_installed
 from app.engine.installers import inside_installed_program, inspect_exe, is_uninstaller_name, named_like_installer
 
 from app.config import (
@@ -91,6 +92,8 @@ class GarbageItem(BaseModel):
     # Setup programs (.exe): the installer fingerprint found, or True when only the name suggests it
     installer_evidence: str = ""
     installer_weak: bool = False
+    # Setup programs (.exe): the program it installs is already installed at this or a newer version
+    installed_note: str = ""
 
 
 def format_size(bytes_val: int) -> str:
@@ -430,6 +433,7 @@ def classify_item(
     archive_clean: bool = False
     installer_evidence: str = ""
     installer_weak: bool = False
+    installed_note: str = ""
 
     # 2. Incomplete / Broken Downloads
     if options.include_broken_downloads and suffix in BROKEN_DOWNLOAD_EXTENSIONS:
@@ -537,6 +541,11 @@ def classify_item(
                     risk_level = RISK_REVIEW
                     reason = "Named like a setup program, but no installer fingerprint was found inside"
                     installer_weak = True
+                if category and exe.product:
+                    # Its version info names what it installs: is that already on this computer?
+                    installed_note = already_installed(exe.product, exe.version)
+                    if installed_note:
+                        reason += f"; {installed_note}"
 
     # 9. Stale Large Files
     elif options.include_stale_large and size_bytes >= LARGE_FILE_BYTES_THRESHOLD and age_days >= options.stale_days \
@@ -564,6 +573,7 @@ def classify_item(
             archive_clean=archive_clean,
             installer_evidence=installer_evidence,
             installer_weak=installer_weak,
+            installed_note=installed_note,
         )
 
     return None

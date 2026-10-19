@@ -64,6 +64,8 @@ const SPACE_CATEGORIES = [
   { name: 'My Junk Rules', label: 'My rules' },
   { name: 'Program Leftovers', label: 'Leftovers' },
   { name: 'Chosen File Types', label: 'File types' },
+  { name: 'Duplicate Folders', label: 'Duplicate folders' },
+  { name: 'Old Project Builds', label: 'Old projects' },
 ];
 
 function spaceBreakdown(categoryBytes) {
@@ -383,6 +385,139 @@ function trappedFocusIndex(count, current, backwards) {
   return -1;
 }
 
+// Squarified treemap: rectangles for sizes (any order) filling x, y, w, h, keeping boxes close
+// to square. Returns [{ index, x, y, w, h }] with index into sizes; sizes <= 0 get no box.
+function squarify(sizes, x, y, w, h) {
+  const items = sizes.map((size, index) => ({ index, size: Number(size) || 0 }))
+    .filter((i) => i.size > 0).sort((a, b) => b.size - a.size);
+  const total = items.reduce((acc, i) => acc + i.size, 0);
+  const out = [];
+  if (!items.length || w <= 0 || h <= 0) return out;
+  const scale = (w * h) / total;
+  let rest = items.map((i) => ({ ...i, area: i.size * scale }));
+  let box = { x, y, w, h };
+  const worst = (row, side) => {
+    const sum = row.reduce((acc, r) => acc + r.area, 0);
+    const max = Math.max(...row.map((r) => r.area));
+    const min = Math.min(...row.map((r) => r.area));
+    return Math.max((side * side * max) / (sum * sum), (sum * sum) / (side * side * min));
+  };
+  while (rest.length) {
+    const side = Math.min(box.w, box.h);
+    let row = [rest[0]];
+    let i = 1;
+    while (i < rest.length && worst([...row, rest[i]], side) <= worst(row, side)) {
+      row.push(rest[i]);
+      i += 1;
+    }
+    rest = rest.slice(i);
+    const sum = row.reduce((acc, r) => acc + r.area, 0);
+    if (box.w >= box.h) {
+      const colW = rest.length ? sum / box.h : box.w;
+      let cy = box.y;
+      row.forEach((r, n) => {
+        const rh = n === row.length - 1 ? box.y + box.h - cy : r.area / colW;
+        out.push({ index: r.index, x: box.x, y: cy, w: colW, h: rh });
+        cy += rh;
+      });
+      box = { x: box.x + colW, y: box.y, w: box.w - colW, h: box.h };
+    } else {
+      const rowH = rest.length ? sum / box.w : box.h;
+      let cx = box.x;
+      row.forEach((r, n) => {
+        const rw = n === row.length - 1 ? box.x + box.w - cx : r.area / rowH;
+        out.push({ index: r.index, x: cx, y: box.y, w: rw, h: rowH });
+        cx += rw;
+      });
+      box = { x: box.x, y: box.y + rowH, w: box.w, h: box.h - rowH };
+    }
+  }
+  return out;
+}
+
+// Boxes for the Largest Files map: the biggest folders, files lying directly in the folder,
+// and the rest of the folders merged into one box so small ones stay readable. Percent sizes.
+function treemapTiles(folders, looseBytes, totalBytes = 0, maxTiles = 30) {
+  const sorted = (folders || []).filter((f) => f && f.size_bytes > 0).sort((a, b) => b.size_bytes - a.size_bytes);
+  const shown = sorted.slice(0, maxTiles);
+  const tiles = shown.map((f) => ({ name: f.name, path: f.path, bytes: f.size_bytes, kind: 'folder' }));
+  const loose = Math.max(0, Number(looseBytes) || 0);
+  // Folders past the tile limit, and those the server left out of its list (it sends the biggest only)
+  const listed = shown.reduce((acc, f) => acc + f.size_bytes, 0);
+  const rest = Math.max(0, (Number(totalBytes) || 0) - listed - loose,
+    sorted.slice(maxTiles).reduce((acc, f) => acc + f.size_bytes, 0));
+  if (rest > 0) tiles.push({ name: 'Smaller folders', path: '', bytes: rest, kind: 'other' });
+  if (loose > 0) tiles.push({ name: 'Files directly here', path: '', bytes: loose, kind: 'files' });
+  const total = tiles.reduce((acc, t) => acc + t.bytes, 0);
+  const rects = squarify(tiles.map((t) => t.bytes), 0, 0, 100, 100);
+  return rects.map((r) => ({ ...tiles[r.index], x: r.x, y: r.y, w: r.w, h: r.h,
+    percent: total > 0 ? (tiles[r.index].bytes / total) * 100 : 0 }));
+}
+
+// The free-space chart in Cleanup History: an SVG path for one disk's points (oldest first) and
+// a marker for each cleanup on that disk. Coordinates are in a width x height box.
+function storageChartModel(points, cleanups, width, height, pad = 6) {
+  const pts = (points || []).filter((p) => p && Number.isFinite(p.at) && Number.isFinite(p.free))
+    .sort((a, b) => a.at - b.at);
+  if (!pts.length) return null;
+  const t0 = pts[0].at;
+  const t1 = Math.max(pts[pts.length - 1].at, t0 + 1);
+  const frees = pts.map((p) => p.free);
+  let lo = Math.min(...frees);
+  let hi = Math.max(...frees);
+  const span = hi - lo;
+  // A little room above and below; a flat line sits in the middle
+  const margin = span > 0 ? span * 0.15 : Math.max(hi * 0.05, 1);
+  lo = Math.max(0, lo - margin);
+  hi += margin;
+  const x = (t) => pad + ((t - t0) / (t1 - t0)) * (width - 2 * pad);
+  const y = (v) => pad + (1 - (v - lo) / (hi - lo)) * (height - 2 * pad);
+  const coords = pts.length === 1
+    ? [[pad, y(pts[0].free)], [width - pad, y(pts[0].free)]]
+    : pts.map((p) => [x(p.at), y(p.free)]);
+  const line = coords.map(([cx, cy], i) => `${i ? 'L' : 'M'}${cx.toFixed(1)},${cy.toFixed(1)}`).join(' ');
+  const area = `${line} L${coords[coords.length - 1][0].toFixed(1)},${(height - pad).toFixed(1)} `
+    + `L${coords[0][0].toFixed(1)},${(height - pad).toFixed(1)} Z`;
+  const markers = (cleanups || []).filter((c) => c && Number.isFinite(c.at) && c.at >= t0 && c.at <= t1)
+    .map((c) => ({ x: x(c.at), at: c.at, freed: c.freed_bytes || 0, mode: c.mode || '' }));
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  return { line, area, markers, lo, hi, first, last, change: last.free - first.free, count: pts.length };
+}
+
+// The "space still held" panel in Cleanup History (/api/reclaim)
+function reclaimText(summary, trashName = 'Recycle Bin') {
+  if (!summary) return { title: '', text: '' };
+  const fmt = (b) => formatBytesShort(b);
+  const bin = Number.isFinite(summary.recycle_bin_bytes) && summary.recycle_bin_bytes !== null
+    ? `The ${trashName} holds ${fmt(summary.recycle_bin_bytes)} in all. ` : '';
+  if (!summary.junkzero_count) {
+    return { title: `Nothing JunkZero deleted is still taking space`,
+      text: `${bin}JunkZero only empties items it put there itself, and none are left.` };
+  }
+  const held = summary.holding_bytes > 0 ? ` (${fmt(summary.holding_bytes)} of it in JunkZero's holding folders)` : '';
+  const title = `${fmt(summary.junkzero_bytes)} you deleted with JunkZero still takes space`;
+  let text = `${bin}${summary.junkzero_count.toLocaleString()} item${summary.junkzero_count === 1 ? '' : 's'} `
+    + `from your cleanups are still in the ${trashName}${held}, so that space isn't free yet. `;
+  text += summary.old_count
+    ? `${fmt(summary.old_bytes)} of it is from cleanups at least ${summary.older_than_days} day${summary.older_than_days === 1 ? '' : 's'} old. `
+    : `None of it is from cleanups at least ${summary.older_than_days} day${summary.older_than_days === 1 ? '' : 's'} old. `;
+  text += `Everything else in the ${trashName} is left alone.`;
+  return { title, text };
+}
+
+// Bytes as a size ("1.50 GB"), written the same way as formatSize in the rest of the page
+function formatBytesShort(bytes) {
+  let value = Number(bytes) || 0;
+  if (value <= 0) return '0 B';
+  if (value < 1024) return `${value} B`;
+  for (const unit of ['KB', 'MB', 'GB', 'TB']) {
+    value /= 1024;
+    if (value < 1024 || unit === 'TB') return `${value.toFixed(2)} ${unit}`;
+  }
+  return `${value.toFixed(2)} TB`;
+}
+
 /**
  * JunkZero - Frontend Application Controller
  * High-performance file management, live scan streaming, multi-level folder hierarchy exploration,
@@ -405,6 +540,9 @@ const CLEAN_PROGRESS_MS = 300;
 // When the live scan stream drops, the scan's status is asked for this often until it ends
 const SCAN_STATUS_POLL_MS = 1000;
 
+// What JunkZero was opened for, from the window's address (read before the address is cleared):
+// report=latest when a scheduled scan's notification was clicked
+const LAUNCH_PARAMS = new URLSearchParams(location.hash.slice(1));
 // Every API request carries this launch's app token (the server refuses it otherwise). JunkZero
 // opens its window at /#token=..., so the token never sits in the page itself. It is kept for
 // this window only, so a reload still works, and taken out of the address bar.
@@ -516,6 +654,7 @@ const el = {
   btnForgetLearning: document.getElementById('btnForgetLearning'),
   optLeftovers: document.getElementById('optLeftovers'),
   optFileTypes: document.getElementById('optFileTypes'),
+  optOldProjects: document.getElementById('optOldProjects'),
   fileTypesHint: document.getElementById('fileTypesHint'),
   btnChooseFileTypes: document.getElementById('btnChooseFileTypes'),
 
@@ -661,6 +800,19 @@ const el = {
   historyList: document.getElementById('historyList'),
   btnClearHistory: document.getElementById('btnClearHistory'),
   btnOpenRecycleBin: document.getElementById('btnOpenRecycleBin'),
+  reclaimPanel: document.getElementById('reclaimPanel'),
+  reclaimTitle: document.getElementById('reclaimTitle'),
+  reclaimText: document.getElementById('reclaimText'),
+  reclaimDays: document.getElementById('reclaimDays'),
+  btnEmptyOld: document.getElementById('btnEmptyOld'),
+  reclaimConfirm: document.getElementById('reclaimConfirm'),
+  reclaimConfirmText: document.getElementById('reclaimConfirmText'),
+  btnEmptyCancel: document.getElementById('btnEmptyCancel'),
+  btnEmptyConfirm: document.getElementById('btnEmptyConfirm'),
+  spaceChartPanel: document.getElementById('spaceChartPanel'),
+  spaceChartDisk: document.getElementById('spaceChartDisk'),
+  spaceChart: document.getElementById('spaceChart'),
+  spaceChartNote: document.getElementById('spaceChartNote'),
 
   // Schedule Modal
   btnOpenSchedule: document.getElementById('btnOpenSchedule'),
@@ -673,6 +825,9 @@ const el = {
   scheduleTime: document.getElementById('scheduleTime'),
   schedulePaths: document.getElementById('schedulePaths'),
   scheduleJunk: document.getElementById('scheduleJunk'),
+  notifyEnabled: document.getElementById('notifyEnabled'),
+  notifyMinMb: document.getElementById('notifyMinMb'),
+  notifyNote: document.getElementById('notifyNote'),
   lastReportBox: document.getElementById('lastReportBox'),
   lastReportText: document.getElementById('lastReportText'),
   btnLoadReport: document.getElementById('btnLoadReport'),
@@ -685,6 +840,10 @@ const el = {
   largestList: document.getElementById('largestList'),
   largestTabFolders: document.getElementById('largestTabFolders'),
   largestTabFiles: document.getElementById('largestTabFiles'),
+  largestTabMap: document.getElementById('largestTabMap'),
+  largestMapWrap: document.getElementById('largestMapWrap'),
+  largestMap: document.getElementById('largestMap'),
+  largestMapCrumbs: document.getElementById('largestMapCrumbs'),
   closeLargestModal: document.getElementById('closeLargestModal'),
   btnCloseLargest: document.getElementById('btnCloseLargest'),
 
@@ -734,6 +893,7 @@ const SCAN_OPTION_INPUTS = {
   include_old_downloads: el.optOldDownloads,
   include_leftovers: el.optLeftovers,
   include_file_types: el.optFileTypes,
+  include_old_projects: el.optOldProjects,
 };
 
 // Utilities
@@ -929,6 +1089,7 @@ async function initApp() {
   await loadPreferences();
   await loadExclusionRules();
   loadCleanupHints();
+  offerUnseenReport();
 }
 
 // Event Listeners
@@ -1288,6 +1449,11 @@ function setupEventListeners() {
   el.btnClearHistory.addEventListener('click', clearHistory);
   el.btnForgetLearning.addEventListener('click', forgetLearning);
   el.btnOpenRecycleBin.addEventListener('click', openRecycleBin);
+  el.btnEmptyOld.addEventListener('click', askEmptyOld);
+  el.btnEmptyCancel.addEventListener('click', () => el.reclaimConfirm.classList.add('hidden'));
+  el.btnEmptyConfirm.addEventListener('click', emptyOld);
+  el.reclaimDays.addEventListener('change', loadReclaim);
+  el.spaceChartDisk.addEventListener('change', renderSpaceChart);
 
   // Schedule
   el.btnOpenSchedule.addEventListener('click', openScheduleModal);
@@ -1296,6 +1462,8 @@ function setupEventListeners() {
   el.btnSaveSchedule.addEventListener('click', saveSchedule);
   el.btnDisableSchedule.addEventListener('click', disableSchedule);
   el.btnLoadReport.addEventListener('click', loadLatestReport);
+  el.notifyEnabled.addEventListener('change', saveNotifySettings);
+  el.notifyMinMb.addEventListener('change', saveNotifySettings);
 
   // About: version, updates (checked only on click) and diagnostics
   el.btnOpenAbout.addEventListener('click', () => {
@@ -1327,6 +1495,7 @@ function setupEventListeners() {
   el.btnCloseLargest.addEventListener('click', () => el.largestModal.classList.add('hidden'));
   el.largestTabFolders.addEventListener('click', () => renderLargest('folders'));
   el.largestTabFiles.addEventListener('click', () => renderLargest('files'));
+  el.largestTabMap.addEventListener('click', () => renderLargest('map'));
 }
 
 // Text in the current wording for this system (Recycle Bin or Trash, Explorer or Finder...)
@@ -3001,6 +3170,142 @@ async function openHistoryModal() {
   } catch (err) {
     showToast(`Could not load history: ${err.message}`, 'error');
   }
+  loadReclaim();
+  loadSpaceChart();
+}
+
+// ==========================================
+// Space still held: JunkZero's own items in the Recycle Bin / Trash and holding folders
+// ==========================================
+
+function reclaimDays() {
+  const days = Math.round(Number(el.reclaimDays.value));
+  return Number.isFinite(days) && days >= 0 ? Math.min(days, 3650) : 7;
+}
+
+async function loadReclaim() {
+  el.reclaimTitle.textContent = t('Checking the Recycle Bin...');
+  el.reclaimText.textContent = '';
+  el.btnEmptyOld.disabled = true;
+  el.reclaimConfirm.classList.add('hidden');
+  try {
+    state.reclaim = await apiJson(`/api/reclaim?days=${reclaimDays()}`);
+    renderReclaim(state.reclaim);
+  } catch (err) {
+    el.reclaimTitle.textContent = t('Could not check the Recycle Bin');
+    el.reclaimText.textContent = err.message;
+  }
+}
+
+function renderReclaim(summary) {
+  const message = reclaimText(summary, t('Recycle Bin'));
+  el.reclaimTitle.textContent = message.title;
+  el.reclaimText.textContent = message.text;
+  el.reclaimPanel.classList.toggle('reclaim-has-items', summary.junkzero_count > 0);
+  el.btnEmptyOld.disabled = !summary.old_count;
+  el.btnEmptyOld.innerHTML = `<i data-lucide="trash"></i> ${summary.old_count ? `Empty ${escapeHtml(formatSize(summary.old_bytes))}` : 'Empty these'}`;
+  lucide.createIcons({ root: el.btnEmptyOld });
+}
+
+function askEmptyOld() {
+  const s = state.reclaim;
+  if (!s || !s.old_count) return;
+  const trash = t('Recycle Bin');
+  el.reclaimConfirmText.textContent = `Erase ${plural(s.old_count, 'item')} (${formatSize(s.old_bytes)}) that JunkZero `
+    + `deleted at least ${plural(s.older_than_days, 'day')} ago? They can't be restored afterwards. `
+    + `Nothing else in the ${trash} is touched.`;
+  el.reclaimConfirm.classList.remove('hidden');
+  el.btnEmptyConfirm.focus();
+}
+
+async function emptyOld() {
+  el.btnEmptyConfirm.disabled = true;
+  try {
+    const result = await apiJson('/api/reclaim/empty', {
+      method: 'POST',
+      body: JSON.stringify({ older_than_days: reclaimDays() }),
+    });
+    el.reclaimConfirm.classList.add('hidden');
+    state.reclaim = result.summary;
+    renderReclaim(result.summary);
+    renderHistory(result.history);
+    if (result.emptied) {
+      showToast(`Freed ${result.freed_formatted}: ${plural(result.emptied, 'item')} erased for good.`, 'success');
+    }
+    if (result.errors.length) {
+      showToast(`${plural(result.errors.length, 'item')} couldn't be emptied`, 'error',
+        { details: result.errors, detailsTitle: "Items that couldn't be emptied" });
+    }
+    loadSpaceChart();
+  } catch (err) {
+    showToast(`Could not empty them: ${err.message}`, 'error');
+  } finally {
+    el.btnEmptyConfirm.disabled = false;
+  }
+}
+
+// ==========================================
+// Free space over time (Cleanup History)
+// ==========================================
+
+async function loadSpaceChart() {
+  try {
+    state.spaceHistory = await apiJson('/api/space/history');
+  } catch {
+    el.spaceChartPanel.classList.add('hidden');
+    return;
+  }
+  const disks = (state.spaceHistory.disks || []).filter((d) => d.points && d.points.length);
+  el.spaceChartPanel.classList.toggle('hidden', disks.length === 0);
+  if (!disks.length) return;
+  const previous = el.spaceChartDisk.value;
+  const target = el.targetPathInput.value.trim();
+  const holding = disks.filter((d) => target && pathIsWithin(target, d.root))
+    .sort((a, b) => b.root.length - a.root.length)[0];
+  el.spaceChartDisk.innerHTML = disks.map((d) => `<option value="${escapeHtml(d.root)}">${escapeHtml(d.root)}</option>`).join('');
+  const chosen = disks.find((d) => d.root === previous) || holding || disks[0];
+  el.spaceChartDisk.value = chosen.root;
+  el.spaceChartDisk.classList.toggle('hidden', disks.length < 2);
+  renderSpaceChart();
+}
+
+function renderSpaceChart() {
+  const history = state.spaceHistory;
+  const disk = history && (history.disks || []).find((d) => d.root === el.spaceChartDisk.value);
+  if (!disk) return;
+  const cleanups = (history.cleanups || []).filter((c) => (c.roots || []).includes(disk.root));
+  const W = 640;
+  const H = 150;
+  const model = storageChartModel(disk.points, cleanups, W, H);
+  if (!model) return;
+  const date = (at) => new Date(at * 1000).toLocaleDateString();
+  const markers = model.markers.map((m) => `
+    <line class="chart-marker" x1="${m.x.toFixed(1)}" x2="${m.x.toFixed(1)}" y1="6" y2="${H - 6}">
+      <title>${escapeHtml(`Cleanup on ${new Date(m.at * 1000).toLocaleString()}: ${formatSize(m.freed)}`)}</title>
+    </line>`).join('');
+  const summary = `Free space on ${disk.root}: ${formatSize(model.last.free)} now`;
+  el.spaceChart.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(summary)}">
+      <path class="chart-area" d="${model.area}"></path>
+      ${markers}
+      <path class="chart-line" d="${model.line}"></path>
+    </svg>
+    <span class="chart-label chart-label-top">${escapeHtml(formatSize(model.hi))}</span>
+    <span class="chart-label chart-label-bottom">${escapeHtml(formatSize(model.lo))}</span>
+    <span class="chart-label chart-label-start">${escapeHtml(date(model.first.at))}</span>
+    <span class="chart-label chart-label-end">${escapeHtml(date(model.last.at))}</span>`;
+  const total = model.last.total ? ` of ${formatSize(model.last.total)}` : '';
+  let note = `${formatSize(model.last.free)} free${total} on ${date(model.last.at)}.`;
+  if (model.count > 1 && model.change !== 0) {
+    note += ` ${model.change > 0 ? 'Up' : 'Down'} ${formatSize(Math.abs(model.change))} since ${date(model.first.at)}.`;
+  } else if (model.count === 1) {
+    note += ' Each scan and cleanup adds a point, so the line fills in over time.';
+  }
+  const freed = cleanups.reduce((acc, c) => acc + (c.freed_bytes || 0), 0);
+  if (model.markers.length) {
+    note += ` Green lines mark your ${plural(model.markers.length, 'cleanup')} (${formatSize(freed)} deleted in all).`;
+  }
+  el.spaceChartNote.textContent = note;
 }
 
 function renderLearning(summary) {
@@ -3035,8 +3340,9 @@ function renderHistory(history) {
     const mode = h.mode === 'permanent' ? 'Permanently deleted' : t('Moved to Recycle Bin');
     const extra = h.paths_truncated ? `<li>...and ${h.paths_truncated} more</li>` : '';
     const restored = Number.isFinite(h.restored_count) ? h.restored_count : (h.restored || []).length;
+    const emptied = Number.isFinite(h.emptied_count) ? h.emptied_count : (h.emptied || []).length;
     const pathCount = Number.isFinite(h.path_count) ? h.path_count : h.paths.length;
-    const canRestore = h.mode !== 'permanent' && restored < pathCount;
+    const canRestore = h.mode !== 'permanent' && restored + emptied < pathCount;
     const errors = Array.isArray(h.errors) ? h.errors : [];
     const errorsTotal = Number.isFinite(h.errors_total) ? h.errors_total : (h.failed_count || errors.length);
     const errorsOf = errorsTotal > errors.length ? ` (first ${errors.length} of ${errorsTotal})` : '';
@@ -3050,6 +3356,7 @@ function renderHistory(history) {
           ${escapeHtml(mode)} &middot; ${h.deleted_count} item${h.deleted_count === 1 ? '' : 's'}
           ${h.failed_count ? `&middot; ${h.failed_count} failed` : ''} &middot; from ${escapeHtml(h.source)}
           ${restored ? `&middot; ${restored} restored` : ''}
+          ${emptied ? `&middot; ${emptied} erased for good` : ''}
         </div>
         ${canRestore ? `<button class="btn btn-secondary btn-sm btn-restore-cleanup" data-timestamp="${h.timestamp}">
           <i data-lucide="undo-2"></i> Restore</button>` : ''}
@@ -3217,6 +3524,66 @@ async function openScheduleModal() {
   } catch (err) {
     showToast(`Could not load schedule: ${err.message}`, 'error');
   }
+  loadNotifySettings();
+}
+
+// Notifications after scheduled scans (saved as soon as they are changed)
+async function loadNotifySettings() {
+  try {
+    renderNotifySettings((await apiJson('/api/notify')).notify);
+  } catch { /* the rest of the schedule still works */ }
+}
+
+function renderNotifySettings(notify) {
+  el.notifyEnabled.checked = notify.enabled;
+  el.notifyMinMb.value = notify.min_mb;
+  el.notifyMinMb.disabled = !notify.enabled;
+  el.notifyNote.textContent = !notify.enabled
+    ? 'Scheduled scans save their report quietly. Open it from here with Review in table.'
+    : notify.clickable
+      ? 'Click the notification to open the report in JunkZero. Windows shows it under the name Windows PowerShell, which sends it for JunkZero.'
+      : 'The notification says what was found. JunkZero also offers the report the next time you open it.';
+}
+
+async function saveNotifySettings() {
+  const minMb = Math.max(0, Math.round(Number(el.notifyMinMb.value) || 0));
+  try {
+    const data = await apiJson('/api/notify', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: el.notifyEnabled.checked, min_mb: minMb }),
+    });
+    renderNotifySettings(data.notify);
+  } catch (err) {
+    showToast(`Could not save the notification setting: ${err.message}`, 'error');
+  }
+}
+
+// A scheduled scan found enough to tell about since JunkZero last showed one: offer it once
+async function offerUnseenReport() {
+  if (LAUNCH_PARAMS.get('report') === 'latest') {
+    await loadLatestReport();
+    return;
+  }
+  try {
+    const { report } = await apiJson('/api/reports/unseen');
+    if (!report) return;
+    markReportSeen(report.generated_at);
+    const when = new Date(report.generated_at * 1000).toLocaleString();
+    const sure = report.delete_bytes ? ` (${formatSize(report.delete_bytes)} of it marked Delete)` : '';
+    const toast = showStickyToast(`Your scheduled scan on ${when} found ${formatSize(report.total_bytes)} to review${sure}.`, {
+      type: 'info',
+      actionLabel: 'Review',
+      onAction: async () => {
+        toast.remove();
+        await loadLatestReport();
+      },
+    });
+  } catch { /* nothing to offer */ }
+}
+
+function markReportSeen(generatedAt) {
+  if (!generatedAt) return;
+  apiJson('/api/reports/seen', { method: 'POST', body: JSON.stringify({ generated_at: generatedAt }) }).catch(() => {});
 }
 
 async function saveSchedule() {
@@ -3249,6 +3616,7 @@ async function disableSchedule() {
 async function loadLatestReport() {
   try {
     const report = await apiJson('/api/reports/latest');
+    markReportSeen(report.generated_at);
     state.items = report.items;
     markExcluded(state.items);
     state.selectedIds.clear();
@@ -3428,9 +3796,12 @@ async function openLargestModal() {
     return;
   }
   state.largest = null;
+  state.largestStack = [];
   el.largestModal.classList.remove('hidden');
   el.largestSubtitle.textContent = `Measuring ${path}...`;
   el.largestList.innerHTML = '<li class="list-empty"><div class="spinner"></div> Measuring folder sizes. Large drives can take a minute.</li>';
+  el.largestMap.innerHTML = '<p class="largest-map-empty"><span class="spinner"></span> Measuring folder sizes...</p>';
+  el.largestMapCrumbs.innerHTML = '';
   el.btnLargest.disabled = true;
   try {
     const data = await apiJson('/api/space/largest', { method: 'POST', body: JSON.stringify({ path }) });
@@ -3438,21 +3809,29 @@ async function openLargestModal() {
     const partial = data.complete ? '' : ' (stopped early on a very large folder; sizes may be low)';
     el.largestSubtitle.textContent =
       `${data.total_formatted} in ${data.file_count.toLocaleString()} files under ${data.root}${partial}`;
-    renderLargest('folders');
+    renderLargest(state.largestTab === 'map' ? 'map' : 'folders');
   } catch (err) {
     el.largestSubtitle.textContent = 'Could not measure this folder';
     el.largestList.innerHTML = `<li class="list-empty">${escapeHtml(err.message)}</li>`;
+    el.largestMap.innerHTML = `<p class="largest-map-empty">${escapeHtml(err.message)}</p>`;
   } finally {
     el.btnLargest.disabled = false;
   }
 }
 
 function renderLargest(tab) {
-  el.largestTabFolders.classList.toggle('active', tab === 'folders');
-  el.largestTabFiles.classList.toggle('active', tab === 'files');
-  el.largestTabFolders.setAttribute('aria-selected', String(tab === 'folders'));
-  el.largestTabFiles.setAttribute('aria-selected', String(tab === 'files'));
+  state.largestTab = tab;
+  [['folders', el.largestTabFolders], ['files', el.largestTabFiles], ['map', el.largestTabMap]].forEach(([name, btn]) => {
+    btn.classList.toggle('active', tab === name);
+    btn.setAttribute('aria-selected', String(tab === name));
+  });
+  el.largestList.classList.toggle('hidden', tab === 'map');
+  el.largestMapWrap.classList.toggle('hidden', tab !== 'map');
   if (!state.largest) return;
+  if (tab === 'map') {
+    renderLargestMap();
+    return;
+  }
 
   const rows = tab === 'folders' ? state.largest.folders : state.largest.files;
   if (!rows.length) {
@@ -3499,6 +3878,70 @@ function renderLargest(tab) {
       }
     });
   });
+}
+
+// The map: folders as boxes sized by the space they take; a click looks inside that folder
+function renderLargestMap() {
+  const data = state.largest;
+  const stack = state.largestStack || [];
+  const crumbs = [...stack.map((d) => d.root), data.root];
+  el.largestMapCrumbs.innerHTML = crumbs.map((root, i) => {
+    const name = escapeHtml(i === 0 ? root : (root.split(/[\\/]/).filter(Boolean).pop() || root));
+    return i === crumbs.length - 1
+      ? `<span class="crumb-current" aria-current="location">${name}</span>`
+      : `<button type="button" class="crumb-btn" data-depth="${i}">${name}</button><span class="crumb-sep">/</span>`;
+  }).join('');
+  el.largestMapCrumbs.querySelectorAll('.crumb-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const depth = Number(btn.dataset.depth);
+      state.largest = state.largestStack[depth];
+      state.largestStack = state.largestStack.slice(0, depth);
+      updateLargestSubtitle();
+      renderLargestMap();
+    });
+  });
+  const tiles = treemapTiles(data.folders, data.loose_files_bytes, data.total_bytes);
+  if (!tiles.length) {
+    el.largestMap.innerHTML = '<p class="largest-map-empty">Nothing here takes any space</p>';
+    return;
+  }
+  el.largestMap.innerHTML = tiles.map((tile, i) => {
+    const label = `${tile.name}: ${formatSize(tile.bytes)} (${tile.percent.toFixed(1)}%)`;
+    const small = tile.w * tile.h < 30 ? ' map-tile-small' : '';
+    const style = `left:${tile.x.toFixed(3)}%;top:${tile.y.toFixed(3)}%;width:${tile.w.toFixed(3)}%;height:${tile.h.toFixed(3)}%;`
+      + `--tile:var(--series-${tile.kind === 'folder' ? (i % 10) + 1 : 0})`;
+    const attrs = tile.kind === 'folder'
+      ? `data-path="${escapeHtml(tile.path)}" title="${escapeHtml(label)}. Click to look inside."`
+      : `disabled title="${escapeHtml(label)}"`;
+    return `<button type="button" class="map-tile map-${tile.kind}${small}" style="${style}" ${attrs} aria-label="${escapeHtml(label)}">
+      <span class="map-name">${escapeHtml(tile.name)}</span><span class="map-size">${escapeHtml(formatSize(tile.bytes))}</span></button>`;
+  }).join('');
+  el.largestMap.querySelectorAll('.map-folder').forEach((btn) => {
+    btn.addEventListener('click', () => openLargestFolder(btn.dataset.path));
+  });
+}
+
+function updateLargestSubtitle() {
+  const data = state.largest;
+  const partial = data.complete ? '' : ' (stopped early on a very large folder; sizes may be low)';
+  el.largestSubtitle.textContent = `${data.total_formatted} in ${data.file_count.toLocaleString()} files under ${data.root}${partial}`;
+}
+
+async function openLargestFolder(path) {
+  if (!path) return;
+  el.largestSubtitle.textContent = `Measuring ${path}...`;
+  el.largestMap.classList.add('is-loading');
+  try {
+    const data = await apiJson('/api/space/largest', { method: 'POST', body: JSON.stringify({ path }) });
+    state.largestStack = [...(state.largestStack || []), state.largest];
+    state.largest = data;
+  } catch (err) {
+    showToast(`Could not measure ${path}: ${err.message}`, 'error');
+  } finally {
+    el.largestMap.classList.remove('is-loading');
+    updateLargestSubtitle();
+    renderLargest(state.largestTab || 'map');
+  }
 }
 
 window.addEventListener('DOMContentLoaded', initApp);
