@@ -14,6 +14,11 @@ def is_windows() -> bool:
     return os.name == "nt"
 
 
+def is_linux() -> bool:
+    """Linux, unless a test is standing in for Windows or macOS."""
+    return sys.platform.startswith("linux") and not is_macos() and not is_windows()
+
+
 # Windows "hidden" and "system" file attributes
 _WIN_HIDDEN_ATTRS = 0x2 | 0x4
 
@@ -62,6 +67,16 @@ def platform_terms() -> Dict[str, object]:
             "file_manager": "Finder",
             "scheduler": "macOS launchd",
             "scheduling_supported": True,
+        }
+    if is_linux():
+        from app.engine import linux_scheduler
+        kind = linux_scheduler.scheduler_kind()
+        return {
+            "platform": "linux",
+            "trash": "Trash",
+            "file_manager": "the file manager",
+            "scheduler": linux_scheduler.scheduler_label(kind),
+            "scheduling_supported": kind is not None,
         }
     return {
         "platform": platform_name(),

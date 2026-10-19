@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 from pydantic import BaseModel
 
-from app.engine import osinfo
+from app.engine import linux, osinfo
 from app.engine.archives import inspect_archive
 from app.engine.installed import already_installed
 from app.engine.installers import inside_installed_program, inspect_exe, is_uninstaller_name, named_like_installer
@@ -165,6 +165,9 @@ def is_system_protected_path(path_str: str) -> bool:
         return True
 
     if parts[0] == "" and len(parts) > 1 and osinfo.is_macos() and _is_mac_protected(parts[1:]):
+        return True
+
+    if parts[0] == "" and len(parts) > 1 and osinfo.is_linux() and linux.is_protected(parts[1:]):
         return True
 
     return False

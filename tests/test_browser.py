@@ -254,6 +254,8 @@ def test_history_lists_stored_errors(server, page):
 
 
 def test_dialogs_close_with_escape_and_give_focus_back(server, page):
+    # (A Linux runner may have downloaded packages in its APT cache, which would be listed)
+    page.route("**/api/system/cleanup-hints", lambda route: route.fulfill(json={"hints": []}))
     _open(page, server)
     page.focus("#btnOpenAbout")
     page.keyboard.press("Enter")
@@ -275,6 +277,7 @@ def test_dialogs_close_with_escape_and_give_focus_back(server, page):
 
 
 def test_admin_cleanup_hints_are_listed_read_only(server, page):
+    page.route("**/api/system/info", lambda route: route.fulfill(json={"platform": "windows", "version": "1.2.0"}))
     page.route("**/api/system/cleanup-hints", lambda route: route.fulfill(json={"hints": [
         {"name": "Windows Update downloads", "path": "C:\\Windows\\SoftwareDistribution\\Download",
          "size_bytes": 3 * 1024 ** 3},
@@ -284,6 +287,24 @@ def test_admin_cleanup_hints_are_listed_read_only(server, page):
     text = page.text_content("#cleanupHints")
     assert "Windows Update downloads" in text and "3.00 GB" in text and "Disk Cleanup" in text
     assert page.locator("#cleanupHints button, #cleanupHints input").count() == 0
+
+
+def test_linux_wording_cleanup_commands_and_no_leftovers(server, page):
+    page.route("**/api/system/info", lambda route: route.fulfill(json={
+        "platform": "linux", "version": "1.2.0", "scheduler": "cron", "scheduling_supported": True}))
+    page.route("**/api/system/cleanup-hints", lambda route: route.fulfill(json={"hints": [
+        {"name": "Downloaded software packages (APT cache)", "path": "/var/cache/apt/archives",
+         "size_bytes": 50 * 1024 ** 2, "fix": "sudo apt clean"},
+    ]}))
+    _open(page, server)
+    page.wait_for_selector("#cleanupHints:not(.hidden)")
+    text = page.text_content("#cleanupHints")
+    assert "System cleanup that needs admin" in text and "sudo apt clean" in text and "Disk Cleanup" not in text
+    assert page.is_hidden("#optLeftovers")
+    assert "Move Selected to Trash" in page.text_content("#btnDeleteItems")
+    page.click("#btnOpenSchedule")
+    page.wait_for_selector("#scheduleModal:not(.hidden)")
+    assert "Runs through cron." in page.text_content("#scheduleModal")
 
 
 def test_space_still_held_and_free_space_chart(server, page):

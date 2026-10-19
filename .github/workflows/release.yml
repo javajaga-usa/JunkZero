@@ -195,10 +195,64 @@ jobs:
           path: JunkZero-macOS.zip
           if-no-files-found: error
 
+  build-linux:
+    # Ubuntu 22.04's C library is older than MX Linux 23's and Debian 12's, so the build runs on both
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements.txt -c packaging/release-constraints.txt pyinstaller Pillow
+      - run: pyinstaller --noconfirm packaging/JunkZero.spec
+      - name: Smoke test the app
+        env:
+          JUNKZERO_DATA_DIR: ${{ runner.temp }}/junkzero-data
+        run: |
+          bin=dist/JunkZero/JunkZero
+          target="$RUNNER_TEMP/junk-target"
+          mkdir -p "$target/tmp"
+          touch "$target/tmp/old.tmp"
+          # Report mode scans without deleting and saves a report
+          "$bin" --mode report --no-junk-locations --path "$target"
+          python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['item_count'] >= 1, 'Report found nothing'" "$JUNKZERO_DATA_DIR/latest_report.json"
+          test -f "$target/tmp/old.tmp" || { echo "Report mode deleted a file"; exit 1; }
+          # Server mode serves the bundled UI and icons
+          "$bin" --mode server --port 8765 &
+          server=$!
+          trap 'kill $server' EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8765/ -o page.html && break
+            sleep 1
+          done
+          grep -q JunkZero page.html || { echo "UI page missing"; exit 1; }
+          curl -fsS http://127.0.0.1:8765/static/vendor/lucide-1.46.0.min.js -o /dev/null
+          curl -fsS http://127.0.0.1:8765/api/system/info | grep -q '"platform":"linux"'
+          echo "Packaged JunkZero $(curl -fsS http://127.0.0.1:8765/openapi.json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])') is serving the UI"
+      - name: Smoke test delete to the Trash and restore
+        env:
+          JUNKZERO_DATA_DIR: ${{ runner.temp }}/junkzero-data-restore
+        run: packaging/linux/smoke-test-restore.sh dist/JunkZero/JunkZero 8766 "$RUNNER_TEMP/restore-target"
+      - name: Build the tar.gz and the .deb
+        run: packaging/linux/build-linux.sh
+      - name: Smoke test installing, scheduling and uninstalling the .deb
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q cron
+          packaging/linux/smoke-test-deb.sh dist/junkzero_*_amd64.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JunkZero-Linux
+          path: |
+            dist/JunkZero-Linux-x86_64.tar.gz
+            dist/junkzero_*_amd64.deb
+          if-no-files-found: error
+
   publish:
     # A pushed v* tag, or a manual run on main that tags the version in app/__init__.py
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-    needs: [build-exe, build-mac]
+    needs: [build-exe, build-mac, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -214,10 +268,15 @@ jobs:
         with:
           name: JunkZero-macOS
           path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: JunkZero-Linux
+          path: assets
       - name: Checksums
         working-directory: assets
         run: |
-          sha256sum JunkZero-Setup.exe JunkZero-Windows-portable.zip JunkZero-macOS.zip > SHA256SUMS.txt
+          sha256sum JunkZero-Setup.exe JunkZero-Windows-portable.zip JunkZero-macOS.zip \
+            JunkZero-Linux-x86_64.tar.gz junkzero_*_amd64.deb > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Work out the version and release notes
         id: version
@@ -250,5 +309,6 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           gh release create "$TAG" assets/JunkZero-Setup.exe assets/JunkZero-Windows-portable.zip \
-            assets/JunkZero-macOS.zip assets/SHA256SUMS.txt \
+            assets/JunkZero-macOS.zip assets/JunkZero-Linux-x86_64.tar.gz assets/junkzero_*_amd64.deb \
+            assets/SHA256SUMS.txt \
             --title "JunkZero $TAG" --notes-file notes.md --target "$GITHUB_SHA"

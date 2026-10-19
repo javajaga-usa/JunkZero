@@ -117,7 +117,11 @@ test('macOS wording swaps Windows names and example paths, Windows text is untou
   assert.equal(context.platformText('Runs through Windows Task Scheduler.', 'macos'), 'Runs through macOS launchd.');
   assert.equal(context.platformText('e.g. C:\\ or C:\\Users\\YourName\\Downloads', 'macos'), 'e.g. / or /Users/yourname/Downloads');
   assert.equal(context.platformText('Move Selected to Recycle Bin', 'windows'), 'Move Selected to Recycle Bin');
-  assert.equal(context.platformText('Show in Windows Explorer', 'linux'), 'Show in Windows Explorer');
+  assert.equal(context.platformText('Show in Windows Explorer', 'linux'), 'Show in the file manager');
+  assert.equal(context.platformText('Move Selected to Recycle Bin', 'linux'), 'Move Selected to Trash');
+  assert.equal(context.platformText('e.g. C:\\ or C:\\Users\\YourName\\Downloads', 'linux'),
+    'e.g. /home/yourname or /home/yourname/Downloads');
+  assert.equal(context.platformText('Show in Windows Explorer', 'freebsd'), 'Show in Windows Explorer');
 });
 
 test('delete dialog lists personal, cloud and no-Recycle-Bin items before the details', () => {

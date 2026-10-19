@@ -214,6 +214,7 @@ def test_invalid_schedules_rejected(args):
 
 def test_save_schedule_registers_task(tmp_path, monkeypatch):
     monkeypatch.setattr(osinfo, "is_macos", lambda: False)  # Task Scheduler; launchd is in test_macos
+    monkeypatch.setattr(osinfo, "is_linux", lambda: False)  # systemd and cron are in test_linux
     calls = []
     monkeypatch.setattr(scheduler, "_run_schtasks", calls.append)
     schedule = scheduler.save_schedule("weekly", "07:15", "SUN", [str(tmp_path)], False)

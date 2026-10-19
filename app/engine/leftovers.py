@@ -370,5 +370,8 @@ def find_mac_leftovers() -> List[Leftover]:
 
 
 def find_program_leftovers() -> List[Leftover]:
-    """Leftovers on the system JunkZero is running on."""
+    """Leftovers on the system JunkZero is running on (none on Linux: programs there come from
+    the package manager, which removes their files itself)."""
+    if osinfo.is_linux():
+        return []
     return find_mac_leftovers() if osinfo.is_macos() else find_windows_leftovers()

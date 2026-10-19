@@ -50,7 +50,7 @@ from app.engine import dupfolders, projects, spacelog
 from app.engine.duplicates import FileCandidate, find_duplicate_groups, keeper_reason, pick_keeper
 from app.engine.exclusions import ExclusionMatcher
 from app.engine.filetypes import FileTypeMatcher
-from app.engine import osinfo
+from app.engine import linux, osinfo
 from app.engine.leftovers import find_program_leftovers
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 from app.engine.safeguards import Safeguards, last_changed
@@ -843,6 +843,8 @@ def get_available_drives() -> List[Dict[str, any]]:
     """Retrieve list of accessible drives (Windows drive letters, or macOS disks) with disk usage statistics."""
     if osinfo.is_macos():
         return get_mac_drives()
+    if osinfo.is_linux():
+        return linux.drives(_drive_info)
     drives = []
     # Windows drive letters A-Z
     for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":

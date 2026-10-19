@@ -1,4 +1,5 @@
-"""Scheduled, report-only scans via Windows Task Scheduler or macOS launchd. Scheduled runs never delete anything."""
+"""Scheduled, report-only scans via Windows Task Scheduler, macOS launchd, or a systemd user timer or
+cron on Linux (app.engine.linux_scheduler). Scheduled runs never delete anything."""
 from __future__ import annotations
 import os
 import plistlib
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import ScanOptions
-from app.engine import osinfo, smart, storage
+from app.engine import linux_scheduler, osinfo, smart, storage
 from app.engine.locations import junk_locations
 from app.engine.scanner import FastScanner
 
@@ -52,7 +53,7 @@ def validate_schedule(frequency: str, time_str: str, day: str, paths: List[str],
         raise ScheduleError("Day must be one of " + ", ".join(WEEKDAYS))
     if not paths and not include_junk_locations:
         raise ScheduleError("Choose at least one folder or include the "
-                            + ("junk locations" if osinfo.is_macos() else "Windows junk locations"))
+                            + ("Windows junk locations" if osinfo.is_windows() else "junk locations"))
     for p in paths:
         if not os.path.isdir(p):
             raise ScheduleError(f"Folder not found: {p}")
@@ -175,6 +176,8 @@ def windows_task_command() -> Optional[str]:
 
 
 def scheduling_supported() -> bool:
+    if osinfo.is_linux():
+        return linux_scheduler.scheduler_kind() is not None
     return os.name == "nt" or osinfo.is_macos()
 
 
@@ -232,6 +235,13 @@ def save_schedule(frequency: str, time_str: str, day: str, paths: List[str], inc
         script = storage.data_dir() / "scheduled_scan.py"
         script.write_text(launcher_script(), encoding="utf-8")
         _install_launch_agent(launchd_plist(frequency, time_str, day, launchd_program_args(str(script))))
+    elif osinfo.is_linux():
+        script = storage.data_dir() / "scheduled_scan.py"
+        script.write_text(launcher_script(), encoding="utf-8")
+        try:
+            linux_scheduler.install(frequency, time_str, day, launchd_program_args(str(script)))
+        except (linux_scheduler.LinuxScheduleError, OSError, subprocess.SubprocessError) as e:
+            raise ScheduleError(str(e))
     else:
         script = storage.data_dir() / "scheduled_scan.pyw"
         script.write_text(launcher_script(), encoding="utf-8")
@@ -269,6 +279,14 @@ def ensure_task_current() -> bool:
             script.write_text(launcher_script(), encoding="utf-8")
             _install_launch_agent(launchd_plist(schedule["frequency"], schedule["time"], schedule["day"], wanted))
             return True
+        if osinfo.is_linux():
+            script = storage.data_dir() / "scheduled_scan.py"
+            wanted = launchd_program_args(str(script))
+            if linux_scheduler.current_command() == wanted and (getattr(sys, "frozen", False) or script.exists()):
+                return False
+            script.write_text(launcher_script(), encoding="utf-8")
+            linux_scheduler.install(schedule["frequency"], schedule["time"], schedule["day"], wanted)
+            return True
         if not _task_scheduler():
             return False
         script = storage.data_dir() / "scheduled_scan.pyw"
@@ -279,7 +297,7 @@ def ensure_task_current() -> bool:
         script.write_text(launcher_script(), encoding="utf-8")
         _create_windows_task(schedule["frequency"], schedule["time"], schedule["day"], str(script))
         return True
-    except (ScheduleError, OSError, subprocess.SubprocessError) as e:
+    except (ScheduleError, linux_scheduler.LinuxScheduleError, OSError, subprocess.SubprocessError) as e:
         _record_error(f"Could not set up the scheduled scan again: {e}")
         return False
 
@@ -295,6 +313,11 @@ def _record_error(message: Optional[str]) -> None:
 def delete_schedule() -> Dict[str, Any]:
     if osinfo.is_macos():
         _remove_launch_agent()
+    elif osinfo.is_linux():
+        try:
+            linux_scheduler.remove()
+        except (linux_scheduler.LinuxScheduleError, OSError, subprocess.SubprocessError) as e:
+            raise ScheduleError(str(e))
     else:
         try:
             _run_schtasks(["schtasks", "/Delete", "/F", "/TN", TASK_NAME])
@@ -342,7 +365,7 @@ def run_report(paths: List[str], include_junk_locations: bool = True, source: st
 
 
 def run_scheduled_report() -> int:
-    """Entry point for Task Scheduler and launchd."""
+    """Entry point for Task Scheduler, launchd, systemd timers and cron."""
     from app.engine import notify
     schedule = get_schedule()
     try:

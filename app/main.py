@@ -32,8 +32,8 @@ from pydantic import BaseModel, Field
 from app import __version__
 from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import (
-    changes, cleaner, deletecheck, filetypes, locations, notify, osinfo, permissions, reclaim, recycle, safeguards,
-    scheduler, smart, spacelog, storage,
+    changes, cleaner, deletecheck, filetypes, linux, linux_scheduler, locations, notify, osinfo, permissions,
+    reclaim, recycle, safeguards, scheduler, smart, spacelog, storage,
 )
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
@@ -407,6 +407,8 @@ def api_diagnostics():
         f"Packaged exe: {'yes' if getattr(sys, 'frozen', False) else 'no (running from source)'}",
         f"pywebview: {_webview_version()}",
         f"WebView2 Runtime: {_webview2_version()}",
+        *([f"Linux desktop: {linux.desktop_name()}",
+           f"Scheduler: {linux_scheduler.scheduler_label(linux_scheduler.scheduler_kind())}"] if osinfo.is_linux() else []),
         f"Data folder: {storage.data_dir()}",
         f"Log file: {log_file()}",
         "",
@@ -435,6 +437,8 @@ MAC_USER_CANCELLED = "-128"
 
 # The JunkZero window (pywebview), when the app runs in its own window
 gui_window = None
+# The address JunkZero opened in the browser, when it runs there instead of in its own window
+browser_url: Optional[str] = None
 
 
 class BrowseRequest(BaseModel):
@@ -467,7 +471,8 @@ def _window_folder_dialog(start: str) -> Optional[str]:
 
 
 def reveal_command(path: str, is_file: bool) -> List[str]:
-    """Command that shows path in Finder (macOS) or Windows Explorer, selecting it if it's a file."""
+    """Command that shows path in Finder (macOS) or Windows Explorer, selecting it if it's a file.
+    (Linux tries more than one command: see linux.reveal.)"""
     if osinfo.is_macos():
         # "open" on a folder that is an app or package (Foo.app, a Photos library) would launch it
         return ["open", "-R", path] if is_file or path.lower().rstrip("/").endswith(MAC_PACKAGE_EXTENSIONS) else ["open", path]
@@ -487,6 +492,13 @@ def api_browse_folder(req: Optional[BrowseRequest] = None):
         window_choice = None
     if window_choice is not None and not osinfo.is_macos():
         return {"path": window_choice} if window_choice and os.path.isdir(window_choice) else {"path": ""}
+    if osinfo.is_linux():
+        # zenity (Xfce, GNOME), kdialog (KDE Plasma) or yad, whichever is installed
+        chosen, error = linux.choose_folder(start)
+        if error:
+            logger.warning(f"Native folder picker failed: {error}")
+            return {"path": "", "error": error}
+        return {"path": chosen}
     if osinfo.is_macos():
         chosen = window_choice
         if chosen is None:
@@ -542,7 +554,10 @@ def api_open_explorer(req: OpenFolderRequest):
         raise HTTPException(status_code=404, detail="Path does not exist")
 
     try:
-        subprocess.Popen(reveal_command(path, os.path.isfile(path)))
+        if osinfo.is_linux():
+            linux.reveal(path, os.path.isfile(path))
+        else:
+            subprocess.Popen(reveal_command(path, os.path.isfile(path)))
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -996,6 +1011,10 @@ def api_open_recycle_bin():
     if osinfo.is_macos():
         subprocess.Popen(["open", os.path.expanduser("~/.Trash")])
         return {"success": True}
+    if osinfo.is_linux():
+        os.makedirs(linux.trash_folder(), exist_ok=True)
+        subprocess.Popen(linux.open_trash_command(), env=linux.subprocess_env())
+        return {"success": True}
     if os.name != "nt":
         raise HTTPException(status_code=501, detail="The Recycle Bin can only be opened on Windows")
     subprocess.Popen(["explorer.exe", "shell:RecycleBinFolder"])
@@ -1283,6 +1302,10 @@ def api_focus_window(report: int = 0):
     notification) to put the latest scheduled report in the table. It says nothing else."""
     window = gui_window
     if window is None:
+        if browser_url:
+            # JunkZero runs in the browser (no window of its own): open it there again
+            webbrowser.open(browser_url)
+            return {"focused": True}
         return {"focused": False}
     if report:
         try:
@@ -1339,6 +1362,13 @@ def _check_scheduled_task() -> None:
         logger.warning(f"Could not check the scheduled scan: {e}")
 
 
+def _open_in_browser(url: str) -> None:
+    global browser_url
+    browser_url = url
+    if not webbrowser.open(url):
+        print(f"Open JunkZero in your web browser at {url}", flush=True)
+
+
 def start_server(host: str = "127.0.0.1", port: int = 8000):
     """Start uvicorn server."""
     uvicorn.run(app, host=host, port=port, log_level="info")
@@ -1362,6 +1392,9 @@ def main():
                         help="Open with the latest scheduled report in the table (used by notifications)")
     args = parser.parse_args()
     setup_logging()
+    if osinfo.is_linux() and getattr(sys, "frozen", False):
+        # Programs JunkZero starts (the browser, the file manager) must use the system's libraries
+        linux.restore_library_path()
 
     if args.mode == "report":
         if args.path:
@@ -1404,7 +1437,7 @@ def main():
 
     if args.mode == "browser":
         # Launch default web browser
-        webbrowser.open(window_url)
+        _open_in_browser(window_url)
         try:
             while True:
                 threading.Event().wait(1)
@@ -1436,7 +1469,7 @@ def main():
             sys.exit(0)
         except Exception as e:
             logger.warning(f"Could not open native WebView window ({e}), falling back to default browser.")
-            webbrowser.open(window_url)
+            _open_in_browser(window_url)
             try:
                 while True:
                     threading.Event().wait(1)

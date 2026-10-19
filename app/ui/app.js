@@ -1,5 +1,5 @@
-// Wording for the system the app runs on. The page is written for Windows; on macOS these
-// phrases are swapped (longest first, so "Windows Explorer" wins over shorter matches).
+// Wording for the system the app runs on. The page is written for Windows; on macOS and Linux
+// these phrases are swapped (longest first, so "Windows Explorer" wins over shorter matches).
 const MAC_WORDING = [
   ['Include Windows junk locations (temp, crash dumps, browser caches)', 'Include junk locations (temp, app caches, logs)'],
   ['e.g. C:\\ or C:\\Users\\YourName\\Downloads', 'e.g. / or /Users/yourname/Downloads'],
@@ -13,10 +13,27 @@ const MAC_WORDING = [
   ['Recycle Bin', 'Trash'],
 ];
 
+const LINUX_WORDING = [
+  ['Scheduled scans need Windows Task Scheduler, so they are only available on Windows.',
+    'Scheduled scans need systemd or cron, and neither was found. Install cron in a terminal: sudo apt install cron'],
+  ['Include Windows junk locations (temp, crash dumps, browser caches)', 'Include junk locations (app caches, thumbnails, browser caches)'],
+  ['e.g. C:\\ or C:\\Users\\YourName\\Downloads', 'e.g. /home/yourname or /home/yourname/Downloads'],
+  ['C:\\Users\\YourName\\Downloads', '/home/yourname/Downloads'],
+  ['C:\\Projects\\keep-this', '/home/yourname/Projects/keep-this'],
+  ['C:\\Projects\\scratch', '/home/yourname/Projects/scratch'],
+  ['Scan your temp folder, crash dumps and browser caches', 'Scan app caches, thumbnails and browser caches'],
+  ['Windows cleanup that needs admin', 'System cleanup that needs admin'],
+  ['Windows Task Scheduler', 'systemd or cron'],  // the scheduler actually used, once the server says
+  ['Windows Explorer', 'the file manager'],
+  ['Recycle Bin', 'Trash'],
+];
+const PLATFORM_WORDING = { macos: MAC_WORDING, linux: LINUX_WORDING };
+
 function platformText(text, platform) {
   let out = String(text ?? '');
-  if (platform !== 'macos') return out;
-  MAC_WORDING.forEach(([from, to]) => { out = out.split(from).join(to); });
+  const wording = PLATFORM_WORDING[platform];
+  if (!wording) return out;
+  wording.forEach(([from, to]) => { out = out.split(from).join(to); });
   return out;
 }
 
@@ -1505,9 +1522,10 @@ function t(text) {
 
 // Ask the server which system this is and reword the page to match
 async function loadPlatform() {
+  let info = {};
   try {
     const res = await fetch('/api/system/info');
-    const info = await res.json();
+    info = await res.json();
     state.platform = info.platform || 'windows';
     state.version = info.version || '';
     if (state.version) {
@@ -1518,8 +1536,9 @@ async function loadPlatform() {
   } catch (err) {
     console.error('Failed to load system info:', err);
   }
-  if (state.platform !== 'macos') return;
-  document.body.classList.add('platform-macos');
+  if (state.platform === 'linux') setupLinux(info);
+  if (!PLATFORM_WORDING[state.platform]) return;
+  document.body.classList.add(`platform-${state.platform}`);
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = t(node.nodeValue);
@@ -1530,6 +1549,23 @@ async function loadPlatform() {
       if (node.hasAttribute(attr)) node.setAttribute(attr, t(node.getAttribute(attr)));
     });
   });
+}
+
+// Linux: name the scheduler in use, point system cleanup at its commands, and hide Program
+// leftovers (the package manager removes a program's files itself)
+function setupLinux(info) {
+  const scheduler = LINUX_WORDING.find(([from]) => from === 'Windows Task Scheduler');
+  if (scheduler && info && info.scheduler) scheduler[1] = info.scheduler;
+  const note = document.querySelector('.cleanup-hints-note');
+  if (note) {
+    note.textContent = "JunkZero doesn't delete these, because only an administrator can. "
+      + 'To clear them, run the command shown under each one in a terminal.';
+  }
+  if (el.optLeftovers) {
+    el.optLeftovers.checked = false;
+    const label = el.optLeftovers.closest('label');
+    if (label) label.classList.add('hidden');
+  }
 }
 
 // Drive Discovery
@@ -3458,7 +3494,7 @@ async function loadCleanupHints() {
     el.cleanupHintsTotal.textContent = total > 0 ? `(${formatSize(total)})` : '';
     el.cleanupHintsList.innerHTML = hints.map((h) => `
       <li>
-        <div><strong>${escapeHtml(h.name || h.path)}</strong><div class="hint-path">${escapeHtml(h.path)}</div></div>
+        <div><strong>${escapeHtml(h.name || h.path)}</strong><div class="hint-path">${escapeHtml(h.path)}</div>${h.fix ? `<div class="hint-path">To clear: <code>${escapeHtml(h.fix)}</code></div>` : ''}</div>
         <span>${size(h) === null ? '' : formatSize(size(h))}</span>
       </li>
     `).join('');

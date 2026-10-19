@@ -1,0 +1,24 @@
+#!/bin/sh
+# Removing the package also turns off JunkZero's scheduled scan for every user, as the Windows
+# uninstaller does: without the app it would only fail. Only schedules that run the installed
+# copy (/opt/junkzero) are removed; one made by JunkZero run from source stays.
+set -e
+case "$1" in
+    remove|purge)
+        for units in /root/.config/systemd/user /home/*/.config/systemd/user; do
+            service="$units/junkzero-scan.service"
+            if [ -f "$service" ] && grep -q '/opt/junkzero/' "$service"; then
+                rm -f "$service" "$units/junkzero-scan.timer" "$units/timers.target.wants/junkzero-scan.timer"
+            fi
+        done
+        if command -v crontab >/dev/null 2>&1; then
+            for user in $(getent passwd | awk -F: '$3 == 0 || $3 >= 1000 { print $1 }'); do
+                current=$(crontab -u "$user" -l 2>/dev/null || true)
+                if printf '%s\n' "$current" | grep '# JunkZero scheduled scan$' | grep -q '/opt/junkzero/'; then
+                    printf '%s\n' "$current" | grep -v '/opt/junkzero/.*# JunkZero scheduled scan$' | crontab -u "$user" - || true
+                fi
+            done
+        fi
+        ;;
+esac
+exit 0

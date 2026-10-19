@@ -88,8 +88,8 @@ def app_cache_entries(env: Optional[Mapping[str, str]] = None, running: Optional
                       ) -> List[Tuple[str, str, str]]:
     """(id, label, path) of the app caches of closed apps that exist on this machine. running:
     the running programs (None: they couldn't be listed, so nothing is offered)."""
-    if running is None:
-        return []
+    if running is None or osinfo.is_linux():
+        return []  # Linux: these apps keep their caches among their settings in ~/.config, which is never touched
     env = os.environ if env is None else env
     running = {r.lower() for r in running}
     found: List[Tuple[str, str, str]] = []

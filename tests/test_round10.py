@@ -227,6 +227,7 @@ def test_scheduled_scan_notifies_after_its_report(monkeypatch):
 
 def test_app_caches_only_for_closed_apps(tmp_path, monkeypatch):
     monkeypatch.setattr(appcaches.osinfo, "is_macos", lambda: False)
+    monkeypatch.setattr(appcaches.osinfo, "is_linux", lambda: False)
     roaming, local = tmp_path / "Roaming", tmp_path / "Local"
     for sub in ("Cache", "Code Cache"):
         (roaming / "Slack" / sub).mkdir(parents=True)

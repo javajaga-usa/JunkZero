@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=JunkZero
+GenericName=Junk File Cleaner
+Comment=Find and remove junk files safely
+Exec=junkzero
+Icon=junkzero
+Terminal=false
+Categories=System;Utility;FileTools;
+Keywords=clean;junk;disk;space;cache;duplicates;
+StartupNotify=false
