@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import __version__
-from app.config import HOLDING_DAYS, MAC_PACKAGE_EXTENSIONS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
+from app.config import HOLDING_DAYS, OLD_DOWNLOAD_DAYS, RISK_SAFE, ScanOptions
 from app.engine import (
     changes, cleaner, deletecheck, filetypes, linux, linux_scheduler, locations, notify, osinfo, permissions,
     reclaim, recycle, safeguards, scheduler, shortcuts, smart, spacelog, storage,
@@ -478,8 +478,9 @@ def reveal_command(path: str, is_file: bool) -> List[str]:
     """Command that shows path in Finder (macOS) or Windows Explorer, selecting it if it's a file.
     (Linux tries more than one command: see linux.reveal.)"""
     if osinfo.is_macos():
-        # "open" on a folder that is an app or package (Foo.app, a Photos library) would launch it
-        return ["open", "-R", path] if is_file or path.lower().rstrip("/").endswith(MAC_PACKAGE_EXTENSIONS) else ["open", path]
+        # "open" on a folder macOS treats as a package (an app, a Photos library, .pkg, .xcodeproj,
+        # .rtfd, ...) would launch or install it, and the list of such extensions is open-ended
+        return ["open", "-R", path]
     return ["explorer.exe", "/select,", path] if is_file else ["explorer.exe", path]
 
 
@@ -1221,6 +1222,21 @@ def api_latest_report():
     report = storage.load_report()
     if not report:
         raise HTTPException(status_code=404, detail="No scan report yet")
+    return report
+
+
+@app.post("/api/reports/use")
+def api_use_report():
+    """Show the latest scheduled report in the table: it replaces this window's scan, so its
+    items are the ones that can be deleted (a running scan is stopped)."""
+    global current_scanner
+    report = storage.load_report()
+    if not report:
+        raise HTTPException(status_code=404, detail="No scan report yet")
+    with scanner_lock:
+        if current_scanner and current_scanner.stats.is_running:
+            current_scanner.cancel()
+        current_scanner = None
     return report
 
 

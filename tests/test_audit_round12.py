@@ -168,3 +168,56 @@ def test_purge_keeps_a_drive_added_while_it_ran(tmp_path, monkeypatch):
     monkeypatch.setattr(recycle.shutil, "rmtree", rmtree_and_new_drive)
     recycle.purge_holding()
     assert storage.load_settings()["holding_roots"] == [str(tmp_path / "usb2")]
+
+
+# ---------------------------------------------------------------- Server and page
+
+def test_folder_holding_listed_junk_is_not_also_a_duplicate_folder(home):
+    from app.config import CAT_DUPLICATE_FOLDERS
+    from tests.test_round10 import _age_tree, _scan, _write
+    for name in ("copyA", "copyB"):
+        _write(home / "Downloads" / name / "movie.mp4.part", b"p" * 300_000)
+        _write(home / "Downloads" / name / "notes.txt", b"n" * 300_000)
+        _age_tree(home / "Downloads" / name)
+    _, items = _scan(home, include_duplicates=True)
+    assert any(k.endswith("movie.mp4.part") for k in items)
+    assert not any(i.category == CAT_DUPLICATE_FOLDERS for i in items.values())
+
+
+def test_scheduled_report_opened_after_a_scan_can_be_deleted_from(tmp_path):
+    from tests.helpers import api_client
+    from app import main
+    client = api_client()
+    junk = tmp_path / "old.tmp"
+    junk.write_text("x")
+    from app.config import ScanOptions
+    main.current_scanner = main.FastScanner(ScanOptions(target_path=str(tmp_path)))
+    storage.save_report({"generated_at": 1, "items": [{"path": str(junk), "size_bytes": 1}], "item_count": 1})
+    assert client.post("/api/reports/use").status_code == 200
+    assert main.current_scanner is None
+    assert main._key(str(junk)) in main.scan_results()
+
+
+def test_show_in_finder_never_opens_a_package(monkeypatch):
+    from app import main
+    monkeypatch.setattr(osinfo, "is_macos", lambda: True)
+    for p in ("/Users/a/Old.pkg", "/Users/a/App.xcodeproj", "/Users/a/Note.rtfd"):
+        assert main.reveal_command(p, False) == ["open", "-R", p]
+
+
+def test_ai_inspect_is_no_surer_than_the_scanner(tmp_path):
+    import time
+    from app.engine.ai_advisor import analyze_item
+    temp = tmp_path / "AppData" / "Local" / "Temp"
+    temp.mkdir(parents=True)
+    fresh = temp / "video.mp4.crdownload"
+    fresh.write_text("x")
+    assert analyze_item(str(fresh)).safety_verdict == "Review Carefully"
+    old = temp / "old.tmp"
+    old.write_text("x")
+    os.utime(old, (time.time() - 5 * 86400,) * 2)
+    for name in ("setup.msi", "game.apk"):
+        (temp / name).write_text("x")
+        assert analyze_item(str(temp / name)).safety_verdict == "Review Carefully", name
+    (tmp_path / "Photos.zip").mkdir()
+    assert analyze_item(str(tmp_path / "Photos.zip")).safety_verdict == "Review Carefully"

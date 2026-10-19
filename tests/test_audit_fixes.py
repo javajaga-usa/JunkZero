@@ -45,7 +45,8 @@ def test_show_in_finder_never_opens_an_app(monkeypatch):
     monkeypatch.setattr(osinfo, "is_macos", lambda: True)
     assert main.reveal_command("/Users/a/Downloads/Tool.app", False) == ["open", "-R", "/Users/a/Downloads/Tool.app"]
     assert main.reveal_command("/Users/a/Pictures/Photos Library.photoslibrary/", False)[1] == "-R"
-    assert main.reveal_command("/Users/a/Downloads", False) == ["open", "/Users/a/Downloads"]
+    assert main.reveal_command("/Users/a/Downloads", False) == ["open", "-R", "/Users/a/Downloads"]
+    assert main.reveal_command("/Users/a/Old.pkg", False) == ["open", "-R", "/Users/a/Old.pkg"]
 
 
 def test_scheduled_report_items_stop_being_deletable_after_a_scan(tmp_path):

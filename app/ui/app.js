@@ -1378,6 +1378,7 @@ function setupEventListeners() {
       preview: { source: 'explorer', paths: [filePath] },
       onConfirm: async (confirmText) => {
         await executeExplorerDelete([filePath], confirmText);
+        state.initialTargetFilePath = null;
         // Refresh hierarchy
         if (state.currentHierarchy) {
           loadHierarchy(state.currentHierarchy.current_path);
@@ -1849,7 +1850,7 @@ function onScanCompleted(finalStats = null, changes = null, error = '', { stream
   renderSmartSummary();
   if (error) {
     if (finalStats) updateMetrics(finalStats);
-    showToast(`The scan stopped because of an error: ${error}. What it found before that is listed.`, 'error');
+    showToast(`${error}. What it found before that is listed.`, 'error');
   } else if (finalStats) {
     updateMetrics(finalStats);
     let note = '';
@@ -2260,13 +2261,12 @@ function bindTableEvents() {
     if (openFolder) {
       e.stopPropagation();
       try {
-        await fetch('/api/system/open-explorer', {
+        await apiJson('/api/system/open-explorer', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: openFolder.dataset.path }),
         });
       } catch (err) {
-        showToast('Could not open folder in Explorer', 'error');
+        showToast(`Could not open the folder: ${err.message}`, 'error');
       }
       return;
     }
@@ -2377,6 +2377,8 @@ async function loadHierarchy(path) {
     const data = await res.json();
     state.currentHierarchy = data;
     state.hierarchySelectedPaths.clear();
+    // "Delete File Only" is for a file; opened on a folder there is no such file
+    if (state.initialTargetFilePath === path) state.initialTargetFilePath = data.target_file_path || null;
 
     // Render Breadcrumbs
     renderHierarchyBreadcrumbs(data.breadcrumbs);
@@ -2899,13 +2901,10 @@ async function openAiInspector(path) {
   `;
 
   try {
-    const res = await fetch('/api/ai/analyze', {
+    const data = await apiJson('/api/ai/analyze', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
     });
-
-    const data = await res.json();
     const verdictClass = data.safety_verdict === 'Safe to Delete' ? 'risk-safe' : 'risk-review';
 
     el.aiModalBody.innerHTML = `
@@ -3744,7 +3743,9 @@ async function disableSchedule() {
 
 async function loadLatestReport() {
   try {
-    const report = await apiJson('/api/reports/latest');
+    // The report replaces this window's scan, also on the server, so its items can be deleted
+    const report = await apiJson('/api/reports/use', { method: 'POST' });
+    if (state.isScanning) onScanCompleted(null, null, '', { streamLost: true });
     markReportSeen(report.generated_at);
     state.items = report.items;
     markExcluded(state.items);

@@ -647,7 +647,14 @@ class FastScanner:
     def _find_duplicate_folders(self, roots: List[str]) -> Tuple[List[GarbageItem], List[str]]:
         """(items, every folder in a duplicate group) for folders holding exactly the same files."""
         children = {path: kids for path, (_content, kids) in self._dir_tree.items()}
-        infos = dupfolders.signatures(children, self._folder_files, self._incomplete)
+        # A folder holding something already listed isn't offered whole as well: the same bytes
+        # would be counted twice and the inner item reported deleted when the folder went
+        with self._lock:
+            unsure = set(self._incomplete)
+            for listed in self.garbage_items:
+                unsure.add(os.path.dirname(listed.path))
+                unsure.add(listed.path)
+        infos = dupfolders.signatures(children, self._folder_files, unsure)
         root_keys = {_norm_path(r) for r in roots}
         user_folders = protected_user_folders()
 
