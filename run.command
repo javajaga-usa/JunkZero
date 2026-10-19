@@ -25,4 +25,4 @@ if [ "$(cat "$stamp" 2>/dev/null)" != "$wanted" ]; then
 fi
 
 echo "Starting JunkZero Desktop GUI..."
-exec .venv/bin/python -m app.main --mode gui
+exec .venv/bin/python -m app.main --mode gui "$@"

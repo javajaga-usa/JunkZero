@@ -2559,6 +2559,10 @@ input[type="text"]:focus {
 
 /* About dialog */
 .update-result a { color: var(--color-primary); }
+.shortcuts-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-color); }
+.shortcuts-section h4 { margin: 0 0 4px; font-size: 14px; }
+.shortcuts-note { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+.shortcuts-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Windows cleanup that needs admin (read-only) */
 .cleanup-hints { padding: 12px 16px; margin-bottom: 16px; }

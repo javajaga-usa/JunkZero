@@ -876,6 +876,11 @@ const el = {
   btnCheckUpdates: document.getElementById('btnCheckUpdates'),
   btnCopyDiagnostics: document.getElementById('btnCopyDiagnostics'),
   updateResult: document.getElementById('updateResult'),
+  shortcutsSection: document.getElementById('shortcutsSection'),
+  shortcutsNote: document.getElementById('shortcutsNote'),
+  btnShortcutStartMenu: document.getElementById('btnShortcutStartMenu'),
+  btnShortcutDesktop: document.getElementById('btnShortcutDesktop'),
+  btnShortcutMenu: document.getElementById('btnShortcutMenu'),
 
   // Errors dialog
   errorsModal: document.getElementById('errorsModal'),
@@ -1107,6 +1112,7 @@ async function initApp() {
   await loadExclusionRules();
   loadCleanupHints();
   offerUnseenReport();
+  offerShortcuts();
 }
 
 // Event Listeners
@@ -1486,6 +1492,10 @@ function setupEventListeners() {
   el.btnOpenAbout.addEventListener('click', () => {
     el.updateResult.textContent = '';
     el.aboutModal.classList.remove('hidden');
+    loadShortcuts();
+  });
+  [el.btnShortcutStartMenu, el.btnShortcutDesktop, el.btnShortcutMenu].forEach((btn) => {
+    btn.addEventListener('click', () => addShortcuts([btn.dataset.place]));
   });
   el.closeAboutModal.addEventListener('click', () => el.aboutModal.classList.add('hidden'));
   el.btnCloseAbout.addEventListener('click', () => el.aboutModal.classList.add('hidden'));
@@ -3613,6 +3623,78 @@ async function offerUnseenReport() {
         toast.remove();
         await loadLatestReport();
       },
+    });
+  } catch { /* nothing to offer */ }
+}
+
+// Start menu, desktop (Windows) and applications-menu (Linux) shortcuts for a portable or
+// from-source copy; the Windows installer and the Linux .deb make their own
+const SHORTCUT_TEXT = {
+  start_menu: { add: 'Add to Start menu', present: 'In the Start menu', added: 'Added JunkZero to the Start menu' },
+  desktop: { add: 'Add desktop shortcut', present: 'On the desktop', added: 'Added a JunkZero shortcut to the desktop' },
+  menu: { add: 'Add to applications menu', present: 'In the applications menu', added: 'Added JunkZero to the applications menu' },
+};
+
+async function loadShortcuts() {
+  try {
+    renderShortcuts(await apiJson('/api/shortcuts'));
+  } catch {
+    el.shortcutsSection.classList.add('hidden');
+  }
+}
+
+function renderShortcuts(status) {
+  if (!status || !status.supported) {
+    el.shortcutsSection.classList.add('hidden');
+    return;
+  }
+  el.shortcutsSection.classList.remove('hidden');
+  const buttons = { start_menu: el.btnShortcutStartMenu, desktop: el.btnShortcutDesktop, menu: el.btnShortcutMenu };
+  Object.values(buttons).forEach((btn) => btn.classList.add('hidden'));
+  status.places.forEach((place) => {
+    const btn = buttons[place.id];
+    if (!btn) return;
+    btn.classList.remove('hidden');
+    btn.disabled = place.present || !place.available;
+    btn.querySelector('span').textContent = SHORTCUT_TEXT[place.id][place.present ? 'present' : 'add'];
+  });
+  const where = status.places.some((p) => p.id === 'menu') ? 'the applications menu' : 'the Start menu or the desktop';
+  el.shortcutsNote.textContent = `Open JunkZero from ${where} instead of this folder. If you move this folder, `
+    + 'the shortcuts follow it the next time you start JunkZero from its new place.';
+}
+
+async function addShortcuts(places) {
+  try {
+    renderShortcuts(await apiJson('/api/shortcuts', { method: 'POST', body: JSON.stringify({ places }) }));
+    const done = places.length > 1 ? 'Added JunkZero to the Start menu and the desktop' : SHORTCUT_TEXT[places[0]].added;
+    showToast(done, 'success');
+    return true;
+  } catch (err) {
+    showToast(`Could not add the shortcut: ${err.message}`, 'error');
+    loadShortcuts();
+    return false;
+  }
+}
+
+// A portable or from-source copy with no shortcuts yet: offer them once
+async function offerShortcuts() {
+  try {
+    const status = await apiJson('/api/shortcuts');
+    if (!status.offer) return;
+    const ids = status.places.map((p) => p.id);
+    const question = ids.includes('menu') ? 'Add JunkZero to the applications menu, so you can start it from there next time?'
+      : 'Start JunkZero from the Start menu and the desktop next time?';
+    const toast = showStickyToast(question, {
+      type: 'info',
+      actionLabel: ids.includes('menu') ? 'Add to menu' : 'Add shortcuts',
+      onAction: async () => {
+        toast.remove();
+        await addShortcuts(ids);
+      },
+    });
+    // Closing the offer means no: it isn't shown again (About still has the buttons)
+    toast.querySelector('.toast-close').addEventListener('click', () => {
+      apiJson('/api/shortcuts/dismiss', { method: 'POST' }).catch(() => {});
     });
   } catch { /* nothing to offer */ }
 }

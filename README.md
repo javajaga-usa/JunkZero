@@ -95,37 +95,36 @@ JunkZero runs on MX Linux 23, Debian 12, Ubuntu 22.04 and later, Linux Mint and 
 
 ## 🚀 Quick Start
 
-### Download (no Python needed)
-From the [latest release](https://github.com/javajaga-usa/JunkZero/releases/latest), get either:
-- `JunkZero-Setup.exe`: installs JunkZero for your user account (no administrator rights needed) with a Start menu entry. Uninstall it from Settings → Apps; that also removes a scheduled scan. Your settings and history in `%APPDATA%\JunkZero` are kept.
-- `JunkZero-Windows-portable.zip`: unzip it anywhere and run `JunkZero.exe` inside the `JunkZero` folder (keep the folder's other files next to it).
+### Start JunkZero
+Download from the [latest release](https://github.com/javajaga-usa/JunkZero/releases/latest); no Python needed. After the first start, JunkZero opens like any other app:
+
+| System | Download | First start | After that |
+|---|---|---|---|
+| Windows (easiest) | `JunkZero-Setup.exe` | Open it and click through (no administrator rights needed); tick **Create a desktop shortcut** if you want one | Start menu → **JunkZero** |
+| Windows (no install) | `JunkZero-Windows-portable.zip` | Unzip it anywhere and double-click `JunkZero.exe` in the `JunkZero` folder; JunkZero then offers **Add shortcuts** | Start menu or desktop → **JunkZero** |
+| Mac | `JunkZero-macOS.dmg` | Open it and drag **JunkZero** onto **Applications**, then open it from Applications (see the security note below) | Launchpad, Applications or Spotlight → **JunkZero** |
+| Linux (MX Linux, Debian, Ubuntu) | `junkzero_<version>_amd64.deb` | Double-click it to install (or `sudo apt install ./junkzero_<version>_amd64.deb`) | Menu → System → **JunkZero**, or `junkzero` in a terminal |
+| Linux (no install) | `JunkZero-Linux-x86_64.tar.gz` | Unpack it anywhere and run `JunkZero/JunkZero`; JunkZero then offers **Add to menu** | Applications menu → **JunkZero** |
+
+The portable copies add their shortcuts only when you say yes (for your user account only), and **About** has the same buttons later. If you move the portable folder, the shortcuts follow it the next time you start JunkZero from its new place. Shortcuts JunkZero didn't make are never changed. The installer and the `.deb` make and remove their own.
+
+### Download details
+- `JunkZero-Setup.exe` installs JunkZero for your user account with a Start menu entry. Uninstall it from Settings → Apps; that also removes a scheduled scan. Your settings and history in `%APPDATA%\JunkZero` are kept.
+- `JunkZero-Windows-portable.zip`: keep the `JunkZero` folder's other files next to `JunkZero.exe`.
 
 Releases up to 1.2.0 were a single `JunkZero.exe`; from the next release the app comes as the installer or the portable folder instead, which starts faster. `SHA256SUMS.txt` in each release lists the SHA-256 checksum of every download (check one with `Get-FileHash JunkZero-Setup.exe`). JunkZero needs Windows 10 or 11 with the Microsoft Edge WebView2 runtime, which Windows normally includes. It isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info → Run anyway**. See [CHANGELOG.md](CHANGELOG.md) for what's in each release.
 
-On a Mac, download `JunkZero-macOS.zip` from the same release, unzip it and move `JunkZero.app` to Applications. The app isn't signed by Apple yet, so the first time macOS says it can't check it: open **System Settings → Privacy & Security** and choose **Open Anyway** (on older macOS, right-click the app and choose **Open**). The download is built for Apple silicon (M1 and later) Macs.
+On a Mac, `JunkZero-macOS.dmg` shows JunkZero next to a shortcut to Applications; drag it there. (`JunkZero-macOS.zip` is the same app as a zip: unzip it and move `JunkZero.app` to Applications.) The app isn't signed by Apple yet, so the first time macOS says it can't check it: open **System Settings → Privacy & Security** and choose **Open Anyway** (on older macOS, right-click the app and choose **Open**). The download is built for Apple silicon (M1 and later) Macs.
 
 ### Run from source
 
-### 1. Requirements
-- Windows 10 / 11, macOS 11 or later, or Linux (MX Linux 23, Debian 12, Ubuntu 22.04 or later)
-- Python 3.10+ (tested on 3.10, 3.12 and 3.13)
+You need Python 3.10 or later (tested on 3.10, 3.12 and 3.13) on Windows 10 / 11, macOS 11 or later, or Linux (MX Linux 23, Debian 12, Ubuntu 22.04 or later). Then double-click the launcher for your system in the JunkZero folder:
 
-### 2. Install Dependencies
-```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-```
+- Windows: `run.bat`
+- Mac: `run.command`
+- Linux: `./run.sh` (from a terminal, or your file manager's **Run** option)
 
-### 3. Launching the App
-Activate the virtual environment before running terminal commands:
-```powershell
-.venv\Scripts\activate
-```
-The launcher automatically uses `.venv` when present. Simply double-click:
-```powershell
-run.bat
-```
-On a Mac, set up the virtual environment with `python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`, then double-click `run.command` (or run `./run.command`). On Linux, run `./run.sh`.
+The first time, the launcher creates a `.venv` folder and installs what `requirements.txt` lists; after that it starts straight away, and it installs again only when `requirements.txt` changes. If Python is missing it says where to get it. On Windows and Linux JunkZero then offers to add itself to the Start menu and desktop, or the applications menu, so you don't need the launcher again.
 
 Or run from terminal:
 ```powershell

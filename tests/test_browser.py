@@ -33,7 +33,11 @@ def _free_port() -> int:
 @pytest.fixture()
 def server(tmp_path):
     """JunkZero in --mode server; yields the tokened address it prints."""
-    env = {**os.environ, "JUNKZERO_DATA_DIR": str(tmp_path / "data"), "PYTHONUNBUFFERED": "1"}
+    env = {**os.environ, "JUNKZERO_DATA_DIR": str(tmp_path / "data"), "PYTHONUNBUFFERED": "1",
+           "XDG_DATA_HOME": str(tmp_path / "share")}
+    # The shortcut offer (tested on its own below) would cover other tests' buttons
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "settings.json").write_text('{"shortcuts": {"offer_dismissed": true}}')
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "app.main", "--mode", "server", "--port", str(port)],
@@ -363,8 +367,9 @@ def test_notification_setting_and_unseen_report_offer(server, page):
     assert seen == [{"generated_at": 1700000000}]
     page.click("#btnOpenSchedule")
     page.wait_for_function("document.getElementById('notifyNote').textContent.includes('Click the notification')")
-    page.fill("#notifyMinMb", "2000")
-    page.dispatch_event("#notifyMinMb", "change")
+    # Set without focusing the box: leaving it later would save again and race the uncheck below
+    page.evaluate("v => { const i = document.getElementById('notifyMinMb'); i.value = v;"
+                  " i.dispatchEvent(new Event('change')); }", "2000")
     page.wait_for_function("document.getElementById('notifyNote').textContent.includes('next time you open it')")
     assert saved[-1] == {"enabled": True, "min_mb": 2000}
     page.uncheck("#notifyEnabled")
@@ -394,3 +399,54 @@ def test_largest_files_map_drills_into_folders(server, page, tmp_path):
     page.click("#largestMapCrumbs .crumb-btn")
     page.wait_for_function("document.querySelectorAll('#largestMap .map-folder').length === 2")
     assert page.locator("#largestMapCrumbs .crumb-btn").count() == 0
+
+
+def test_shortcut_offer_and_about_buttons(server, page):
+    """A portable Windows copy is offered Start menu and desktop shortcuts once; About shows them."""
+    posted = []
+    dismissed = []
+    places = [{"id": "start_menu", "label": "Start menu", "available": True, "present": False},
+              {"id": "desktop", "label": "Desktop", "available": True, "present": False}]
+
+    def shortcuts(route):
+        if route.request.method == "POST":
+            posted.append(route.request.post_data_json)
+            for p in places:
+                p["present"] = p["id"] in posted[-1]["places"]
+        route.fulfill(json={"supported": True, "places": places, "offer": not posted})
+    page.route("**/api/shortcuts", shortcuts)
+    page.route("**/api/shortcuts/dismiss", lambda route: dismissed.append(1) or route.fulfill(json={}))
+    _open(page, server)
+    page.wait_for_selector(".toast-sticky:has-text(\"Start menu and the desktop next time\")")
+    page.click(".toast-sticky button:has-text(\"Add shortcuts\")")
+    page.wait_for_selector(".toast:has-text(\"Added JunkZero to the Start menu and the desktop\")")
+    assert posted == [{"places": ["start_menu", "desktop"]}]
+    assert not dismissed
+    page.click("#btnOpenAbout")
+    page.wait_for_function("document.getElementById('btnShortcutDesktop').textContent.includes('On the desktop')")
+    assert page.is_disabled("#btnShortcutStartMenu") and page.is_disabled("#btnShortcutDesktop")
+    assert not page.is_visible("#btnShortcutMenu")
+
+
+def test_linux_menu_offer_dismissed(server, page):
+    dismissed = []
+    page.route("**/api/shortcuts", lambda route: route.fulfill(json={"supported": True, "offer": True, "places": [
+        {"id": "menu", "label": "Applications menu", "available": True, "present": False}]}))
+    page.route("**/api/shortcuts/dismiss", lambda route: dismissed.append(1) or route.fulfill(json={}))
+    _open(page, server)
+    page.wait_for_selector(".toast-sticky:has-text(\"applications menu\")")
+    page.click(".toast-sticky:has-text(\"applications menu\") .toast-close")
+    page.wait_for_timeout(300)
+    assert dismissed == [1]
+    page.click("#btnOpenAbout")
+    page.wait_for_selector("#btnShortcutMenu:visible")
+    assert page.text_content("#btnShortcutMenu").strip() == "Add to applications menu"
+    assert not page.is_visible("#btnShortcutStartMenu")
+
+
+def test_no_shortcut_section_when_not_supported(server, page):
+    page.route("**/api/shortcuts", lambda route: route.fulfill(json={"supported": False, "places": [], "offer": False}))
+    _open(page, server)
+    page.click("#btnOpenAbout")
+    page.wait_for_timeout(300)
+    assert not page.is_visible("#shortcutsSection")

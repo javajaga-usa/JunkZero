@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Easy start
+- **Shortcuts for the portable downloads**: the Windows portable zip offers to add JunkZero to the Start menu and the desktop on first start, and the Linux tar.gz to the applications menu. **About** has the same buttons. When the portable folder is moved, the shortcuts follow it the next time JunkZero starts from the new place; shortcuts JunkZero didn't make are never changed.
+- **Mac disk image**: releases add `JunkZero-macOS.dmg`, which shows JunkZero next to a shortcut to Applications to drag it onto. The zip stays.
+- **`run.bat` sets itself up** like `run.command` and `run.sh`: the first double-click creates `.venv` and installs what JunkZero needs, says where to get Python if it's missing, and the console no longer waits for a key press after a normal exit.
+- The README starts with a table of how to start JunkZero on each system.
+
 ### New
 - **Space still held**: Cleanup History shows how much of what you deleted with JunkZero still sits in the Recycle Bin / Trash and the holding folders, and an **Empty** button erases only JunkZero's own items from cleanups at least N days old (7 by default). Nothing else in the Recycle Bin or Trash is touched, and only items JunkZero can point to exactly are counted (on a Mac, by file id).
 - **Notifications after scheduled scans**: a scheduled scan that finds at least 500 MB (adjustable, or off, in Schedule) or fails shows a notification. On Windows clicking it opens the report in JunkZero; everywhere, the next launch offers a report it hasn't shown yet.

@@ -932,6 +932,18 @@
         <div class="modal-body">
           <p>JunkZero checks for updates only when you click the button below. Nothing is sent anywhere otherwise.</p>
           <p id="updateResult" class="update-result" aria-live="polite"></p>
+          <div id="shortcutsSection" class="shortcuts-section hidden">
+            <h4>Start JunkZero</h4>
+            <p id="shortcutsNote" class="shortcuts-note"></p>
+            <div class="shortcuts-actions">
+              <button id="btnShortcutStartMenu" class="btn btn-secondary btn-sm" data-place="start_menu">
+                <i data-lucide="layout-grid"></i> <span>Add to Start menu</span></button>
+              <button id="btnShortcutDesktop" class="btn btn-secondary btn-sm" data-place="desktop">
+                <i data-lucide="monitor"></i> <span>Add desktop shortcut</span></button>
+              <button id="btnShortcutMenu" class="btn btn-secondary btn-sm" data-place="menu">
+                <i data-lucide="layout-grid"></i> <span>Add to applications menu</span></button>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button id="btnCopyDiagnostics" class="btn btn-ghost" title="Copy version, system and recent log lines, to paste into a bug report">

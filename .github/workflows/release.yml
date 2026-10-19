@@ -98,6 +98,41 @@ jobs:
           } finally {
             Stop-Process -Id $server.Id -Force
           }
+      - name: Smoke test the portable copy's Start menu and desktop shortcuts
+        shell: pwsh
+        env:
+          JUNKZERO_DATA_DIR: ${{ runner.temp }}\junkzero-data-shortcuts
+        run: |
+          $exe = (Resolve-Path "dist\JunkZero\JunkZero.exe").Path
+          $out = Join-Path $env:RUNNER_TEMP "shortcuts-out.txt"
+          $err = Join-Path $env:RUNNER_TEMP "shortcuts-err.txt"
+          $server = Start-Process $exe -ArgumentList "--mode", "server", "--port", "8767" -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $token = $null
+            for ($i = 0; $i -lt 30 -and -not $token; $i++) {
+              Start-Sleep -Seconds 1
+              $m = Select-String -Path $out -Pattern 'token=(\S+)' -ErrorAction SilentlyContinue
+              if ($m) { $token = $m.Matches[0].Groups[1].Value }
+            }
+            if (-not $token) { throw "Could not read the app token from the server output" }
+            $h = @{ "X-JunkZero-Token" = $token }
+            $status = Invoke-RestMethod "http://127.0.0.1:8767/api/shortcuts" -Headers $h
+            if (-not $status.offer) { throw "The portable copy was not offered shortcuts: $($status | ConvertTo-Json -Depth 4)" }
+            $body = @{ places = @("start_menu", "desktop") } | ConvertTo-Json
+            Invoke-RestMethod "http://127.0.0.1:8767/api/shortcuts" -Method Post -Headers $h -ContentType "application/json" -Body $body | Out-Null
+          } finally {
+            Stop-Process -Id $server.Id -Force
+          }
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($folder in @([Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("Desktop"))) {
+            $lnk = Join-Path $folder "JunkZero.lnk"
+            if (-not (Test-Path $lnk)) { throw "No shortcut at $lnk" }
+            $target = $shell.CreateShortcut($lnk).TargetPath
+            if ($target -ne $exe) { throw "$lnk starts $target, not $exe" }
+            Remove-Item $lnk
+          }
+          Write-Host "The portable copy made Start menu and desktop shortcuts to $exe"
       - name: Build the installer and the portable zip
         shell: pwsh
         run: |
@@ -189,10 +224,29 @@ jobs:
       - name: Zip the app
         # ditto keeps the bundle's symlinks and signatures intact
         run: ditto -c -k --keepParent dist/JunkZero.app JunkZero-macOS.zip
+      - name: Make the disk image
+        # Opening JunkZero-macOS.dmg shows JunkZero next to a shortcut to Applications to drag it onto
+        run: |
+          stage=$(mktemp -d)
+          ditto dist/JunkZero.app "$stage/JunkZero.app"
+          ln -s /Applications "$stage/Applications"
+          # hdiutil sometimes reports "Resource busy" on hosted runners; try again before giving up
+          for i in 1 2 3; do
+            hdiutil create -volname JunkZero -srcfolder "$stage" -fs HFS+ -format UDZO -ov JunkZero-macOS.dmg && break
+            sleep 5
+          done
+          test -f JunkZero-macOS.dmg
+          mnt=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" JunkZero-macOS.dmg
+          test -x "$mnt/JunkZero.app/Contents/MacOS/JunkZero" || { echo "The app is missing from the disk image"; exit 1; }
+          test "$(readlink "$mnt/Applications")" = /Applications || { echo "The Applications shortcut is missing"; exit 1; }
+          hdiutil detach "$mnt"
       - uses: actions/upload-artifact@v4
         with:
           name: JunkZero-macOS
-          path: JunkZero-macOS.zip
+          path: |
+            JunkZero-macOS.dmg
+            JunkZero-macOS.zip
           if-no-files-found: error
 
   build-linux:
@@ -234,6 +288,34 @@ jobs:
         env:
           JUNKZERO_DATA_DIR: ${{ runner.temp }}/junkzero-data-restore
         run: packaging/linux/smoke-test-restore.sh dist/JunkZero/JunkZero 8766 "$RUNNER_TEMP/restore-target"
+      - name: Smoke test the portable copy's applications-menu entry
+        env:
+          JUNKZERO_DATA_DIR: ${{ runner.temp }}/junkzero-data-shortcuts
+          XDG_DATA_HOME: ${{ runner.temp }}/xdg-data
+        run: |
+          bin=$(readlink -f dist/JunkZero/JunkZero)
+          out=$(mktemp)
+          "$bin" --mode server --port 8767 > "$out" 2>&1 &
+          server=$!
+          trap 'kill $server' EXIT
+          token=""
+          for i in $(seq 1 30); do
+            token=$(grep -o 'token=[^ ]*' "$out" | head -1 | cut -d= -f2 || true)
+            [ -n "$token" ] && curl -fsS "http://127.0.0.1:8767/api/system/info" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          status=$(curl -fsS http://127.0.0.1:8767/api/shortcuts -H "X-JunkZero-Token: $token"); echo "$status"
+          echo "$status" | grep -q '"offer":true'
+          curl -fsS -X POST http://127.0.0.1:8767/api/shortcuts -H "X-JunkZero-Token: $token" \
+            -H "Content-Type: application/json" -d '{"places": ["menu"]}' > /dev/null
+          entry="$XDG_DATA_HOME/applications/junkzero.desktop"
+          cat "$entry"
+          grep -qx "Exec=$bin" "$entry"
+          icon=$(sed -n 's/^Icon=//p' "$entry")
+          test -f "$icon" || { echo "The menu entry's icon is missing"; exit 1; }
+          sudo apt-get install -y -q desktop-file-utils > /dev/null
+          desktop-file-validate "$entry"
+          echo "The portable copy added a valid applications-menu entry"
       - name: Build the tar.gz and the .deb
         run: packaging/linux/build-linux.sh
       - name: Smoke test installing, scheduling and uninstalling the .deb
@@ -275,7 +357,7 @@ jobs:
       - name: Checksums
         working-directory: assets
         run: |
-          sha256sum JunkZero-Setup.exe JunkZero-Windows-portable.zip JunkZero-macOS.zip \
+          sha256sum JunkZero-Setup.exe JunkZero-Windows-portable.zip JunkZero-macOS.dmg JunkZero-macOS.zip \
             JunkZero-Linux-x86_64.tar.gz junkzero_*_amd64.deb > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Work out the version and release notes
@@ -309,6 +391,6 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           gh release create "$TAG" assets/JunkZero-Setup.exe assets/JunkZero-Windows-portable.zip \
-            assets/JunkZero-macOS.zip assets/JunkZero-Linux-x86_64.tar.gz assets/junkzero_*_amd64.deb \
-            assets/SHA256SUMS.txt \
+            assets/JunkZero-macOS.dmg assets/JunkZero-macOS.zip assets/JunkZero-Linux-x86_64.tar.gz \
+            assets/junkzero_*_amd64.deb assets/SHA256SUMS.txt \
             --title "JunkZero $TAG" --notes-file notes.md --target "$GITHUB_SHA"
