@@ -1,13 +1,12 @@
 """Hierarchy and Folder Inspector for interactive file-tree exploration and multi-level deletion."""
 from __future__ import annotations
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from pydantic import BaseModel
 
 from app.config import ScanOptions
-from app.engine.classifier import classify_item, format_size, is_system_protected_path
+from app.engine.classifier import classify_item, format_date, format_size, is_system_protected_path
 from app.engine.cleaner import in_vcs_folder
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 
@@ -147,7 +146,7 @@ def inspect_path_hierarchy(input_path: str) -> FolderHierarchyView:
                     is_dir = entry.is_dir(follow_symlinks=False)
                     stat = entry.stat(follow_symlinks=False)
                     mtime = stat.st_mtime
-                    mod_dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown"
+                    mod_dt = format_date(mtime)
 
                     if is_dir:
                         total_subdirs += 1

@@ -294,7 +294,7 @@ def _offline_by_type(path_str: str) -> AIAnalysisResult:
             explanation = "This program removes an installed app. Windows needs it to uninstall that app cleanly."
             recommendation = "Keep it. Uninstall the app from Settings instead if you no longer want it."
         elif exe.is_installer:
-            verdict, kind = "Safe to Delete", "Setup Program"
+            verdict, kind = "Review Carefully", "Setup Program"  # The scanner rates installers Review too
             explanation = f"JunkZero checked inside: {exe.evidence}. It installs software and is not needed to run it."
             recommendation = "If the program is already installed, this setup file can go. Keep it only if you may reinstall offline."
         else:
@@ -320,7 +320,7 @@ def _offline_by_type(path_str: str) -> AIAnalysisResult:
                 file_path=path_str,
                 detected_type="Setup / Software Archive",
                 origin_application="Downloaded software package",
-                safety_verdict="Safe to Delete" if verdict.clean else "Review Carefully",
+                safety_verdict="Review Carefully",  # Like the scanner: setup archives are Review
                 explanation=f"JunkZero looked inside without unpacking it: {verdict.summary}.",
                 recommendation="If the program is already installed or extracted, this download can go.",
                 ai_powered=False

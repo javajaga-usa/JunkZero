@@ -6,7 +6,6 @@ import os
 import shutil
 import time
 import threading
-from datetime import datetime
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -15,6 +14,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from app.config import (
     BACKUP_DIR_NAMES,
+    BACKUP_IMAGE_EXTENSIONS,
+    VM_DISK_EXTENSIONS,
     BACKUP_DIR_SUFFIXES,
     BUILD_DIR_NAMES,
     HOLDING_DIR_NAME,
@@ -36,6 +37,7 @@ from app.config import (
     VCS_DIR_NAMES,
 )
 from app.engine.classifier import (
+    format_date,
     GarbageItem,
     _in_app_folder,
     build_item,
@@ -55,6 +57,9 @@ from app.engine.leftovers import find_program_leftovers
 from app.engine.locations import is_protected_user_folder, protected_user_folders
 from app.engine.safeguards import Safeguards, last_changed
 from app.engine.smart import SmartScorer
+
+
+_NEVER_LISTED_EXTENSIONS = BACKUP_IMAGE_EXTENSIONS | VM_DISK_EXTENSIONS
 
 
 def _norm_path(path: str) -> str:
@@ -409,6 +414,13 @@ class FastScanner:
                             complete = False
                             continue
 
+                        # Backup images and VM disks are never listed, as anything: not as old
+                        # downloads, not as duplicates (a second copy is a backup), and the folder
+                        # holding one isn't compared as a duplicate folder
+                        if os.path.splitext(name)[1].lower() in _NEVER_LISTED_EXTENSIONS:
+                            complete = False
+                            continue
+
                         size = stat.st_size
                         files_here.append((name, size))
                         changed = last_changed(stat)
@@ -593,7 +605,7 @@ class FastScanner:
                 size_bytes=0,
                 size_formatted=format_size(0),
                 modified_timestamp=mtime,
-                modified_date=datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown",
+                modified_date=format_date(mtime),
                 risk_level=RISK_SAFE,
                 reason=reason,
                 is_directory=True,

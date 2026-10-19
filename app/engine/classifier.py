@@ -107,6 +107,17 @@ def format_size(bytes_val: int) -> str:
     return f"{bytes_val:.2f} TB"
 
 
+def format_date(mtime: float) -> str:
+    """The date shown for an item; "Unknown" when there is none or it can't be a date (a file
+    dated thousands of years ahead would otherwise stop the scan of its whole folder)."""
+    if not mtime or mtime <= 0:
+        return "Unknown"
+    try:
+        return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+    except (ValueError, OverflowError, OSError):
+        return "Unknown"
+
+
 def build_item(
     path: str,
     name: str,
@@ -127,7 +138,7 @@ def build_item(
         size_bytes=size_bytes,
         size_formatted=format_size(size_bytes),
         modified_timestamp=mtime,
-        modified_date=datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown",
+        modified_date=format_date(mtime),
         risk_level=risk_level,
         reason=reason,
         is_directory=is_dir,
@@ -249,13 +260,43 @@ def has_project_marker(folder: str) -> bool:
     return any(n in PROJECT_MARKER_NAMES or n.endswith(PROJECT_MARKER_SUFFIXES) for n in folder_names(folder))
 
 
-def _project_above(folder: str, levels: int) -> bool:
+# Personal folders right in the home folder: a project file lying there (package.json from an
+# npm install run in the wrong place) doesn't make everything below it a project
+_PERSONAL_TOP_FOLDERS = {"documents", "desktop", "downloads", "pictures", "music", "videos", "movies",
+                         "onedrive", "dropbox", "google drive", "icloud drive"}
+# Debug, Release, x64 and x86 are build output of C, C++ and .NET projects only
+_NATIVE_MARKER_NAMES = {"cmakelists.txt", "meson.build"}
+_NATIVE_MARKER_SUFFIXES = (".sln", ".csproj", ".vbproj", ".fsproj", ".vcxproj", ".vcproj")
+
+
+def _home_key() -> str:
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+    return ntpath.normcase(ntpath.normpath(home)) if home else ""
+
+
+def _can_mark_project(folder: str) -> bool:
+    """False for the home folder, a drive root and the personal folders in home."""
+    norm = ntpath.normcase(ntpath.normpath(folder))
+    parent = ntpath.dirname(norm)
+    if not parent or parent == norm or norm in ("/", "\\"):
+        return False
+    home = _home_key()
+    if home and (norm == home or (parent == home and ntpath.basename(norm) in _PERSONAL_TOP_FOLDERS)):
+        return False
+    return True
+
+
+def _has_native_marker(folder: str) -> bool:
+    return any(n in _NATIVE_MARKER_NAMES or n.endswith(_NATIVE_MARKER_SUFFIXES) for n in folder_names(folder))
+
+
+def _project_above(folder: str, levels: int, native_only: bool = False) -> bool:
     """True if one of the `levels` folders above `folder` holds a project file."""
     for _ in range(levels):
         parent = ntpath.dirname(folder)
         if not parent or parent == folder:
             return False
-        if has_project_marker(parent):
+        if _can_mark_project(parent) and (_has_native_marker(parent) if native_only else has_project_marker(parent)):
             return True
         folder = parent
     return False
@@ -277,7 +318,8 @@ def _in_build_output_folder(path: str) -> bool:
     while folder and ntpath.dirname(folder) != folder:
         name = ntpath.basename(folder).lower()
         if name in BUILD_OUTPUT_FOLDER_NAMES:
-            if name not in PROJECT_BOUND_FOLDER_NAMES or _project_above(folder, 3):
+            if name not in PROJECT_BOUND_FOLDER_NAMES or \
+                    _project_above(folder, 3, native_only=name in {"debug", "release", "x64", "x86"}):
                 return True
         folder = ntpath.dirname(folder)
     return False
@@ -334,6 +376,9 @@ def _in_app_folder(path: str) -> bool:
     """Big files that belong to an installed program, game, Python environment or AI model store."""
     parents = _parent_parts(path)
     if any(p in APP_DATA_DIR_NAMES for p in parents):
+        return True
+    # A Mac's ~/Library/Application Support is what AppData is on Windows: programs' own data
+    if any(p == "library" and parents[i + 1:i + 2] == ["application support"] for i, p in enumerate(parents)):
         return True
     return inside_installed_program(path)
 
@@ -404,7 +449,7 @@ def classify_item(
         if options.include_java_builds and is_build_dir(path, name):
             reason = f"Automated build or dependency directory ({name})"
             risk = RISK_SAFE if lower_name in {"__pycache__", ".pytest_cache", ".next", ".turbo"} else RISK_REVIEW
-            mod_dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown"
+            mod_dt = format_date(mtime)
             return GarbageItem(
                 id=f"dir-{hash(path)}",
                 name=name,
@@ -562,7 +607,7 @@ def classify_item(
         reason = f"Large file ({format_size(size_bytes)}) unedited for {int(age_days)} days"
 
     if category:
-        mod_dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown"
+        mod_dt = format_date(mtime)
         return GarbageItem(
             id=f"file-{abs(hash(path))}",
             name=name,

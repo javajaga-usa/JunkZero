@@ -4,10 +4,9 @@ import heapq
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from app.engine.classifier import format_size, is_system_protected_path
+from app.engine.classifier import format_date, format_size, is_system_protected_path
 from app.engine.exclusions import ExclusionMatcher
 
 # (size, path, mtime) for one file
@@ -71,7 +70,7 @@ def _file_dict(size: int, path: str, mtime: float) -> Dict[str, Any]:
         "size_bytes": size,
         "size_formatted": format_size(size),
         "modified_timestamp": mtime,
-        "modified_date": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else "Unknown",
+        "modified_date": format_date(mtime),
     }
 
 

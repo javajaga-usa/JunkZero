@@ -38,7 +38,7 @@ from app.engine import (
 from app.engine.ai_advisor import analyze_item
 from app.engine.classifier import GarbageItem
 from app.engine.cleaner import CleanResult, delete_items
-from app.engine.exclusions import rule_too_broad
+from app.engine.exclusions import expand_rule, is_relative_path_rule, rule_too_broad
 from app.engine.inspector import inspect_path_hierarchy, FolderHierarchyView
 from app.engine.locations import downloads_folder, junk_locations
 from app.engine.scanner import FastScanner, ScanStats, get_available_drives
@@ -1034,13 +1034,22 @@ def api_get_exclusions():
     return {"rules": storage.get_exclusions()}
 
 
+def _check_exclusions(rules: List[str]) -> None:
+    relative = [r for r in rules if is_relative_path_rule(expand_rule(r))]
+    if relative:
+        raise HTTPException(status_code=400, detail=f"'{relative[0].strip()}' isn't a full path, so it would "
+                            "never match. Use the whole path (Browse picks it) or a pattern such as *.psd")
+
+
 @app.put("/api/exclusions")
 def api_set_exclusions(req: ExclusionsRequest):
+    _check_exclusions(req.rules)
     return {"rules": storage.set_exclusions(req.rules)}
 
 
 @app.post("/api/exclusions/add")
 def api_add_exclusion(req: AddExclusionRequest):
+    _check_exclusions([req.rule])
     return {"rules": storage.set_exclusions(storage.get_exclusions() + [req.rule])}
 
 

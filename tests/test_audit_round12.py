@@ -221,3 +221,113 @@ def test_ai_inspect_is_no_surer_than_the_scanner(tmp_path):
         assert analyze_item(str(temp / name)).safety_verdict == "Review Carefully", name
     (tmp_path / "Photos.zip").mkdir()
     assert analyze_item(str(tmp_path / "Photos.zip")).safety_verdict == "Review Carefully"
+
+
+# ---------------------------------------------------------------- Detection
+
+OLD = 1_600_000_000
+
+
+def _classify(path, size=10, is_dir=False):
+    from app.config import ScanOptions
+    from app.engine.classifier import classify_item
+    return classify_item(str(path), os.path.basename(str(path)), size, OLD, is_dir, ScanOptions(target_path="."))
+
+
+def test_stray_project_file_in_home_doesnt_make_personal_files_build_output(tmp_path, monkeypatch):
+    from app.engine.classifier import _in_build_output_folder
+    home = tmp_path / "bob"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    model = home / "Documents" / "Models" / "Release" / "character.obj"
+    model.parent.mkdir(parents=True)
+    model.write_text("v 0 0 0")
+    (home / "package.json").write_text("{}")
+    assert not _in_build_output_folder(str(model))
+    # A web project's Release folder isn't .NET or C++ build output either
+    web = home / "code" / "site"
+    (web / "Release").mkdir(parents=True)
+    (web / "package.json").write_text("{}")
+    assert not _in_build_output_folder(str(web / "Release" / "a.obj"))
+    native = home / "code" / "game"
+    (native / "x64" / "Release").mkdir(parents=True)
+    (native / "game.sln").write_text("")
+    assert _in_build_output_folder(str(native / "x64" / "Release" / "a.obj"))
+
+
+def test_vm_disks_and_backup_images_are_never_listed_as_anything(home):
+    from tests.test_round10 import _age_tree, _scan, _write
+    data = b"v" * 2_000_000
+    _write(home / "Downloads" / "laptop-2024.mrimg", data)
+    _write(home / "VMs" / "win11.vhdx", data)
+    _write(home / "USB-copy" / "win11.vhdx", data)
+    _age_tree(home)
+    _, items = _scan(home, include_duplicates=True, include_old_downloads=True)
+    assert not any(k.endswith((".mrimg", ".vhdx")) or k in ("VMs", "USB-copy") for k in items), list(items)
+
+
+def test_timeshift_and_back_in_time_snapshots_are_never_scanned():
+    from app.engine.scanner import _in_vcs_or_backup
+    assert _in_vcs_or_backup("/media/bob/Data/timeshift/snapshots/2026-10-01/localhost/home/bob/x.log")
+    assert _in_vcs_or_backup("/media/bob/Data/backintime/pc/bob/1/20261001/backup/home/bob/x.log")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="hard links")
+def test_hard_linked_folder_copies_are_not_duplicate_folders(home):
+    from app.config import CAT_DUPLICATE_FOLDERS
+    from tests.test_round10 import _age_tree, _scan, _write
+    a = home / "snapshots" / "daily.0"
+    for name in ("one.bin", "two.bin"):
+        _write(a / name, os.urandom(1_200_000))
+    b = home / "snapshots" / "daily.1"
+    b.mkdir()
+    for name in ("one.bin", "two.bin"):
+        os.link(a / name, b / name)
+    _age_tree(home / "snapshots")
+    _, items = _scan(home, include_duplicates=True)
+    assert not any(i.category == CAT_DUPLICATE_FOLDERS for i in items.values())
+
+
+def test_mac_application_support_is_program_data():
+    from app.engine.classifier import _in_app_folder
+    assert _in_app_folder("/Users/bob/Library/Application Support/Ableton/Library/Grand Piano.ncw")
+
+
+def test_exclusions_with_home_shortcuts_match(monkeypatch, tmp_path):
+    from tests.helpers import api_client
+    from app.engine.exclusions import ExclusionMatcher
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    rules = storage.set_exclusions(["~/Documents/Taxes"])
+    assert ExclusionMatcher(rules).matches(os.path.join(str(tmp_path), "Documents", "Taxes", "2019.log"))
+    res = api_client().post("/api/exclusions/add", json={"rule": "Documents/Taxes"})
+    assert res.status_code == 400 and "full path" in res.json()["detail"]
+
+
+def test_zipped_disk_image_is_not_a_setup_archive():
+    from app.engine.archives import judge_listing
+    assert not judge_listing(["sdcard-backup-2023.img"]).is_setup
+    assert not judge_listing(["disc.iso", "readme.txt"]).is_setup
+    assert judge_listing(["Tool-setup.msi", "readme.txt"]).is_setup
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs a folder the user can't read")
+def test_unreadable_subfolder_means_unknown(tmp_path):
+    from app.engine import leftovers, projects
+    app = tmp_path / "OldNotesApp"
+    (app / "notes").mkdir(parents=True)
+    (app / "notes" / "diary.docx").write_text("x")
+    os.chmod(app / "notes", 0)
+    try:
+        assert leftovers.holds_personal_files(str(app))
+        assert leftovers.newest_change(str(app)) == 0.0
+        assert projects.last_activity(str(app)) == 0.0
+    finally:
+        os.chmod(app / "notes", 0o755)
+
+
+def test_far_future_date_doesnt_stop_the_scan():
+    from app.engine.classifier import format_date
+    assert format_date(1e15) == "Unknown"
+    assert format_date(0) == "Unknown"

@@ -67,7 +67,10 @@ def last_activity(project: str, limit: int = ACTIVITY_WALK_LIMIT) -> float:
         except OSError:
             pass
     seen = 0
-    for root, dirs, files in os.walk(project):
+    unreadable = []
+    for root, dirs, files in os.walk(project, onerror=unreadable.append):
+        if unreadable:
+            return 0.0  # A folder inside couldn't be read: when it last changed is unknown
         dirs[:] = [d for d in dirs if d.lower() not in _NOT_WORK and not os.path.islink(os.path.join(root, d))]
         for name in dirs + files:
             seen += 1
@@ -77,7 +80,7 @@ def last_activity(project: str, limit: int = ACTIVITY_WALK_LIMIT) -> float:
                 newest = max(newest, os.stat(os.path.join(root, name), follow_symlinks=False).st_mtime)
             except OSError:
                 continue
-    return newest
+    return 0.0 if unreadable else newest
 
 
 def old_project_folder(path: str, name: str, now: Optional[float] = None, days: int = OLD_PROJECT_DAYS,
