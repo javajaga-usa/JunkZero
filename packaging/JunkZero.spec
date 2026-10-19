@@ -1,6 +1,7 @@
 # PyInstaller spec for JunkZero on Windows (a folder build: dist/JunkZero/JunkZero.exe plus its
-# files, which the Inno Setup installer and the portable zip are made from) and JunkZero.app
-# (macOS). Build from the repository root:  pyinstaller --noconfirm packaging/JunkZero.spec
+# files, which the Inno Setup installer and the portable zip are made from), JunkZero.app
+# (macOS) and Linux (dist/JunkZero/JunkZero, which packaging/linux/build-linux.sh turns into a
+# tar.gz and a .deb). Build from the repository root:  pyinstaller --noconfirm packaging/JunkZero.spec
 import os
 import re
 import sys
@@ -18,7 +19,9 @@ a = Analysis(
     datas=[(os.path.join(root, "app", "ui"), os.path.join("app", "ui"))],
     # uvicorn picks its loop, protocol and lifespan modules at run time
     hiddenimports=collect_submodules("uvicorn"),
-    excludes=["tkinter", "pytest"],
+    # Linux: pywebview's window needs the system's GTK and WebKit Python bindings, which a
+    # packaged app can't use, so the Linux build opens JunkZero in the web browser
+    excludes=["tkinter", "pytest"] + (["webview"] if sys.platform.startswith("linux") else []),
 )
 pyz = PYZ(a.pure)
 
@@ -79,7 +82,7 @@ else:
         [],
         exclude_binaries=True,
         name="JunkZero",
-        icon=os.path.join(SPECPATH, "JunkZero.ico"),
+        icon=os.path.join(SPECPATH, "JunkZero.ico") if sys.platform == "win32" else None,
         version=version_info,
         console=False,  # windowed app: no console window behind the GUI
         upx=False,

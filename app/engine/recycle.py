@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from app.config import HOLDING_DAYS, HOLDING_DIR_NAME
-from app.engine import osinfo, storage
+from app.engine import linux, osinfo, storage
 
 # ---------------------------------------------------------------- Drives without a Recycle Bin
 
@@ -121,6 +121,9 @@ def has_recycle_bin(path: str) -> bool:
         if fs in _MAC_NETWORK_FS:
             return False
         return root == "/" or fs in _MAC_TRASH_FS
+    if osinfo.is_linux():
+        root = mount_point(path)
+        return linux.has_trash(path, root, linux.mounts().get(root, ""))
     return True
 
 
@@ -192,7 +195,7 @@ _FS_LABELS = {
     "fat32": "FAT32", "vfat": "FAT", "ntfs": "NTFS", "ufsd_ntfs": "NTFS", "tuxera_ntfs": "NTFS",
     "refs": "ReFS", "smbfs": "SMB network share", "afpfs": "AFP network share", "nfs": "NFS network share",
     "webdav": "WebDAV share", "cifs": "network share", "cd9660": "CD/DVD", "udf": "CD/DVD", "cdfs": "CD/DVD",
-    "ext4": "ext4", "btrfs": "Btrfs", "xfs": "XFS",
+    "ext4": "ext4", "btrfs": "Btrfs", "xfs": "XFS", "fuseblk": "NTFS or exFAT",
 }
 _FILE_READ_ONLY_VOLUME = 0x00080000
 
@@ -248,6 +251,8 @@ def disk_info(path: str) -> Dict[str, Any]:
     else:
         if osinfo.is_macos():
             fs = _mac_mounts().get(root) or ""
+        elif osinfo.is_linux():
+            fs = linux.mounts().get(root) or ""
         name = ("Macintosh HD" if osinfo.is_macos() else "/") if root == "/" else os.path.basename(root.rstrip("/")) or root
     label = fs_label(fs)
     trash = "Trash" if not osinfo.is_windows() else "Recycle Bin"
@@ -276,6 +281,8 @@ def disk_info(path: str) -> Dict[str, Any]:
             info["reason"] = f"RAM disks have no {trash}"
         else:
             info["reason"] = f"USB drives and memory cards have no {trash}"
+    elif osinfo.is_linux():
+        info["reason"] = linux.holding_reason(root, fs, label)
     elif fs.lower() in _MAC_NETWORK_FS:
         info["reason"] = f"network drives have no {trash}"
     elif fs:

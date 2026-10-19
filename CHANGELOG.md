@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Linux (MX Linux, Debian, Ubuntu)
+- JunkZero runs on Linux. Quick Clean lists only known caches apps rebuild themselves (thumbnails, browser caches, pip, Yarn, Go, npm, Mesa and NVIDIA shader caches); system folders and the hidden settings folders in your home folder are never scanned or deleted.
+- Deleted items go to the freedesktop.org Trash, so Restore in Cleanup History works; USB drives, Windows partitions and network shares use the 7-day holding folder.
+- Browse uses zenity, kdialog or yad; scheduled scans use a systemd user timer, or cron where the system starts without systemd (MX Linux's default). The APT cache and system journal are shown read-only with the command that clears them.
+- Releases add `junkzero_<version>_amd64.deb` (menu entry and `junkzero` command; uninstalling also removes the scheduled scan) and a portable `JunkZero-Linux-x86_64.tar.gz`. From source, run `./run.sh`.
+
 ### Safer detection
 - Browser and app databases are no longer listed: `.log` files inside Chrome/Edge extension storage, IndexedDB, Local Storage and Electron apps (VS Code, Postman, MetaMask) hold the newest data, not logs. Folders named `local`, `appdata` or starting with a dot no longer count as temp folders on their own.
 - Empty folders are never marked Delete, so Smart Select no longer ticks an empty folder tree such as `Photos/2025 trip`.

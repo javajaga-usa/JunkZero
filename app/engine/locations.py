@@ -1,11 +1,11 @@
-"""Well-known junk locations (temp folders, caches, crash dumps) on Windows and macOS."""
+"""Well-known junk locations (temp folders, caches, crash dumps) on Windows, macOS and Linux (app.engine.linux)."""
 from __future__ import annotations
 import glob
 import os
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Mapping, Optional
 
-from app.engine import osinfo
+from app.engine import linux, osinfo
 from app.engine.classifier import is_system_protected_path
 
 
@@ -173,6 +173,8 @@ def system_cleanup_hints(env: Optional[Mapping[str, str]] = None,
     Read-only: JunkZero never deletes these (they need an administrator); the UI points to
     Windows' own Disk Cleanup / Storage Sense instead."""
     env = os.environ if env is None else env
+    if osinfo.is_linux() and env is os.environ:
+        return linux.system_cleanup_hints(size_limit=size_limit)
     windir = env.get("SystemRoot") or env.get("windir") or env.get("WINDIR")
     drive = env.get("SystemDrive")
     if not windir and not drive:
@@ -198,7 +200,16 @@ def system_cleanup_hints(env: Optional[Mapping[str, str]] = None,
 
 def junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLocation]:
     """The junk locations for the system JunkZero is running on."""
-    return mac_junk_locations(env) if osinfo.is_macos() else windows_junk_locations(env)
+    if osinfo.is_macos():
+        return mac_junk_locations(env)
+    if osinfo.is_linux():
+        return linux_junk_locations(env)
+    return windows_junk_locations(env)
+
+
+def linux_junk_locations(env: Optional[Mapping[str, str]] = None) -> List[JunkLocation]:
+    """Junk locations for the current Linux user: known app caches in ~/.cache and npm's cache."""
+    return linux.junk_locations(env, JunkLocation, is_system_protected_path)
 
 
 # Friendlier names for well-known folders in ~/Library/Caches (lowercase folder name -> label)
@@ -300,6 +311,9 @@ def downloads_folder(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """The current user's Downloads folder, or None if it can't be found."""
     env = os.environ if env is None else env
     candidates = [_registry_downloads()] if env is os.environ else []
+    if osinfo.is_linux():
+        # Named in ~/.config/user-dirs.dirs, and in the system's language ("Téléchargements")
+        candidates.append(linux.xdg_user_dirs(env).get("DOWNLOAD"))
     home = env.get("USERPROFILE") or env.get("HOME")
     if home:
         candidates.append(os.path.join(home, "Downloads"))
@@ -352,6 +366,9 @@ def protected_user_folders(env: Optional[Mapping[str, str]] = None) -> set:
         if osinfo.is_macos():
             for name in _MAC_PERSONAL_FOLDER_NAMES:
                 folders.add(_norm(os.path.join(home, *name.split("/"))))
+        if osinfo.is_linux():
+            for folder in linux.protected_folders(env):
+                folders.add(_norm(folder))
     for key in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
         onedrive = env.get(key)
         if onedrive:

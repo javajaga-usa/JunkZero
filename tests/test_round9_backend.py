@@ -300,6 +300,7 @@ def test_task_runs_on_battery_and_makes_up_missed_runs():
 
 def _windows(monkeypatch):
     monkeypatch.setattr(osinfo, "is_macos", lambda: False)
+    monkeypatch.setattr(osinfo, "is_linux", lambda: False)
     monkeypatch.setattr(scheduler, "_task_scheduler", lambda: True)
 
 
@@ -474,6 +475,7 @@ def test_windows_uses_the_window_folder_dialog_first(monkeypatch, tmp_path):
 
 def test_powershell_picker_has_no_time_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(osinfo, "is_macos", lambda: False)
+    monkeypatch.setattr(osinfo, "is_linux", lambda: False)
     monkeypatch.setattr(main, "gui_window", None)
     seen = {}
 

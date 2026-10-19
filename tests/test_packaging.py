@@ -26,3 +26,19 @@ def test_windows_build_is_a_folder_with_icon_and_version_details():
 def test_icons_are_committed():
     for name in ("JunkZero.ico", "JunkZero.icns", "JunkZero.png"):
         assert (PACKAGING / name).stat().st_size > 1000
+
+
+def test_deb_uninstall_removes_the_linux_schedule_by_its_real_names():
+    from app.engine import linux_scheduler
+    postrm = (PACKAGING / "linux" / "postrm").read_text(encoding="utf-8")
+    assert linux_scheduler.CRON_MARKER + "$" in postrm
+    assert f"{linux_scheduler.UNIT_NAME}.service" in postrm and f"{linux_scheduler.UNIT_NAME}.timer" in postrm
+    desktop = (PACKAGING / "linux" / "junkzero.desktop").read_text(encoding="utf-8")
+    assert "Exec=junkzero\n" in desktop and "Icon=junkzero\n" in desktop
+
+
+def test_linux_build_opens_in_the_browser_and_ships_a_deb():
+    spec = (PACKAGING / "JunkZero.spec").read_text(encoding="utf-8")
+    assert '["webview"] if sys.platform.startswith("linux")' in spec
+    build = (PACKAGING / "linux" / "build-linux.sh").read_text(encoding="utf-8")
+    assert "JunkZero-Linux-x86_64.tar.gz" in build and "_amd64.deb" in build

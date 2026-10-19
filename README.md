@@ -1,7 +1,7 @@
 # JunkZero 🚀
 > **Intelligent, High-Performance Disk Garbage Detector & Cleaner with Modern GUI**
 
-JunkZero is a lightning-fast storage cleanup and disk optimization utility for Windows and macOS. It identifies, categorizes, and safely removes gigabytes of leftover clutter—such as APKs, software setup packages (`.exe`, `.msi`), compiled Java binaries (`.class`, `.jar`), development build caches (`node_modules`, `target/`, `__pycache__`), temporary crash logs, and broken browser downloads.
+JunkZero is a lightning-fast storage cleanup and disk optimization utility for Windows, macOS and Linux (MX Linux, Debian, Ubuntu, Mint). It identifies, categorizes, and safely removes gigabytes of leftover clutter—such as APKs, software setup packages (`.exe`, `.msi`), compiled Java binaries (`.class`, `.jar`), development build caches (`node_modules`, `target/`, `__pycache__`), temporary crash logs, and broken browser downloads.
 
 ---
 
@@ -73,6 +73,20 @@ JunkZero runs on macOS 11 or later with the same screens, and swaps in the Mac's
 - **Full Disk Access**: without it, macOS keeps apps out of Desktop, Documents, Downloads, external disks and more. If a scan or delete runs into that, JunkZero says so and its **Open Privacy & Security** button opens the Full Disk Access list; add JunkZero (the app) or Terminal (if you start it with `run.command`), then restart JunkZero.
 - **From source**, start JunkZero with `run.command`: it creates `.venv` on the first run and installs `requirements.txt` whenever it changes. The Trash needs `pyobjc-framework-Cocoa` (in `requirements.txt`); without it macOS refuses Trash moves with "Insufficient access privileges for operation", and JunkZero shows how to fix it when it starts.
 
+## 🐧 On Linux (MX Linux and others)
+
+JunkZero runs on MX Linux 23, Debian 12, Ubuntu 22.04 and later, Linux Mint and other desktops that follow the freedesktop.org standards (Xfce, KDE Plasma, GNOME, Fluxbox):
+
+- **Quick Clean** looks only at known caches that apps rebuild on their own: the thumbnail cache and the Chrome, Chromium, Brave, Vivaldi, Edge, Opera, Firefox and Thunderbird caches in `~/.cache`, the pip, Yarn, Go and npm download caches, and Mesa and NVIDIA shader caches. Other folders in `~/.cache` are not listed, because some apps keep things there they can't rebuild (Xfce's saved sessions, offline music).
+- **Protected**: `/usr`, `/etc`, `/var`, `/boot`, `/opt` and the other system folders are never scanned or deleted from (only the shared temp folders `/tmp` and `/var/tmp` are). Hidden folders in your home folder hold settings, keys, mail and browser profiles, so none of them is scanned or deleted except `~/.cache` and npm's cache. The Trash on every disk, MX Snapshot's `/home/snapshot` and Timeshift snapshots are skipped. Your home folder, `~/.cache`, `~/.config`, `~/.local` and your user folders (Desktop, Documents, Downloads, Pictures and the rest, read from `~/.config/user-dirs.dirs`, so localized names such as `Téléchargements` count too) can't be deleted as a whole.
+- **Drives** are your home folder, the whole file system (`/`) and disks mounted in `/media`, `/run/media` and `/mnt`.
+- Deleted items go to the **Trash** (the freedesktop.org Trash your file manager shows, so Restore in Cleanup History works) on the home folder's disk and Linux-formatted disks. On USB drives, memory cards, Windows-formatted partitions and network shares they go to a hidden `.JunkZero-holding` folder on that disk for 7 days.
+- **System cleanup that needs admin** shows the APT package cache and the system journal with the command that clears each (`sudo apt clean`, `sudo journalctl --vacuum-time=2weeks`). JunkZero never uses administrator rights itself. **Program leftovers** isn't offered on Linux: the package manager removes a program's files itself.
+- **Browse** uses zenity, kdialog or yad, whichever is installed (`sudo apt install zenity` if none is); the folder buttons open your file manager. **Scheduled scans** use a systemd user timer when the desktop runs systemd, and your crontab otherwise (MX Linux starts with SysVinit by default, so it uses cron).
+- Settings and history are kept in `~/.junkzero`.
+- **Install**: download `junkzero_<version>_amd64.deb` from the release and open it (or run `sudo apt install ./junkzero_<version>_amd64.deb`). JunkZero then appears in the menu under System, and `junkzero` starts it from a terminal. Removing the package also removes its scheduled scan. Or unpack `JunkZero-Linux-x86_64.tar.gz` anywhere and run `JunkZero/JunkZero`. The downloads are for 64-bit PCs (x86_64) and open JunkZero in your web browser.
+- **From source**, run `./run.sh`: it creates `.venv` on the first run and installs `requirements.txt` whenever it changes. With `python3-gi` and `gir1.2-webkit2-4.1` installed (`sudo apt install python3-gi gir1.2-webkit2-4.1`) JunkZero opens in its own window, otherwise in the web browser.
+
 ---
 
 ## 🚀 Quick Start
@@ -89,7 +103,7 @@ On a Mac, download `JunkZero-macOS.zip` from the same release, unzip it and move
 ### Run from source
 
 ### 1. Requirements
-- Windows 10 / 11, or macOS 11 or later
+- Windows 10 / 11, macOS 11 or later, or Linux (MX Linux 23, Debian 12, Ubuntu 22.04 or later)
 - Python 3.10+ (tested on 3.10, 3.12 and 3.13)
 
 ### 2. Install Dependencies
@@ -107,7 +121,7 @@ The launcher automatically uses `.venv` when present. Simply double-click:
 ```powershell
 run.bat
 ```
-On a Mac, set up the virtual environment with `python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`, then double-click `run.command` (or run `./run.command`).
+On a Mac, set up the virtual environment with `python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt`, then double-click `run.command` (or run `./run.command`). On Linux, run `./run.sh`.
 
 Or run from terminal:
 ```powershell
@@ -142,6 +156,6 @@ python -m pip install -r requirements.txt -c packaging/release-constraints.txt p
 pyinstaller --noconfirm packaging/JunkZero.spec   # writes dist\JunkZero\JunkZero.exe and its files
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion=1.2.0 packaging\JunkZero.iss   # optional: dist\JunkZero-Setup.exe
 ```
-On a Mac the same PyInstaller command writes `dist/JunkZero.app`. The icons in `packaging/` are drawn by `packaging/make_icon.py` (needs Pillow). The Release workflow builds and smoke-tests the Windows build, its installer and uninstaller, and the Mac app on every pull request, and attaches `JunkZero-Setup.exe`, `JunkZero-Windows-portable.zip`, `JunkZero-macOS.zip` and `SHA256SUMS.txt` to the release. Each CI run also offers the Windows folder build as the `JunkZero-exe` artifact for testing. Release builds use the exact versions in `packaging/release-constraints.txt`. To publish a release, set `__version__` in `app/__init__.py` to a version not released yet, add a matching section to `CHANGELOG.md`, merge to main, and run the Release workflow on main by hand (or push a `v<version>` tag on a commit that is on main); the files are attached to the GitHub release. Runs from other branches build but never publish.
+On a Mac the same PyInstaller command writes `dist/JunkZero.app`. The icons in `packaging/` are drawn by `packaging/make_icon.py` (needs Pillow). The Release workflow builds and smoke-tests the Windows build, its installer and uninstaller, and the Mac app on every pull request, the Linux build, its `.deb` (installed, used to schedule a scan, and removed again) and a delete to the Trash and restore, and attaches `JunkZero-Setup.exe`, `JunkZero-Windows-portable.zip`, `JunkZero-macOS.zip`, `JunkZero-Linux-x86_64.tar.gz`, `junkzero_<version>_amd64.deb` and `SHA256SUMS.txt` to the release. On Linux, `packaging/linux/build-linux.sh` makes the tar.gz and the `.deb` from the PyInstaller folder build. Each CI run also offers the Windows folder build as the `JunkZero-exe` artifact for testing. Release builds use the exact versions in `packaging/release-constraints.txt`. To publish a release, set `__version__` in `app/__init__.py` to a version not released yet, add a matching section to `CHANGELOG.md`, merge to main, and run the Release workflow on main by hand (or push a `v<version>` tag on a commit that is on main); the files are attached to the GitHub release. Runs from other branches build but never publish.
 
-Use the application on localhost. Native folder selection and Explorer / Finder integration require Windows or macOS. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.
+Use the application on localhost. Native folder selection needs Windows, macOS, or zenity, kdialog or yad on Linux. Scan results are heuristic suggestions; review them before deletion. Folder inspector sizes are depth-limited estimates.
